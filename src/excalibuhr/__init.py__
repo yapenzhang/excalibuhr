@@ -1,0 +1,10 @@
+# File: src/cool_science/__init__.py
+__all__ = ["calib", "utils", "plotting"]
+
+from pkg_resources import get_distribution, DistributionNotFound
+try:
+    __version__ = get_distribution(__name__).version
+except DistributionNotFound:
+    pass  # package is not installed
+    
+from . import calib, utils, plotting
