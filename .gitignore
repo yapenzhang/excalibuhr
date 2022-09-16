@@ -1,1 +1,2 @@
-src/excalibuhr.egg-info
+src/excalibuhr.egg-info/
+__pycache__/

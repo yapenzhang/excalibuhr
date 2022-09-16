@@ -5,8 +5,9 @@ __all__ = []
 import os
 import sys
 import json
+import shutil
+from pathlib import Path
 import warnings
-import pathlib
 import numpy as np
 import pandas as pd
 import subprocess
@@ -16,30 +17,29 @@ from astroquery.eso import Eso
 from numpy.polynomial import polynomial as Poly
 from scipy import ndimage
 from scipy.interpolate import CubicSpline, interp1d
-import utils as su
+import excalibuhr.utils as su
+import excalibuhr.plotting as pu
 import matplotlib.pyplot as plt 
-
 
 class Pipeline:
 
     def __init__(self, workpath, night, clear=False, wave_method='fpet', **header_keys):
-        self.workpath = pathlib.Path(workpath).resolve()
+        self.workpath = os.path.abspath(workpath)
         self.night = night
+        self.key_caltype = 'CAL TYPE'
         self.header_keys = header_keys
-        self.rawpath = pathlib.Path(self.workpath / self.night / "RAW")
-        self.calpath = pathlib.Path(self.workpath / self.night / "CAL")
-        self.outpath = pathlib.Path(self.workpath / self.night / "OUT")
-        # self.objpath = pathlib.Path(self.path / self.night / "obj")
-        # self.stdpath = pathlib.Path(self.path / self.night / "std")
-        self.calib_file = self.calpath / "calib_info.txt"
-        self.header_file = self.calpath / "header_info.txt"
+        self.rawpath = os.path.join(self.workpath, self.night, "raw")
+        self.calpath = os.path.join(self.workpath, self.night, "cal")
+        self.outpath = os.path.join(self.workpath, self.night, "out")
+        self.calib_file = os.path.join(self.calpath, "calib_info.txt") 
+        self.header_file = os.path.join(self.calpath, "header_info.txt")
         # self.detlin_path = '/run/media/yzhang/disk/cr2res_cal_detlin_coeffs.fits'
         # self.wave_method = wave_method
         # self.NAXIS = 2048
         # self.RON = 6
         # self.GAIN = 2.1
-        if not os.path.exists(self.workpath/self.night):
-            os.makedirs(self.workpath/self.night)
+        if not os.path.exists(os.path.join(self.workpath, self.night)):
+            os.makedirs(os.path.join(self.workpath, self.night))
 
         if not os.path.exists(self.calpath):
             os.makedirs(self.calpath)
@@ -50,31 +50,29 @@ class Pipeline:
         if not os.path.exists(self.rawpath):
             os.makedirs(self.rawpath)
 
-        if clear:
-            os.remove(self.header_file)
-            os.remove(self.calib_file)
+        # if clear:
+        #     os.remove(self.header_file)
+        #     os.remove(self.calib_file)
 
-        if self.header_file.is_file():
-            self.header_info = pd.read_csv(self.header_file, sep=' ')
+        if os.path.isfile(self.header_file):
+            self.header_info = pd.read_csv(self.header_file, sep=';')
             print(self.header_info)
         else:
-            self.header_info = pd.DataFrame()
+            self.header_info = None 
 
-        column_name = ["CAL.TYPE"]
         for par in header_keys.keys():
             setattr(self, par, header_keys[par])
-            column_name.append(header_keys[par])
 
-        if self.calib_file.is_file():
-            self.calib_info = pd.read_csv(self.calib_file, sep=' ')
+        if os.path.isfile(self.calib_file):
+            self.calib_info = pd.read_csv(self.calib_file, sep=';')
             print(self.calib_info)
         else:
-            self.calib_info = pd.DataFrame(columns=column_name)
+            self.calib_info = None
 
         
 
 
-    def download_rawdata(self, facility='eso', instrument='crires', login='yzhang', **filters):
+    def download_rawdata_eso(self, login, facility='eso', instrument='crires', **filters):
 
         print("Downloading rawdata from {}/{}...\n".format(facility, instrument))
         for key in filters.keys():
@@ -88,6 +86,7 @@ class Pipeline:
                         continuation=False, with_calib='raw', request_all_objects=True, unzip=False)
             os.chdir(self.rawpath)
             os.system("rm *.xml")
+            os.system("rm *.txt")
             os.system("uncompress *.Z")
             os.chdir(self.workpath)
 
@@ -96,19 +95,18 @@ class Pipeline:
 
         print("Extracting FITS headers...\n")
 
-        keywords = ['ARCFILE', 'ORIGFILE', 'DATE-OBS', 'RA', 'DEC', 'OBJECT', 'MJD-OBS', \
-                    'ESO OBS TARG NAME', 'ESO OBS PROG ID', 'ESO OBS ID', 'ESO OBS WATERVAPOUR', \
-                    'ESO TPL ID', 'ESO DPR CATG', 'ESO DPR TECH', 'ESO DPR TYPE', 'ESO DET EXP ID', \
-                    'ESO DET SEQ1 DIT', 'ESO DET NDIT', 'ESO SEQ NEXPO', 'ESO SEQ NODPOS', 'ESO SEQ NODTHROW', \
-                    'ESO SEQ CUMOFFSETX', 'ESO SEQ CUMOFFSETY', 'ESO SEQ JITTERVAL', 'ESO TEL AIRM START', \
-                    'ESO TEL IA FWHM', 'ESO TEL AMBI TAU0', 'ESO TEL AMBI IWV START', 'ESO INS WLEN CWLEN', \
-                    'ESO INS GRAT1 ORDER', 'ESO INS WLEN ID', 'ESO INS SLIT1 NAME', 'ESO INS SLIT1 WID', \
-                    'ESO INS1 OPTI1 NAME', 'ESO INS1 DROT POSANG', 'ESO INS1 FSEL ALPHA', 'ESO INS1 FSEL DELTA', \
-                    'ESO AOS RTC LOOP STATE']
-        keywords = ['ARCFILE', 'ESO DPR TYPE', 'ESO DET SEQ1 DIT', 'ESO INS WLEN ID']
-
+        # keywords = ['ARCFILE', 'ORIGFILE', 'DATE-OBS', 'RA', 'DEC', 'OBJECT', 'MJD-OBS', \
+        #             'ESO OBS TARG NAME', 'ESO OBS PROG ID', 'ESO OBS ID', 'ESO OBS WATERVAPOUR', \
+        #             'ESO TPL ID', 'ESO DPR CATG', 'ESO DPR TECH', 'ESO DPR TYPE', 'ESO DET EXP ID', \
+        #             'ESO DET SEQ1 DIT', 'ESO DET NDIT', 'ESO SEQ NEXPO', 'ESO SEQ NODPOS', 'ESO SEQ NODTHROW', \
+        #             'ESO SEQ CUMOFFSETX', 'ESO SEQ CUMOFFSETY', 'ESO SEQ JITTERVAL', 'ESO TEL AIRM START', \
+        #             'ESO TEL IA FWHM', 'ESO TEL AMBI TAU0', 'ESO TEL AMBI IWV START', 'ESO INS WLEN CWLEN', \
+        #             'ESO INS GRAT1 ORDER', 'ESO INS WLEN ID', 'ESO INS SLIT1 NAME', 'ESO INS SLIT1 WID', \
+        #             'ESO INS1 OPTI1 NAME', 'ESO INS1 DROT POSANG', 'ESO INS1 FSEL ALPHA', 'ESO INS1 FSEL DELTA', \
+        #             'ESO AOS RTC LOOP STATE']
+        keywords = self.header_keys.values() 
         
-        raw_files = pathlib.Path(self.rawpath).glob("*.fits")
+        raw_files = Path(self.rawpath).glob("*.fits")
 
         header_dict = {}
         for key_item in keywords:
@@ -116,43 +114,39 @@ class Pipeline:
 
         for file_item in raw_files:
             header = fits.getheader(file_item)
+            if self.key_filename in header:
+                shutil.move(file_item, os.path.join(self.rawpath, header[self.key_filename]))
 
             for key_item in keywords:
-                if 'FILE' in key_item:
-                    if key_item in header:
-                        header_dict[key_item].append(self.rawpath/header[key_item])
-                    else:
-                        header_dict[key_item].append(None)
+                if key_item in header:
+                    header_dict[key_item].append(header[key_item])
                 else:
-                    if key_item in header:
-                        header_dict[key_item].append(header[key_item])
-                    else:
-                        header_dict[key_item].append(None)
+                    header_dict[key_item].append(None)
 
+        self.header_info = pd.DataFrame(data=header_dict)
+        
+        self.header_info.to_csv(os.path.join(self.calpath,'header_info.txt'), index=False, sep=';')
+
+    def add_to_calib(self, file, cal_type):
+        keywords = self.header_keys.values()
+        header = fits.getheader(os.path.join(self.calpath, file))
+        calib_dict = {}
         for key_item in keywords:
-            # column_name = key_item.replace(" ", ".")
-            # column_name = column_name.replace("ESO.", "")
-            self.header_info[key_item] = header_dict[key_item]
+            calib_dict[key_item] = [header[key_item]]
+        calib_dict[self.key_caltype] = [cal_type]
+        calib_dict[self.key_filename] = [file]
+        calib_append = pd.DataFrame(data=calib_dict)
         
-        self.header_info.to_csv(self.calpath/'header_info.txt', index=False, sep=' ')
-
-    def add_to_calib(self, file_name, file_type):
-
-        hdr = fits.getheader(file_name)
-        item = [file_type, file_name]
-        if hdr is not None:
-            for key in self.header_keys.keys():
-                if 'file' not in key:
-                    item.append(hdr[self.header_keys[key]])
-            self.calib_info.loc[len(self.calib_info.index)] = item
+        if self.calib_info is None:
+            self.calib_info = calib_append
         else:
-            raise RuntimeError("Header of the {} file not found.".format(file_type))
+            self.calib_info = pd.concat([self.calib_info, calib_append], ignore_index=True)
         
-        self.calib_info.to_csv(self.calpath/'calib_info.txt', index=False, sep=' ')
+        self.calib_info.to_csv(os.path.join(self.calpath,'calib_info.txt'), index=False, sep=';')
 
 
-    def cal_dark(self, clip=4, verbose=True):
-        indices = self.header_info[self.key_data_type] == "DARK"
+    def cal_dark(self, badpix_clip=4, verbose=True):
+        indices = self.header_info[self.key_dtype] == "DARK"
 
         # Check unique DIT
         unique_dit = set()
@@ -168,156 +162,218 @@ class Pipeline:
         for item in unique_dit:
             indices_dit = self.header_info[indices][self.key_DIT] == item
             dt = []
-            for file in self.header_info[indices][indices_dit]["ARCFILE"]:
-                with fits.open(file) as hdu:
+            for file in self.header_info[indices][indices_dit][self.key_filename]:
+                with fits.open(os.path.join(self.rawpath, file)) as hdu:
                     hdr = hdu[0].header
                     dt.append(np.array([hdu[i].data for i in range(1, len(hdu))]))
             master = np.nanmedian(dt, axis=0)
             badpix = np.zeros_like(master).astype(bool)
             for i, det in enumerate(master):
-                filtered_data = sigma_clip(det, sigma=clip, axis=0)
+                filtered_data = sigma_clip(det, sigma=badpix_clip, axis=0)
                 badpix[i] = filtered_data.mask
                 master[i][badpix[i]] = np.nan
             
-            file_name = self.calpath/'DARK_MASTER_DIT{}.fits'.format(item)
+            file_name = os.path.join(self.calpath, 'DARK_MASTER_DIT{}.fits'.format(item))
             su.wfits(file_name, master, hdr)
-            self.add_to_calib(file_name, "DARK_MASTER")
+            self.add_to_calib('DARK_MASTER_DIT{}.fits'.format(item), "DARK_MASTER")
             
-            if verbose:
-                print("{0:.1f} percent of pixels identified as bad.".format(np.sum(badpix)/badpix.size*100.))
-            file_name = self.calpath/'DARK_BPM_DIT{}.fits'.format(item)
+            file_name = os.path.join(self.calpath, 'DARK_BPM_DIT{}.fits'.format(item))
             su.wfits(file_name, badpix.astype(int), hdr)
-            self.add_to_calib(file_name, "DARK_BPM")
+            self.add_to_calib('DARK_BPM_DIT{}.fits'.format(item), "DARK_BPM")
+
+            if verbose:
+                print(r"{0:.1f}% of pixels identified as bad.".format(np.sum(badpix)/badpix.size*100.))
+            # TODO: plot product
+            # pu.plot_det_image()
 
     
-
     
-    
-    def cal_flat(self, verbose=True):
-        indices = self.header_info[self.key_data_type] == "FLAT"
-        # indices_flat = self.header_info[indices_flat][self.key_data_type] == "FLAT"
+    def cal_flat_raw(self, verbose=True, collapse='median'):
+        indices = self.header_info[self.key_dtype] == "FLAT"
 
-        # Check unique DIT
+        # Only utilize one DIT setting for master flat
         unique_dit = set()
         for item in self.header_info[indices][self.key_DIT]:
             unique_dit.add(item)
+        dit = max(unique_dit)
 
-        if len(unique_dit) == 0:
+        if len(unique_dit) > 1:
+            print(f"Unique DIT values: {unique_dit}\n")
+            print(f"Only utilize the flat with DIT of {dit}\n")
+        elif len(unique_dit) == 0:
             print("Unique DIT values: none")
         else:
             print(f"Unique DIT values: {unique_dit}\n")
 
+        # Check unique WLEN setting
+        unique_wlen = set()
+        for item in self.header_info[indices][self.key_wlen]:
+            unique_wlen.add(item)
+
+        if len(unique_wlen) == 0:
+            print("Unique WLEN settings: none")
+        else:
+            print(f"Unique WLEN settings: {unique_wlen}\n")
+
+        indices_dark = (self.calib_info[self.key_caltype] == "DARK_MASTER") & (self.calib_info[self.key_DIT] == dit)
+        indices_bpm = (self.calib_info[self.key_caltype] == "DARK_BPM") & (self.calib_info[self.key_DIT] == dit)
+        assert (indices_dark.sum())<2
+        for file in self.calib_info[indices_dark][self.key_filename]:
+            dark = fits.getdata(os.path.join(self.calpath, file))
+        for file in self.calib_info[indices_bpm][self.key_filename]:
+            badpix = fits.getdata(os.path.join(self.calpath, file))
+
         # master flat
-        for item in unique_dit:
-            indices_dit = self.header_info[indices][self.key_DIT] == item
-            indices_dark = (self.calib_info['CAL.TYPE'] == "DARK_MASTER") & (self.calib_info[self.key_DIT] == item)
-            indices_bpm = (self.calib_info['CAL.TYPE'] == "DARK_BPM") & (self.calib_info[self.key_DIT] == item)
+        for item_wlen in unique_wlen:
+            indices_dit = indices & ((self.header_info[self.key_DIT] == dit) & (self.calib_info[self.key_wlen] == item_wlen))
+
             dt = []
-            for file in self.header_info[indices][indices_dit]["ARCFILE"]:
-                with fits.open(file) as hdu:
+            for file in self.header_info[indices_dit][self.key_filename]:
+                with fits.open(os.path.join(self.rawpath, file)) as hdu:
                     hdr = hdu[0].header
                     dt.append(np.array([hdu[i].data for i in range(1, len(hdu))]))
-            master = np.nanmedian(dt, axis=0)
-            assert (indices_dark.sum())<2
-            for file in self.calib_info[indices_dark]["ARCFILE"]:
-                dark = fits.getdata(file)
-            for file in self.calib_info[indices_bpm]["ARCFILE"]:
-                badpix = fits.getdata(file)
+            if collapse=='median':
+                master = np.nanmedian(dt, axis=0)
+            else:
+                master = np.nanmean(dt, axis=0)
+
             master -= dark
-            
-            # order tracing
-            for i, (det, bad) in enumerate(zip(master, badpix)):
-                su.order_trace(det, bad)
 
+            # TODO: apply bpm; plot
 
-
-
-
-            file_name = self.calpath/'FLAT_MASTER_DIT{}.fits'.format(item)
+            file_name = os.path.join(self.calpath, 'FLAT_MASTER_w{}.fits'.format(item_wlen))
             su.wfits(file_name, master, hdr)
-            self.add_to_calib(file_name, "FLAT_MASTER")
+            self.add_to_calib('FLAT_MASTER_w{}.fits'.format(item_wlen), "FLAT_MASTER")
             
+
+    def cal_flat_trace(self, verbose=True, debug=False):
+        indices = self.calib_info[self.key_caltype] == "FLAT_MASTER"
+
+        # Check unique DIT
+        unique_dit = set()
+        for item in self.calib_info[indices][self.key_DIT]:
+            unique_dit.add(item)
+        dit = max(unique_dit)
+        print(f"Use DIT value: {dit}\n")
+        
+        # Check unique WLEN setting
+        unique_wlen = set()
+        for item in self.calib_info[indices][self.key_wlen]:
+            unique_wlen.add(item)
+
+        if len(unique_wlen) == 0:
+            print("Unique WLEN settings: none")
+        else:
+            print(f"Unique WLEN settings: {unique_wlen}\n")
+
+        indices_bpm = (self.calib_info[self.key_caltype] == "DARK_BPM") & (self.calib_info[self.key_DIT] == dit)
+        for file in self.calib_info[indices_bpm][self.key_filename]:
+            bpm = fits.getdata(os.path.join(self.calpath, file))
+        
+        for item_wlen in unique_wlen:
+            indices_flat = indices & ((self.calib_info[self.key_DIT] == dit) & (self.calib_info[self.key_wlen] == item_wlen))
+            assert (indices_flat.sum())<2
+            for file in self.calib_info[indices_flat][self.key_filename]:
+                flat = fits.getdata(os.path.join(self.calpath, file))
+                hdr = fits.getheader(os.path.join(self.calpath, file))
+            trace = su.util_order_trace(flat, bpm, debug=debug)
+
+            file_name = os.path.join(self.calpath, 'TW_FLAT_w{}.fits'.format(item_wlen))
+            su.wfits(file_name, trace, hdr)
+            self.add_to_calib('TW_FLAT_w{}.fits'.format(item_wlen), "TRACE_TW")
+            
+
+    def cal_slit_curve(self, debug=False):
+
+        indices_fpet = self.header_info[self.key_dtype] == "WAVE,FPET"
+
+        # Check unique WLEN setting
+        unique_wlen = set()
+        for item in self.header_info[indices_fpet][self.key_wlen]:
+            unique_wlen.add(item)
+
+        if len(unique_wlen) == 0:
+            print("Unique WLEN settings: none")
+        else:
+            print(f"Unique WLEN settings: {unique_wlen}\n")
+
+        for item_wlen in unique_wlen:
+            indices = self.header_info[indices_fpet][self.key_wlen] == item_wlen
+            dit = self.header_info[indices_fpet][indices][self.key_DIT].iloc[0]
+            file_fpet = self.header_info[indices_fpet][indices][self.key_filename].iloc[0]
+
+            indices_dark = (self.calib_info[self.key_caltype] == "DARK_MASTER") & (self.calib_info[self.key_DIT] == dit)
+            indices_bpm = (self.calib_info[self.key_caltype] == "DARK_BPM") & (self.calib_info[self.key_DIT] == dit)
+            indices_tw = (self.calib_info[self.key_caltype] == "TRACE_TW") & (self.calib_info[self.key_wlen] == item_wlen)
+            assert (indices_dark.sum())<2
+            assert (indices_bpm.sum())<2
+            assert (indices_tw.sum())<2
+            file = self.calib_info[indices_tw][self.key_filename].iloc[0]
+            tw = fits.getdata(os.path.join(self.calpath, file))
+            file = self.calib_info[indices_dark][self.key_filename].iloc[0]
+            dark = fits.getdata(os.path.join(self.calpath, file))
+            for file in self.calib_info[indices_bpm][self.key_filename]:
+                bpm = fits.getdata(os.path.join(self.calpath, file))
+
+            with fits.open(os.path.join(self.rawpath, file_fpet)) as hdu:
+                hdr = hdu[0].header
+                fpet = np.array([hdu[i].data for i in range(1, len(hdu))]) - dark
+
+            slit = su.util_slit_curve(fpet, bpm, tw, debug=debug)
+
+            file_name = os.path.join(self.calpath, 'SLIT_TILT_w{}.fits'.format(item_wlen))
+            su.wfits(file_name, slit, hdr)
+            self.add_to_calib('SLIT_TILT_w{}.fits'.format(item_wlen), "SLIT_TILT")
+
+
     
 
-    def cal_wave(self, verbose=False):
-        indices = self.header_data["DPR.TYPE"] == "WAVE,UNE"
-        indices2 = self.header_data["DPR.TYPE"] == "WAVE,FPET"
+    def cal_flat_norm(self, debug=True):
+        indices = self.calib_info[self.key_caltype] == "FLAT_MASTER"
 
-        # Create SOF file
-        sof_file = pathlib.Path(self.calpath / "wave.sof")
+        # Check unique DIT
+        unique_dit = set()
+        for item in self.calib_info[indices][self.key_DIT]:
+            unique_dit.add(item)
+        dit = max(unique_dit)
+        print(f"Use DIT value: {dit}\n")
+        
+        # Check unique WLEN setting
+        unique_wlen = set()
+        for item in self.calib_info[indices][self.key_wlen]:
+            unique_wlen.add(item)
 
-        with open(sof_file, "w", encoding="utf-8") as sof_open:
-            for item in self.header_data[indices]["ARCFILE"]:
-                sof_open.write(f"{self.rawpath}/{item} WAVE_UNE\n")
-            for item in self.header_data[indices2]["ARCFILE"]:
-                sof_open.write(f"{self.rawpath}/{item} WAVE_FPET\n")
-
-            file_found = False
-            if "CAL_DARK_MASTER" in self.calibDB:
-                for key, value in self.calibDB["CAL_DARK_MASTER"].items():
-                    if not file_found and value["DIT"] == self.header_data[indices].iloc[0]["DET.SEQ1.DIT"]:
-                        sof_open.write(f"{key} CAL_DARK_MASTER\n")
-                        file_found = True
-            if not file_found:
-                raise RuntimeError("Dark master frame with DIT={} not found.".format(self.header_data[indices].iloc[0]["DET.SEQ1.DIT"]))
-
-            file_found = False
-            if "CAL_DARK_BPM" in self.calibDB:
-                for key, value in self.calibDB["CAL_DARK_BPM"].items():
-                    if not file_found and value["DIT"] == self.header_data[indices].iloc[0]["DET.SEQ1.DIT"]:
-                        sof_open.write(f"{key} CAL_DARK_BPM\n")
-                        file_found = True
-            
-            file_found = False
-            if "UTIL_WAVE_TW" in self.calibDB:
-                for key, value in self.calibDB["UTIL_WAVE_TW"].items():
-                    if not file_found and value["WLEN"] == self.header_data[indices].iloc[0]["INS.WLEN.ID"]:
-                        sof_open.write(f"{key} UTIL_WAVE_TW\n")
-                        file_found = True
-            if not file_found:
-                raise RuntimeError("TW TABLE file not found.")
-
-            file_found = False
-            if "EMISSION_LINES" in self.calibDB:
-                for key, value in self.calibDB["EMISSION_LINES"].items():
-                    if not file_found and value["WLEN"] == self.header_data[indices].iloc[0]["INS.WLEN.ID"]:
-                        sof_open.write(f"{key} EMISSION_LINES\n")
-                        file_found = True
-            if not file_found:
-                raise RuntimeError("TW TABLE file not found.")
-
-            sof_open.write(f"{self.detlin_path} CAL_DETLIN_COEFFS\n")
-
-        # Run EsoRex
-        esorex = [
-            "esorex",
-            # f"--recipe-config={config_file}",
-            f"--output-dir={self.calpath}",
-            "cr2res_cal_wave",
-            sof_file,
-        ]
-
-        if verbose:
-            stdout = None
+        if len(unique_wlen) == 0:
+            print("Unique WLEN settings: none")
         else:
-            stdout = subprocess.DEVNULL
-            print("Running EsoRex...", end="", flush=True)
+            print(f"Unique WLEN settings: {unique_wlen}\n")
 
-        subprocess.run(esorex, cwd=self.calpath, stdout=stdout, check=True)
+        for item_wlen in unique_wlen:
+            indices_flat = indices & ((self.calib_info[self.key_DIT] == dit) & (self.calib_info[self.key_wlen] == item_wlen))
 
-        if not verbose:
-            print(" [DONE]\n")
+            indices_bpm = (self.calib_info[self.key_caltype] == "DARK_BPM") & (self.calib_info[self.key_DIT] == dit)
+            indices_tw = (self.calib_info[self.key_caltype] == "TRACE_TW") & (self.calib_info[self.key_wlen] == item_wlen)
+            indices_slit = (self.calib_info[self.key_caltype] == "SLIT_TILT") & (self.calib_info[self.key_wlen] == item_wlen)
+            assert (indices_bpm.sum())<2
+            assert (indices_tw.sum())<2
+            assert (indices_slit.sum())<2
+            file = self.calib_info[indices_tw][self.key_filename].iloc[0]
+            tw = fits.getdata(os.path.join(self.calpath, file))
+            file = self.calib_info[indices_slit][self.key_filename].iloc[0]
+            slit = fits.getdata(os.path.join(self.calpath, file))
+            for file in self.calib_info[indices_bpm][self.key_filename]:
+                bpm = fits.getdata(os.path.join(self.calpath, file))
 
-        # Update file dictionary with master flat
+            assert (indices_flat.sum())<2
+            for file in self.calib_info[indices_flat][self.key_filename]:
+                flat = fits.getdata(os.path.join(self.calpath, file))
+                hdr = fits.getheader(os.path.join(self.calpath, file))
+            blaze = su.util_extract_blaze(flat, bpm, tw, slit, debug=debug)
 
-        fits_files = pathlib.Path(self.calpath).glob("cr2res_cal_wave_tw_*.fits")
+            # file_name = os.path.join(self.calpath, 'TW_FLAT_w{}.fits'.format(item_wlen))
+            # su.wfits(file_name, trace, hdr)
+            # self.add_to_calib('TW_FLAT_w{}.fits'.format(item_wlen), "TRACE_TW")
 
-        for item in fits_files:
-            self.add_to_calib_DB("CAL_WAVE_TW", str(item))
-
-
-        with open(self.json_file, "w", encoding="utf-8") as json_file:
-            json.dump(self.calibDB, json_file, indent=4)
 
 
     def obs_nodding(self, STD=False, verbose=False):
@@ -438,33 +494,11 @@ class Pipeline:
             for item in fits_files:
                 self.add_to_calib_DB("STD_NODDING_COMBINEDA", str(item))
 
-            fits_files = pathlib.Path(outpath).glob("cr2res_obs_nodding_combinedB.fits")
-            for item in fits_files:
-                self.add_to_calib_DB("STD_NODDING_COMBINEDB", str(item))
-
-            fits_files = pathlib.Path(outpath).glob("cr2res_obs_nodding_extractedA.fits")
-            for item in fits_files:
-                self.add_to_calib_DB("STD_NODDING_extractedA", str(item))
-
-            fits_files = pathlib.Path(outpath).glob("cr2res_obs_nodding_extractedB.fits")
-            for item in fits_files:
-                self.add_to_calib_DB("STD_NODDING_extractedB", str(item))
         else:
             fits_files = pathlib.Path(outpath).glob("cr2res_obs_nodding_combinedA.fits")
             for item in fits_files:
                 self.add_to_calib_DB("OBS_NODDING_COMBINEDA", str(item))
 
-            fits_files = pathlib.Path(outpath).glob("cr2res_obs_nodding_combinedB.fits")
-            for item in fits_files:
-                self.add_to_calib_DB("OBS_NODDING_COMBINEDB", str(item))
-
-            fits_files = pathlib.Path(outpath).glob("cr2res_obs_nodding_extractedA.fits")
-            for item in fits_files:
-                self.add_to_calib_DB("OBS_NODDING_extractedA", str(item))
-
-            fits_files = pathlib.Path(outpath).glob("cr2res_obs_nodding_extractedB.fits")
-            for item in fits_files:
-                self.add_to_calib_DB("OBS_NODDING_extractedB", str(item))
 
         with open(self.json_file, "w", encoding="utf-8") as json_file:
             json.dump(self.calibDB, json_file, indent=4)
