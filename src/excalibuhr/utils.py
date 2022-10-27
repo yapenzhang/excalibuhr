@@ -27,7 +27,7 @@ def wfits(fname, im, hdr=None):
 
 
 
-def order_trace(det, badpix, poly_order=2, sigma_threshold=3, sub_factor=64, debug=False):
+def order_trace(det, badpix, poly_order=2, sigma_threshold=3, sub_factor=64, order_length_min=125, debug=False):
     im = np.where(badpix, signal.medfilt2d(det, 7), det)
     xx = np.arange(im.shape[1])
     xx_bin = np.arange((sub_factor-1)/2., im.shape[1], sub_factor)
@@ -35,7 +35,7 @@ def order_trace(det, badpix, poly_order=2, sigma_threshold=3, sub_factor=64, deb
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=RuntimeWarning)
         im_bin = np.nanmedian(im.reshape(im.shape[0], im.shape[1]//sub_factor, sub_factor), axis=2)
-    upper, lower  = [], []
+    xx_loc, upper, lower  = [], [], []
     poly_upper, poly_lower  = [], []
 
     if debug:
@@ -46,35 +46,51 @@ def order_trace(det, badpix, poly_order=2, sigma_threshold=3, sub_factor=64, deb
     im_grad = im_grad - cont_std*sigma_threshold
     im_grad[im_grad<0] = 0
 
+    width = 3
+    len_threshold = 80
     for i in range(im_grad.shape[1]):
+        yy = im_grad[:,int(i)]
         # indices,_ = signal.find_peaks(im_grad[:,i], distance=30, height=cont_std[i]*sigma_threshold)
-        indices = signal.argrelextrema(im_grad[:,i], np.greater)[0]
-        lower.append(indices[::2])
-        upper.append(indices[1::2])
+        indices = signal.argrelextrema(yy, np.greater)[0]
+        if len(indices)%2!=0 or (indices[1::2]-indices[::2]).min() < len_threshold:
+            print("Warning: Data are too noisy to clearly identify edges. Consider increase 'sub_factor' in 'order_trace'.")
+            continue
+        cens = np.array([np.sum(xx[int(p-width):int(p+width)]*yy[int(p-width):int(p+width)])/np.sum(yy[int(p-width):int(p+width)]) for p in indices])
+        lower.append(cens[::2])
+        upper.append(cens[1::2])
+        xx_loc.append(xx_bin[i])
 
         if len(indices)!=14:
             print(len(indices))
-            for k in indices:
-                plt.axvline(k, color='r')
+            for (k1, k2) in zip(indices,cens):
+                plt.axvline(k1, color='g')
+                plt.axvline(k2, color='r')
             plt.plot(im_grad[:,i])
             # plt.axhline(sigma_threshold*cont_std[i])
             plt.show()
-            raise RuntimeError("Traces are not identified correctly.")
+            # raise RuntimeError("Traces are not identified correctly.")
 
     upper = np.array(upper).T
-    for loc in upper:
-        poly = Poly.polyfit(xx_bin, loc, poly_order)
-        poly_upper.append(poly)
-        if debug:
-            yy = Poly.polyval(xx, poly)
-            plt.plot(xx, yy, 'r')
     lower = np.array(lower).T
-    for loc in lower:
-        poly = Poly.polyfit(xx_bin, loc, poly_order)
-        poly_lower.append(poly)
+    for (loc_up, loc_low) in zip(upper, lower):
+        poly_up = Poly.polyfit(xx_loc, loc_up, poly_order)
+        poly_low = Poly.polyfit(xx_loc, loc_low, poly_order)
+        yy_up = Poly.polyval(xx, poly_up)
+        yy_low = Poly.polyval(xx, poly_low)
+        slit_len = yy_up - yy_low
+        if slit_len.min() > order_length_min:
+            poly_upper.append(poly_up)
+            poly_lower.append(poly_low)
+            #if the width of order varies a lot, it likely resides at the edge or not ptoperly tarced. Then try to fix the width.
+        # elif (slit_len.max()-slit_len.min())>2:
+            #identify whether the upper or lower trace hits the edge.
+            # TODO
         if debug:
-            yy = Poly.polyval(xx, poly)
-            plt.plot(xx, yy, 'r')
+            print(slit_len.max()-slit_len.min())
+            plt.plot(xx, yy_up, 'r')
+            plt.plot(xx, yy_low, 'r')
+            # plt.plot(xx, slit_len)
+            # plt.show()
 
     # # test against pipeline
     # tw_filename = '/data2/yzhang/SupJup/2M0103/cr2res_util_calib_calibrated_collapsed_tw.fits'
@@ -87,9 +103,14 @@ def order_trace(det, badpix, poly_order=2, sigma_threshold=3, sub_factor=64, deb
     #     y_lower = Poly.polyval(x, p_lower) 
     #     p_wave = tw['Wavelength'][tw['Order']==order][0]
     #     wave = Poly.polyval(x, p_wave)
-    #     plt.plot(x-1., y_upper-1., 'blue')
-    #     plt.plot(x-1., y_lower-1., 'blue')
+    #     # plt.plot(x-1., y_upper-1., 'blue')
+    #     # plt.plot(x-1., y_lower-1., 'blue')
+    #     slit_len = y_upper - y_lower
+    #     plt.plot(x-1, slit_len)
+    #     plt.show()
+
     if debug:
+        print("%.d orders identified" % len(poly_upper))
         plt.show()
 
     return [poly_upper, poly_lower]
@@ -173,10 +194,10 @@ def slit_curve(det, badpix, trace, poly_order=2, spacing=40, sub_factor=4, debug
 
     # check rectified image
     if debug:
-        spectral_interp_rectify(im, trace, [meta0, meta1, meta2], debug=debug)
+        spectral_rectify_interp(im, trace, [meta0, meta1, meta2], debug=debug)
     return [meta0, meta1, meta2]
 
-def spectral_interp_rectify(im, trace, slit_mata, debug=False):
+def spectral_rectify_interp(im, trace, slit_mata, debug=False):
     im_rect_spec = np.copy(im)
     xx_grid = np.arange(0, im.shape[1])
     meta0, meta1, meta2 = slit_mata
@@ -185,7 +206,7 @@ def spectral_interp_rectify(im, trace, slit_mata, debug=False):
     for o, (poly_upper, poly_lower, poly_meta0, poly_meta1, poly_meta2) in enumerate(zip(trace_upper, trace_lower, meta0, meta1, meta2)):
         yy_upper = Poly.polyval(xx_grid, poly_upper)
         yy_lower = Poly.polyval(xx_grid, poly_lower)
-        yy_grid = np.arange(int(yy_lower.min()-5), int(yy_upper.max()+5))
+        yy_grid = np.arange(int(yy_lower.min()), int(yy_upper.max()+1))
 
         poly_full = np.array([Poly.polyval(xx_grid, poly_meta0), Poly.polyval(xx_grid, poly_meta1),Poly.polyval(xx_grid, poly_meta2)]).T
         isowlen_grid = np.empty((len(yy_grid), len(xx_grid)))
@@ -202,6 +223,68 @@ def spectral_interp_rectify(im, trace, slit_mata, debug=False):
         plt.show()
     return im_rect_spec
 
+def mean_collapse(im, trace, slit_mata, f0=0.5, fw=0.5, sigma=5, debug=False):
+    im_copy = np.copy(im)
+    xx_grid = np.arange(0, im.shape[1])
+    blaze_orders = []
+    meta0, meta1, meta2 = slit_mata
+    trace_upper, trace_lower = trace
+
+    for o, (poly_upper, poly_lower, poly_meta0, poly_meta1, poly_meta2) in enumerate(zip(trace_upper, trace_lower, meta0, meta1, meta2)):
+        yy_upper = Poly.polyval(xx_grid, poly_upper)
+        yy_lower = Poly.polyval(xx_grid, poly_lower)
+        blaze = np.zeros_like(xx_grid)
+        indices = [range(int(low+(f0-fw)*(up-low)), int(low+(f0+fw)*(up-low))+1) for (up, low) in zip(yy_upper, yy_lower)]
+        for i, indice in enumerate(indices):
+            blaze[i],_, _ = stats.sigma_clipped_stats(im_copy[indice,i], sigma=sigma)
+        plt.plot(blaze)
+        plt.show()
+        blaze_orders.append(blaze)
+        # poly_full = np.array([Poly.polyval(xx_grid, poly_meta0), Poly.polyval(xx_grid, poly_meta1),Poly.polyval(xx_grid, poly_meta2)]).T
+
+    return np.array(blaze_orders)
+
+def blaze_norm(im, trace, slit_mata, blaze_orders, f0=0.5, fw=0.5, debug=False):
+    im_norm = np.copy(im)
+    im_copy = np.ones_like(im)
+    xx_grid = np.arange(0, im.shape[1])
+    meta0, meta1, meta2 = slit_mata
+    trace_upper, trace_lower = trace
+
+    for o, (poly_upper, poly_lower, poly_meta0, poly_meta1, poly_meta2, blaze) in enumerate(zip(trace_upper, trace_lower, meta0, meta1, meta2, blaze_orders)):
+        yy_upper = Poly.polyval(xx_grid, poly_upper)
+        yy_lower = Poly.polyval(xx_grid, poly_lower)
+        yy_grid = np.arange(int(yy_lower.min()), int(yy_upper.max()+1))
+
+        poly_full = np.array([Poly.polyval(xx_grid, poly_meta0), Poly.polyval(xx_grid, poly_meta1),Poly.polyval(xx_grid, poly_meta2)]).T
+        isowlen_grid = np.empty((len(yy_grid), len(xx_grid)))
+        for x in range(len(xx_grid)):
+            isowlen_grid[:, x] = Poly.polyval(yy_grid, poly_full[x])
+                                
+        for i, x_isowlen in enumerate(isowlen_grid):
+            mask = np.isnan(blaze)
+            if np.sum(mask)>0.5*len(mask):
+                continue                      
+            im_copy[int(yy_grid[0]+i)] = interp1d(x_isowlen[~mask], blaze[~mask], kind='cubic', bounds_error=False, fill_value=np.nan)(xx_grid)
+    im_norm /= im_copy
+    if debug:
+        plt.imshow(im_copy, vmin=200, vmax=1e4)
+        plt.show()
+        plt.imshow(im_norm, vmin=0.8, vmax=1.2)
+        plt.show()
+
+        # indices = [range(int(low+(f0-fw)*(up-low)), int(low+(f0+fw)*(up-low))+1) for (up, low) in zip(yy_upper, yy_lower)]
+        # for i, indice in enumerate(indices):
+        #     blaze[i],_, _ = stats.sigma_clipped_stats(im_copy[indice,i], sigma=sigma)
+        # plt.plot(blaze)
+        # plt.show()
+        # blaze_orders.append(blaze)
+        # poly_full = np.array([Poly.polyval(xx_grid, poly_meta0), Poly.polyval(xx_grid, poly_meta1),Poly.polyval(xx_grid, poly_meta2)]).T
+
+    return im_norm
+
+
+
 def util_slit_curve(im, bpm, tw, debug=False):
     slit_meta = [] # (detector, poly_meta2, order) 
     for d, (det, badpix, trace) in enumerate(zip(im, bpm, tw)):
@@ -211,25 +294,19 @@ def util_slit_curve(im, bpm, tw, debug=False):
     
 
 def util_extract_blaze(flat, bpm, tw, slit, debug=True):
-    blaze = [] 
+    blaze_det = [] 
     for d, (det, badpix, trace, slit_meta) in enumerate(zip(flat, bpm, tw, slit)):
         det[badpix] = np.nan
         trace_upper, trace_lower = trace
         meta0, meta1, meta2 = slit_meta
         xx_grid = np.arange(det.shape[1])
-        det_rect = spectral_interp_rectify(det, trace, slit_meta, debug=debug)
-        
-        for o, (poly_upper, poly_lower, poly_meta0, poly_meta1, poly_meta2) in enumerate(zip(trace_upper, trace_lower, meta0, meta1, meta2)):
-            yy_upper = Poly.polyval(xx_grid, poly_upper)
-            yy_lower = Poly.polyval(xx_grid, poly_lower)
-            yy_grid = np.arange(int(yy_lower.min()-5), int(yy_upper.max()+5))
-            blaze_rect = np.nanmean(det_rect[yy_grid], axis=0) #TODO: average slit upper to lower
-            plt.plot(blaze_rect)
-            plt.show()
-            poly_full = np.array([Poly.polyval(xx_grid, poly_meta0), Poly.polyval(xx_grid, poly_meta1),Poly.polyval(xx_grid, poly_meta2)]).T
+        det_rect = spectral_rectify_interp(det, trace, slit_meta, debug=debug)
+        blaze_orders = mean_collapse(det_rect, trace, slit_meta, debug=debug)
+        s = blaze_norm(det, trace, slit_meta, blaze_orders, debug=debug)
 
-        # blaze.append(extract_blaze(det, badpix, trace, slit_meta, debug=debug))
-    return blaze
+        blaze_det.append(blaze_orders)
+
+    return blaze_det
 
 
 
