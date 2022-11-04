@@ -135,7 +135,7 @@ class Pipeline:
         header = fits.getheader(os.path.join(self.calpath, file))
         calib_dict = {}
         for key_item in keywords:
-            calib_dict[key_item] = [header[key_item]]
+            calib_dict[key_item] = [header.get(key_item)]
         calib_dict[self.key_caltype] = [cal_type]
         calib_dict[self.key_filename] = [file]
         calib_append = pd.DataFrame(data=calib_dict)
@@ -152,7 +152,7 @@ class Pipeline:
         header = fits.getheader(os.path.join(self.outpath, file))
         calib_dict = {}
         for key_item in keywords:
-            calib_dict[key_item] = [header[key_item]]
+            calib_dict[key_item] = [header.get(key_item)]
         calib_dict[self.key_caltype] = [prod_type]
         calib_dict[self.key_filename] = [file]
         calib_append = pd.DataFrame(data=calib_dict)
@@ -186,12 +186,16 @@ class Pipeline:
                     hdr = hdu[0].header
                     dt.append(np.array([hdu[i].data for i in range(1, len(hdu))]))
             
-            master, badpix = su.util_master_dark(dt, badpix_clip=4)
+            master, rons, badpix = su.util_master_dark(dt, badpix_clip=5)
             
             file_name = os.path.join(self.calpath, 'DARK_MASTER_DIT{}.fits'.format(item))
             su.wfits(file_name, master, hdr)
             self.add_to_calib('DARK_MASTER_DIT{}.fits'.format(item), "DARK_MASTER")
             
+            file_name = os.path.join(self.calpath, 'DARK_RON_DIT{}.fits'.format(item))
+            su.wfits(file_name, rons, hdr)
+            self.add_to_calib('DARK_RON_DIT{}.fits'.format(item), "DARK_RON")
+
             file_name = os.path.join(self.calpath, 'DARK_BPM_DIT{}.fits'.format(item))
             su.wfits(file_name, badpix.astype(int), hdr)
             self.add_to_calib('DARK_BPM_DIT{}.fits'.format(item), "DARK_BPM")
@@ -428,12 +432,16 @@ class Pipeline:
             indices_blaze = (self.calib_info[self.key_caltype] == "BLAZE") & (self.calib_info[self.key_wlen] == item_wlen)
             indices_tw = (self.calib_info[self.key_caltype] == "TRACE_TW") & (self.calib_info[self.key_wlen] == item_wlen)
             indices_slit = (self.calib_info[self.key_caltype] == "SLIT_TILT") & (self.calib_info[self.key_wlen] == item_wlen)
+            indices_bpm = (self.calib_info[self.key_caltype] == "FLAT_BPM") & (self.calib_info[self.key_wlen] == item_wlen)
             
             assert (indices_flat.sum())<2, "More than one calibration file."
             assert (indices_blaze.sum())<2, "More than one calibration file."
             assert (indices_tw.sum())<2, "More than one calibration file."
             assert (indices_slit.sum())<2, "More than one calibration file."
+            assert (indices_bpm.sum())<2, "More than one calibration file."
 
+            file = self.calib_info[indices_bpm][self.key_filename].iloc[0]
+            bpm = fits.getdata(os.path.join(self.calpath, file))
             file = self.calib_info[indices_tw][self.key_filename].iloc[0]
             tw = fits.getdata(os.path.join(self.calpath, file))
             file = self.calib_info[indices_slit][self.key_filename].iloc[0]
@@ -444,10 +452,10 @@ class Pipeline:
             flat = fits.getdata(os.path.join(self.calpath, file))
             
             for item_dit in unique_dit:
-                indices_bpm = (self.calib_info[self.key_caltype] == "DARK_BPM") & (self.calib_info[self.key_DIT] == item_dit)
-                assert (indices_bpm.sum())<2, "More than one calibration file."
-                file = self.calib_info[indices_bpm][self.key_filename].iloc[0]
-                bpm = fits.getdata(os.path.join(self.calpath, file))
+
+                indices_ron = (self.calib_info[self.key_caltype] == "DARK_RON") & (self.calib_info[self.key_DIT] == item_dit)
+                file_ron = os.path.join(self.calpath, self.calib_info[indices_ron][self.key_filename].iloc[0])
+                ron = fits.getdata(os.path.join(self.calpath, file_ron))
 
                 indices_nod_A = indices_wlen & (self.header_info[self.key_DIT] == item_dit) & (self.header_info[self.key_nodpos] == 'A')
                 indices_nod_B = indices_wlen & (self.header_info[self.key_DIT] == item_dit) & (self.header_info[self.key_nodpos] == 'B')
@@ -470,35 +478,44 @@ class Pipeline:
                 slitlen = df_nods[self.key_slitlen].iloc[0]
                 
                 for i, row in enumerate(range(0, df_nods.shape[0], Nexp_per_nod)):
-                    frames_per_nod = []
                     pos_bkg = set()
                     for p in df_nods[self.key_nodpos].iloc[row:row+Nexp_per_nod]:
                         pos_bkg.add(p)
-                    for file_bkg in df_nods[self.key_filename].iloc[row:row+Nexp_per_nod]:
-                        print("bkg",file_bkg)
-                        with fits.open(os.path.join(self.rawpath, file_bkg)) as hdu:
-                            # hdr = hdu[0].header
-                            frame = np.array([hdu[i].data for i in range(1, len(hdu))])
-                        frames_per_nod.append(frame)
-                    dt_bkg = np.nanmean(frames_per_nod, axis=0)
-                    # plt.imshow((dt_bkg)[0], vmin=0, vmax=60)
-                    # plt.show()
+                    print("BKG: ", pos_bkg)
+                    file_list = [os.path.join(self.rawpath, item) for item in df_nods[self.key_filename].iloc[row:row+Nexp_per_nod]]
+                    dt_list, err_list = [], []
+                    for file in file_list:
+                        frame, frame_err = [], []
+                        with fits.open(file) as hdu:
+                            ndit = hdu[0].header[self.key_NDIT]
+                            for j,d in enumerate(range(1, len(hdu))):
+                                gain = hdu[d].header[self.key_gain]
+                                frame.append(hdu[d].data)
+                                frame_err.append(su.detector_shotnoise(hdu[d].data, ron[j], GAIN=gain, NDIT=ndit))
+                        dt_list.append(frame)
+                        err_list.append(frame_err)
+                    dt_bkg, err_bkg = su.combine_detector_images(dt_list, err_list, collapse='mean')
                     
                     pos = set()
                     for p in df_nods[self.key_nodpos].iloc[row+(-1)**(i%2)*Nexp_per_nod:row+(-1)**(i%2)*Nexp_per_nod+Nexp_per_nod]:
                         pos.add(p)
                     assert pos != pos_bkg, "Subtracting frames at the same nodding position."
                     for file in df_nods[self.key_filename].iloc[row+(-1)**(i%2)*Nexp_per_nod:row+(-1)**(i%2)*Nexp_per_nod+Nexp_per_nod]:
-                        print("files",file)
+                        print("files",file, "POS: ", pos)
+                        frame, frame_err = [], []
                         with fits.open(os.path.join(self.rawpath, file)) as hdu:
                             hdr = hdu[0].header
-                            frame = np.array([hdu[i].data for i in range(1, len(hdu))])
-                        frame_bkg_cor = frame - dt_bkg
-                        frame_bkg_cor = su.util_correct_readout_artifact(frame_bkg_cor, bpm, tw, debug=False)
-                        frame_bkg_cor = su.util_flat_fielding(frame_bkg_cor, flat, debug=False)
+                            ndit = hdr[self.key_NDIT]
+                            for j,d in enumerate(range(1, len(hdu))):
+                                gain = hdu[d].header[self.key_gain]
+                                frame.append(hdu[d].data)
+                                frame_err.append(su.detector_shotnoise(hdu[d].data, ron[j], GAIN=gain, NDIT=ndit))
+                        frame_bkg_cor, err_bkg_cor = su.combine_detector_images([frame, -dt_bkg], [frame_err, err_bkg], collapse='sum')
+                        frame_bkg_cor, err_bkg_cor = su.util_correct_readout_artifact(frame_bkg_cor, err_bkg_cor, bpm, tw, debug=False)
+                        frame_bkg_cor, err_bkg_cor = su.util_flat_fielding(frame_bkg_cor, err_bkg_cor, flat, debug=False)
 
                         file_name = os.path.join(self.noddingpath, 'Nodding_{}'.format(file))
-                        su.wfits(file_name, frame_bkg_cor, hdr, im_err=None)
+                        su.wfits(file_name, frame_bkg_cor, hdr, im_err=err_bkg_cor)
                         self.add_to_product("./obs_nodding/"+'Nodding_{}'.format(file), "NODDING_FRAME")
                         # plt.imshow((frame_bkg_cor)[2], vmin=-20, vmax=20)
                         # plt.show()
@@ -508,25 +525,76 @@ class Pipeline:
                             nod = -1
                         else:
                             nod = 1
-                        if not combine:
-                            su.util_extract_spec(frame_bkg_cor, bpm, tw, slit, blaze, f0=0.5+nod*nodthrow/2./slitlen, debug=True)
+                        # if not combine:
+                        #   extract
                 
                 if combine:
                     for pos in ['A', 'B']:
-                        dt = []
+                        dt, dt_err = [], []
                         indices = (self.product_info[self.key_caltype] == 'NODDING_FRAME') & (self.product_info[self.key_nodpos] == pos)
                         for file in self.product_info[indices][self.key_filename]:
                             with fits.open(os.path.join(self.outpath, file)) as hdu:
                                 hdr = hdu[0].header
                                 dt.append(hdu[0].data)
-                                # dt_err = hdu[1].data
-                        combined = np.nanmean(dt, axis=0)
+                                dt_err.append(hdu[1].data)
+                        combined, combined_err = su.combine_detector_images(dt, dt_err, collapse='mean')
                         file_name = os.path.join(self.noddingpath, 'Nodding_combined_{}_{}.fits'.format(pos, item_wlen))
-                        su.wfits(file_name, combined, hdr, im_err=None)
+                        su.wfits(file_name, combined, hdr, im_err=combined_err)
                         self.add_to_product("./obs_nodding/"+'Nodding_combined_{}_{}.fits'.format(pos, item_wlen), "NODDING_COMBINED")
 
+    def extract1d_from_combined(self, companion_sep=None, debug=True):        
+        indices = (self.product_info[self.key_caltype] == 'NODDING_COMBINED')
 
+        # Check unique WLEN setting
+        unique_wlen = set()
+        for item in self.product_info[indices][self.key_wlen]:
+            unique_wlen.add(item)
+        print(f"Unique WLEN settings: {unique_wlen}\n")
 
+        for item_wlen in unique_wlen:
+            
+            indices_wlen = indices & (self.product_info[self.key_wlen] == item_wlen)
+
+            indices_blaze = (self.calib_info[self.key_caltype] == "BLAZE") & (self.calib_info[self.key_wlen] == item_wlen)
+            indices_tw = (self.calib_info[self.key_caltype] == "TRACE_TW") & (self.calib_info[self.key_wlen] == item_wlen)
+            indices_slit = (self.calib_info[self.key_caltype] == "SLIT_TILT") & (self.calib_info[self.key_wlen] == item_wlen)
+            indices_bpm = (self.calib_info[self.key_caltype] == "FLAT_BPM") & (self.calib_info[self.key_wlen] == item_wlen)
+            
+            assert (indices_blaze.sum())<2, "More than one calibration file."
+            assert (indices_tw.sum())<2, "More than one calibration file."
+            assert (indices_slit.sum())<2, "More than one calibration file."
+            assert (indices_bpm.sum())<2, "More than one calibration file."
+
+            file = self.calib_info[indices_bpm][self.key_filename].iloc[0]
+            bpm = fits.getdata(os.path.join(self.calpath, file))
+            file = self.calib_info[indices_tw][self.key_filename].iloc[0]
+            tw = fits.getdata(os.path.join(self.calpath, file))
+            file = self.calib_info[indices_slit][self.key_filename].iloc[0]
+            slit = fits.getdata(os.path.join(self.calpath, file))
+            file = self.calib_info[indices_blaze][self.key_filename].iloc[0]
+            blaze = fits.getdata(os.path.join(self.calpath, file))
+
+            dt, dt_err = [], []
+            for file in self.product_info[indices_wlen][self.key_filename]:
+                with fits.open(os.path.join(self.outpath, file)) as hdu:
+                    hdr = hdu[0].header
+                    dt = hdu[0].data
+                    dt_err = hdu[1].data
+                if hdr[self.key_nodpos]=='A':
+                    nod = -1
+                else:
+                    nod = 1                    
+                nodthrow = hdr[self.key_nodthrow]
+                slitlen = hdr[self.key_slitlen]
+                f0 = 0.5+nod*nodthrow/2./slitlen
+                if companion_sep is None:
+                    print("Location of target on slit: ", f0)
+                    su.util_extract_spec(dt, dt_err, bpm, tw, slit, blaze, f0=f0, debug=debug)
+                else:
+                    f1 = f0 - companion_sep/slitlen
+                    print("Location of star and companion: {0:.3f}, {1:.3f}".format(f0, f1))
+                    su.util_extract_spec(dt, dt_err, bpm, tw, slit, blaze, f0=f1, aper_half=10, debug=debug)
+                    # su.util_extract_spec(dt, dt_err, bpm, tw, slit, blaze, f0=f0, debug=debug)
 
 
         # savename = outpath / f"spec_{tag[:3]}_nod{which_nod}_{j:02d}.npz"

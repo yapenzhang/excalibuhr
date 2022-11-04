@@ -35,12 +35,14 @@ def util_master_dark(dt, collapse='median', badpix_clip=5):
         master = np.nanmedian(dt, axis=0)
     elif collapse == 'mean':
         master = np.nanmean(dt, axis=0)
+    rons = np.nanstd(dt, axis=0)/np.sqrt(len(dt))
+
     badpix = np.zeros_like(master).astype(bool)
     for i, det in enumerate(master):
         filtered_data = stats.sigma_clip(det, sigma=badpix_clip, axis=0)
         badpix[i] = filtered_data.mask
         master[i][badpix[i]] = np.nan
-    return master, badpix
+    return master, rons, badpix
 
 def util_master_flat(dt, dark, collapse='median', badpix_clip=5):
     if collapse == 'median':
@@ -52,12 +54,33 @@ def util_master_flat(dt, dark, collapse='median', badpix_clip=5):
 
     badpix = np.zeros_like(master).astype(bool)
     for i, det in enumerate(master):
-        filtered_data = stats.sigma_clip(det, sigma=badpix_clip, axis=0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=Warning)
+            filtered_data = stats.sigma_clip(det, sigma=badpix_clip, axis=1)
         badpix[i] = filtered_data.mask
         master[i][badpix[i]] = np.nan
-        plt.imshow(badpix[i])
-        plt.show()
+        # plt.imshow(badpix[i])
+        # plt.show()
     return master, badpix
+
+def combine_detector_images(dt, err, collapse='mean'):
+    if collapse == 'median':
+        master = np.nanmedian(dt, axis=0)
+        master_err = np.sqrt(np.nansum(np.square(err), axis=0))/len(dt)
+    elif collapse == 'mean':
+        master = np.nanmean(dt, axis=0)
+        master_err = np.sqrt(np.nansum(np.square(err), axis=0))/len(dt)
+    elif collapse == 'sum':
+        master = np.nansum(dt, axis=0)
+        master_err = np.sqrt(np.nansum(np.square(err), axis=0))
+    # plt.imshow((master)[0], vmin=0, vmax=60)
+    # plt.show()
+    # plt.imshow((master_err)[0], vmin=0, vmax=30)
+    # plt.show()
+    return master, master_err
+
+def detector_shotnoise(im, ron, GAIN=2., NDIT=1):
+    return np.sqrt(np.abs(im)/GAIN/NDIT + ron**2)
 
 def util_order_trace(im, debug=False):
     poly_trace  = []
@@ -86,28 +109,37 @@ def util_master_flat_norm(im, bpm, tw, slit, badpix_clip_count=1e2, debug=False)
 
 
     
-def util_correct_readout_artifact(im, bpm, tw, debug=False):
-    corrected  = []
-    for d, (det, badpix, trace) in enumerate(zip(im, bpm, tw)):
-        corrected.append(readout_artifact(det, badpix, trace, debug=debug))
-    return np.array(corrected)
+def util_correct_readout_artifact(im, err, bpm, tw, debug=False):
+    im_cor, err_cor  = [],[]
+    for d, (det, det_err, badpix, trace) in enumerate(zip(im, err, bpm, tw)):
+        det_cor, det_err_cor = readout_artifact(det, det_err, badpix, trace, debug=debug)
+        im_cor.append(det_cor)
+        err_cor.append(det_err_cor)
+    return np.array(im_cor), np.array(err_cor)
 
-def util_flat_fielding(im, flat, debug=False):
+def util_flat_fielding(im, im_err, flat, debug=False):
     im_corr = np.copy(im)
-    for d, (det, f) in enumerate(zip(im, flat)):
+    err_corr = np.copy(im_err)
+    for d, (det, err, f) in enumerate(zip(im, im_err, flat)):
         badpix = np.isnan(f).astype(bool)
         im_corr[d][~badpix] = det[~badpix]/f[~badpix]
+        err_corr[d][~badpix] = err[~badpix]/f[~badpix]
     if debug:
         plt.imshow(im_corr[0], vmin=-20, vmax=20)
         plt.show()
-    return im_corr
+        benchmark = fits.getdata('/mnt/media/data/Users/yzhang/Projects/2M0103_CRIRES/2021-10-16/product/obs_nodding/cr2res_obs_nodding_combinedB_000.fits', 2)
+        plt.imshow(err_corr[0], vmin=0, vmax=10)
+        plt.show()
+        plt.imshow(benchmark, vmin=0, vmax=10)
+        plt.show()
+    return im_corr, err_corr
 
-def util_extract_spec(im, bpm, tw, slit, blazes, f0=0.5, debug=False):
+def util_extract_spec(im, im_err, bpm, tw, slit, blazes, f0=0.5, aper_half=15, debug=False):
     extracted  = []
-    for d, (det, badpix, trace, slit_meta, blaze) in enumerate(zip(im, bpm, tw, slit, blazes)):
-        det_rect = spectral_rectify_interp(det, badpix, trace, slit_meta, debug=debug)
-        det_rect = trace_rectify_interp(det_rect, trace, debug=debug)
-        extracted.append(extract_spec(det_rect, trace, blaze, f0=f0, debug=debug))
+    for d, (det, det_err, badpix, trace, slit_meta, blaze) in enumerate(zip(im, im_err,  bpm, tw, slit, blazes)):
+        det_rect, err_rect = spectral_rectify_interp(det, det_err,  badpix, trace, slit_meta, debug=False)
+        det_rect, err_rect = trace_rectify_interp(det_rect, err_rect, trace, debug=False)
+        extracted.append(extract_spec(det_rect, err_rect, badpix, trace, blaze, f0=f0, aper_half=aper_half, debug=debug))
     return np.array(extracted)
 
 
@@ -284,9 +316,10 @@ def slit_curve(det, badpix, trace, poly_order=2, spacing=40, sub_factor=4, debug
     #     spectral_rectify_interp(im, trace, [meta0, meta1, meta2], debug=debug)
     return [meta0, meta1, meta2]
 
-def spectral_rectify_interp(im, badpix, trace, slit_mata, edge=10, debug=False):
+def spectral_rectify_interp(im, im_err, badpix, trace, slit_mata, debug=False):
     bpm = (badpix.astype(bool) | np.isnan(im))
     im_rect_spec = np.copy(im)
+    err_rect_spec = np.copy(im_err)
     # im_rect_spec[badpix.astype(bool)] = np.nan
     # if debug:
     #     plt.figure(figsize=(10,10))
@@ -313,20 +346,22 @@ def spectral_rectify_interp(im, badpix, trace, slit_mata, edge=10, debug=False):
         for x in range(len(xx_grid)):
             isowlen_grid[:, x] = Poly.polyval(yy_grid, poly_full[x])
                                 
-        for i, (x_isowlen, data_row, mask) in enumerate(zip(isowlen_grid, im[yy_grid], bpm[yy_grid])):
+        for i, (x_isowlen, data_row, err_row, mask) in enumerate(zip(isowlen_grid, im[yy_grid], im_err[yy_grid], bpm[yy_grid])):
             # mask = np.isnan(data_row)
             if np.sum(mask)>0.5*len(mask):
                 continue     
             im_rect_spec[int(yy_grid[0]+i)] = interp1d(xx_grid[~mask], data_row[~mask], kind='cubic', bounds_error=False, fill_value=np.nan)(x_isowlen)
+            err_rect_spec[int(yy_grid[0]+i)] = interp1d(xx_grid[~mask], err_row[~mask], kind='cubic', bounds_error=False, fill_value=np.nan)(x_isowlen)
     #         bpm_interp[int(yy_grid[0]+i)] = interp1d(xx_grid, mask.astype(float), kind='cubic', bounds_error=False, fill_value=np.nan)(x_isowlen)
     # badpix_new = np.abs(bpm_interp)>1e-1
     if debug:
         plt.imshow(im_rect_spec, vmin=-20, vmax=20)
         plt.show()
-    return im_rect_spec
+    return im_rect_spec, err_rect_spec
 
-def trace_rectify_interp(im, trace, debug=False):
+def trace_rectify_interp(im, im_err, trace, debug=False):
     im_copy = np.copy(im)
+    err_copy = np.copy(im_err)
     xx_grid = np.arange(0, im.shape[1])
     trace_upper, trace_lower = trace
 
@@ -343,10 +378,11 @@ def trace_rectify_interp(im, trace, debug=False):
             if np.sum(mask)>0.5*len(mask):
                 continue 
             im_copy[yy_grid,x] = interp1d((yy_grid)[~mask], im[yy_grid,x][~mask], kind='cubic', bounds_error=False, fill_value='extrapolate')(yy_grid+shifts[x])
+            err_copy[yy_grid,x] = interp1d((yy_grid)[~mask], im_err[yy_grid,x][~mask], kind='cubic', bounds_error=False, fill_value='extrapolate')(yy_grid+shifts[x])
     if debug:
         plt.imshow(im_copy, vmin=-20, vmax=20)
         plt.show()
-    return im_copy
+    return im_copy, err_copy
 
 def mean_collapse(im, trace, f0=0.5, fw=0.5, sigma=5, edge=10, debug=False):
     im_copy = np.copy(im)
@@ -415,13 +451,15 @@ def blaze_norm(im, trace, slit_mata, blaze_orders, edge=10, f0=0.5, fw=0.5, debu
 
     return im_norm
 
-def readout_artifact(det, badpix, trace, Nborder=10, debug=False):
+def readout_artifact(det, det_err, badpix, trace, Nborder=10, debug=False):
     badpix = (badpix | np.isnan(det))
     im = np.copy(det)
+    im_err = np.copy(det_err)
     im[badpix] = np.nan
+    im_err[badpix] = np.nan
 
     xx = np.arange(im.shape[1])
-    ron_col = np.zeros(im.shape[1])
+    ron_col, err_col = np.zeros(im.shape[1]), np.zeros(im.shape[1])
     trace_upper, trace_lower = trace
     uppers, lowers = [], [] # (order, xx) 
     for o, (upper, lower) in enumerate(zip(trace_upper, trace_lower)):
@@ -437,13 +475,17 @@ def readout_artifact(det, badpix, trace, Nborder=10, debug=False):
     for col in range(len(xx)):
         row = [j for i in range(len(uppers)) for j in range(int(uppers[i,col])+Nborder, int(lowers[i,col])-Nborder+1)]
         ron_col[col] = np.nanmedian(im[row,col])
+        m, _, _ = stats.sigma_clipped_stats(im_err[row,col]**2)
+        err_col[col] = np.sqrt(m/len(row))
     if debug:
         plt.imshow(det-ron_col, vmin=-20, vmax=20)
         plt.show()
-    return det-ron_col
+    return det-ron_col, np.sqrt(det_err**2+err_col**2)
 
-def extract_spec(im, trace, blaze, f0=0.5, aper_half=10, mode='optimal', sigma=5, debug=False):
+def extract_spec(im, im_err, bpm, trace, blaze, f0=0.5, aper_half=20, mode='optimal', sigma=5, debug=False):
     im_copy = np.copy(im)
+    bpm_copy = np.copy(bpm)
+    err_copy = np.copy(im_err)
     xx_grid = np.arange(0, im.shape[1])
     blaze_orders = []
     trace_upper, trace_lower = trace
@@ -455,49 +497,39 @@ def extract_spec(im, trace, blaze, f0=0.5, aper_half=10, mode='optimal', sigma=5
         yy_lower = Poly.polyval(xx_grid, poly_lower)[len(xx_grid)//2] 
         slit_len = (yy_upper-yy_lower)
         im_sub = im_copy[int(yy_lower):int(yy_upper+1)]
+        im_err_sub = err_copy[int(yy_lower):int(yy_upper+1)]
+        bpm_sub = bpm_copy[int(yy_lower):int(yy_upper+1)]
         obj_cen = slit_len*f0
         # print(slit_len, f0, obj_cen)
 
-        f_opt, var = optimal_extraction(im_sub.T, im_sub_err.T, int(np.round(obj_cen)), aper_half, int(2*aper_half))
-        indices = [range(int(low+(f0-fw)*(up-low)), int(low+(f0+fw)*(up-low))+1) for (up, low) in zip(yy_upper, yy_lower)]
-        for i, indice in enumerate(indices):
-            mask = np.isnan(im_copy[indice,i])
-            if np.sum(mask)>0.9*len(mask):
-                blaze[i] = np.nan    
-            else:
-                blaze[i],_, _ = stats.sigma_clipped_stats(im_copy[indice,i][~mask], sigma=sigma)
-        blaze_orders.append(blaze)
+        f_opt, var = optimal_extraction(im_sub.T, im_err_sub.T**2, bpm_sub.T, int(np.round(obj_cen)), aper_half, debug=debug) 
+        # sky int(2*aper_half)
+        # indices = [range(int(low+(f0-fw)*(up-low)), int(low+(f0+fw)*(up-low))+1) for (up, low) in zip(yy_upper, yy_lower)]
+        # for i, indice in enumerate(indices):
+        #     mask = np.isnan(im_copy[indice,i])
+        #     if np.sum(mask)>0.9*len(mask):
+        #         blaze[i] = np.nan    
+        #     else:
+        #         blaze[i],_, _ = stats.sigma_clipped_stats(im_copy[indice,i][~mask], sigma=sigma)
+        # blaze_orders.append(blaze)
         # plt.plot(xx_grid, blaze)
         # plt.show()
 
-    return np.array(blaze_orders)
+    return #np.array(blaze_orders)
 
 
-def optimal_extraction(D, V, obj_cen, aper_half, aper_sky, return_profile=False):
+def optimal_extraction(D, V, bpm, obj_cen, aper_half, return_profile=False, debug=False):
+    # plt.imshow(D, vmin=-30, vmax=30)
+    # plt.show()
     wave_x = np.arange(D.shape[0])
     spatial_x = np.arange(D.shape[1])
-    obj_x = np.argmax(np.nanmedian(np.nan_to_num(D), axis=0))
+    # obj_x = np.argmax(np.nanmedian(np.nan_to_num(D), axis=0))
 
-    if width_sky:
-        # mask obj before fitting the sky
-        mask_obj = np.ones(D.shape[1], dtype=bool)
-        mask_obj[obj_x-width_sky:obj_x+width_sky+1]=False
+    D_sub = D[:,obj_cen-aper_half:obj_cen+aper_half+1]
+    V_sub = V[:,obj_cen-aper_half:obj_cen+aper_half+1]
 
-        S = np.zeros_like(D)
-        for w in wave_x:
-            poly_sky = PolyfitClip(spatial_x[mask_obj], \
-                            D[w,mask_obj], 1, \
-                            # w=1./V[w,mask_obj], \
-                            clip=4, plotting=False)
-            S[w] = Poly.polyval(spatial_x, poly_sky)
-        D_sub = (D-S)[:,obj_x-width_obj:obj_x+width_obj]
-        V_sub = V[:,obj_x-width_obj:obj_x+width_obj]
-        # plt.plot(D[1000])
-        # plt.show()
-    else:
-        D_sub = D[:,obj_x-width_obj:obj_x+width_obj]
-        V_sub = V[:,obj_x-width_obj:obj_x+width_obj]
-
+    plt.imshow(D_sub, vmin=0, vmax=10)
+    plt.show()
     # nan mask
     #badpixel mask in D_sub
     M_nan = np.isnan(D_sub)
