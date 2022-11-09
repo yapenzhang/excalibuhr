@@ -66,10 +66,10 @@ def util_master_flat(dt, dark, collapse='median', badpix_clip=5):
 def combine_detector_images(dt, err, collapse='mean'):
     if collapse == 'median':
         master = np.nanmedian(dt, axis=0)
-        master_err = np.sqrt(np.nansum(np.square(err), axis=0))/len(dt)
+        master_err = np.sqrt(np.nansum(np.square(err), axis=0))/np.sum(~np.isnan(dt), axis=0)
     elif collapse == 'mean':
         master = np.nanmean(dt, axis=0)
-        master_err = np.sqrt(np.nansum(np.square(err), axis=0))/len(dt)
+        master_err = np.sqrt(np.nansum(np.square(err), axis=0))/np.sum(~np.isnan(dt), axis=0)
     elif collapse == 'sum':
         master = np.nansum(dt, axis=0)
         master_err = np.sqrt(np.nansum(np.square(err), axis=0))
@@ -134,12 +134,12 @@ def util_flat_fielding(im, im_err, flat, debug=False):
         plt.show()
     return im_corr, err_corr
 
-def util_extract_spec(im, im_err, bpm, tw, slit, blazes, f0=0.5, aper_half=15, debug=False):
+def util_extract_spec(im, im_err, bpm, tw, slit, blazes, gains, f0=0.5, aper_half=15, debug=False):
     extracted  = []
-    for d, (det, det_err, badpix, trace, slit_meta, blaze) in enumerate(zip(im, im_err,  bpm, tw, slit, blazes)):
+    for d, (det, det_err, badpix, trace, slit_meta, blaze, gain) in enumerate(zip(im, im_err,  bpm, tw, slit, blazes, gains)):
         det_rect, err_rect = spectral_rectify_interp(det, det_err,  badpix, trace, slit_meta, debug=False)
-        det_rect, err_rect = trace_rectify_interp(det_rect, err_rect, trace, debug=False)
-        extracted.append(extract_spec(det_rect, err_rect, badpix, trace, blaze, f0=f0, aper_half=aper_half, debug=debug))
+        # det_rect, err_rect = trace_rectify_interp(det_rect, err_rect, trace, debug=False)
+        extracted.append(extract_spec(det_rect, err_rect, badpix, trace, blaze, gain=gain, f0=f0, aper_half=aper_half, debug=debug))
     return np.array(extracted)
 
 
@@ -482,7 +482,7 @@ def readout_artifact(det, det_err, badpix, trace, Nborder=10, debug=False):
         plt.show()
     return det-ron_col, np.sqrt(det_err**2+err_col**2)
 
-def extract_spec(im, im_err, bpm, trace, blaze, f0=0.5, aper_half=20, mode='optimal', sigma=5, debug=False):
+def extract_spec(im, im_err, bpm, trace, blaze, gain=2., f0=0.5, aper_half=20, mode='optimal', sigma=5, debug=False):
     im_copy = np.copy(im)
     bpm_copy = np.copy(bpm)
     err_copy = np.copy(im_err)
@@ -501,98 +501,80 @@ def extract_spec(im, im_err, bpm, trace, blaze, f0=0.5, aper_half=20, mode='opti
         bpm_sub = bpm_copy[int(yy_lower):int(yy_upper+1)]
         obj_cen = slit_len*f0
         # print(slit_len, f0, obj_cen)
+        
+        f_opt, var = optimal_extraction(im_sub.T, im_err_sub.T**2, bpm_sub.T, int(np.round(obj_cen)), aper_half, blaze=blaze[o], gain=gain, debug=debug) 
 
-        f_opt, var = optimal_extraction(im_sub.T, im_err_sub.T**2, bpm_sub.T, int(np.round(obj_cen)), aper_half, debug=debug) 
-        # sky int(2*aper_half)
-        # indices = [range(int(low+(f0-fw)*(up-low)), int(low+(f0+fw)*(up-low))+1) for (up, low) in zip(yy_upper, yy_lower)]
-        # for i, indice in enumerate(indices):
-        #     mask = np.isnan(im_copy[indice,i])
-        #     if np.sum(mask)>0.9*len(mask):
-        #         blaze[i] = np.nan    
-        #     else:
-        #         blaze[i],_, _ = stats.sigma_clipped_stats(im_copy[indice,i][~mask], sigma=sigma)
-        # blaze_orders.append(blaze)
-        # plt.plot(xx_grid, blaze)
-        # plt.show()
 
     return #np.array(blaze_orders)
 
 
-def optimal_extraction(D, V, bpm, obj_cen, aper_half, return_profile=False, debug=False):
-    # plt.imshow(D, vmin=-30, vmax=30)
-    # plt.show()
+def optimal_extraction(D_full, V_full, bpm_full, obj_cen, aper_half, return_profile=False, badpix_clip=3, max_iter=10, blaze=None, gain=2., etol=1e-6, debug=False):
+
+    D = D_full[:,obj_cen-aper_half:obj_cen+aper_half+1]
+    V = V_full[:,obj_cen-aper_half:obj_cen+aper_half+1]
+    bpm = bpm_full[:,obj_cen-aper_half:obj_cen+aper_half+1]
+    filtered_D = stats.sigma_clip(D, sigma=badpix_clip, axis=0)
+    bpm = filtered_D.mask | bpm 
+    D = np.nan_to_num(D, nan=etol)
+    V = np.nan_to_num(V, nan=1./etol)
+    
+    M_bp_init = ~bpm.astype(bool)
     wave_x = np.arange(D.shape[0])
     spatial_x = np.arange(D.shape[1])
-    # obj_x = np.argmax(np.nanmedian(np.nan_to_num(D), axis=0))
+    f_std = np.nansum(D*M_bp_init.astype(float), axis=1)
+    D_norm = np.zeros_like(D)
+    P = np.zeros_like(D)
 
-    D_sub = D[:,obj_cen-aper_half:obj_cen+aper_half+1]
-    V_sub = V[:,obj_cen-aper_half:obj_cen+aper_half+1]
+    for x in spatial_x:
+        D_norm[:,x] = D[:,x]/(f_std+etol)
 
-    plt.imshow(D_sub, vmin=0, vmax=10)
-    plt.show()
-    # nan mask
-    #badpixel mask in D_sub
-    M_nan = np.isnan(D_sub)
-    count_level = np.median(np.sort(D[:,obj_x][~np.isnan(D[:,obj_x])])[-100:])
-    bp_mask = M_nan|(D_sub>count_level*2.)|(D_sub<-0.1)
-    # plt.imshow(D_sub, vmin=-20, vmax=20)
-    # plt.imshow(bp_mask)
-    # plt.show()
-    D_sub = np.nan_to_num(D_sub, nan=1e-9)
-    V_sub = np.nan_to_num(V_sub, nan=1e-9)
+    for x in spatial_x:
+        p_model, M_bp_new = PolyfitClip(wave_x, \
+                        D_norm[:,x], 2, M_bp_init[:,x], \
+                        clip=badpix_clip, plotting=False)
+        P[:,x] = p_model
+        # M_bp_init[:,x] = M_bp_new
+    P[P<=0] = etol
+    for w in wave_x:
+        P[w] /= np.sum(P[w])
 
-    f_opt, var, P, M_bp = self.simple_optimal_combine(D_sub, V_sub, ~bp_mask)
-    if returnprofile:
+    ite = 0
+    M_bp = np.copy(M_bp_init)
+    V_new = V + D / gain
+    while ite < max_iter:
+        f_opt = np.sum(M_bp*P*D/V_new, axis=1)/(np.sum(M_bp*P*P/V_new, axis=1)+etol)
+        Res = M_bp * (D - P*np.tile(f_opt, (P.shape[1],1)).T)**2/V_new
+        V_new = V + P*np.tile(np.abs(f_opt), (P.shape[1],1)).T /gain
+        if np.all(Res < badpix_clip**2):
+            break
+        for x in wave_x:
+            if np.any(Res[x]>badpix_clip**2):
+                M_bp[x, np.argmax(Res[x]-badpix_clip**2)] = 0.
+        ite += 1 
+
+    f_opt = np.sum(M_bp*P*D/V_new, axis=1)/(np.sum(M_bp*P*P/V_new, axis=1)+etol)
+    var = np.sum(M_bp*P, axis=1)/(np.sum(M_bp*P*P/V_new, axis=1)+etol) * np.sum(Res)/(np.sum(M_bp)-len(f_opt)) # rescale errbar by chi2
+    if not blaze is None:
+        norm = np.sum(M_bp*P*np.tile(blaze, (P.shape[1],1)).T, axis=1)
+        norm /= np.nanmedian(norm)
+    if debug:
+        # print("Number of iterations: ", ite)
+        print("Reduced chi2: ", np.sum(Res)/(np.sum(M_bp)-len(f_opt)))
+        # plt.plot(f_std)
+        plt.plot(f_opt)
+        plt.show()
+        # var = np.sum(M_bp*P, axis=1)/(np.sum(M_bp*P*P/V_new, axis=1)+etol) 
+        # plt.plot(f_opt/np.sqrt(var))
+        plt.plot(f_opt/np.sqrt(var))
+        plt.show()
+        plt.plot(norm)
+        plt.show()
+
+
+    if return_profile:
         return f_opt, var, P, M_bp
     else:
         return f_opt, var
-
-def simple_optimal_combine(self, D, V, M_bp_init, clip_sigma=3,  plotting=False):
-        wave_x = np.arange(D.shape[0])
-        spatial_x = np.arange(D.shape[1])
-        f_std = np.sum(D*M_bp_init, axis=1)
-        D_norm = np.zeros_like(D)
-        P = np.zeros_like(D)
-        for x in spatial_x:
-            D_norm[:,x] = D[:,x]/(f_std+1e-9)
-        for x in spatial_x:
-            poly_P = PolyfitClip(wave_x, \
-                            D_norm[:,x], 3, \
-                            clip=4, plotting=False)
-            P[:,x] = Poly.polyval(wave_x, poly_P)
-        P[P<=0] = 1e-9
-        for w in wave_x:
-            P[w] /= np.sum(P[w])
-        D_norm = D/P
-        D_med = np.median(D_norm*M_bp_init, axis=1)
-        V_norm = V/P**2
-
-        res_norm = np.abs(D_norm - np.tile(D_med, (D_norm.shape[1],1)).T)
-        res = res_norm/np.sqrt(V_norm)
-        M_bp = res < clip_sigma
-
-        M_bp = M_bp*M_bp_init
-
-        V_norm += res_norm**2
-        f_opt = np.sum(M_bp*P*D, axis=1)/(np.sum(M_bp*P*P, axis=1)+1e-9)
-        var = np.sum(M_bp*P, axis=1)/(np.sum(M_bp/V_norm, axis=1)+1e-9)
-
-        # interpolate over bad wavelength channels
-        bad_channel = np.sum(~M_bp, axis=1)>(M_bp.shape[1]/2.-1.)
-        interp_flux = interp1d(np.arange(len(f_opt))[~bad_channel], f_opt[~bad_channel], bounds_error=False, fill_value='extrapolate')
-        # interp_var = interp1d(np.arange(len(var))[~bad_channel], var[~bad_channel], bounds_error=False, fill_value='extrapolate')
-        f_opt = interp_flux(np.arange(len(f_opt)))
-        var[bad_channel] = 1e6
-
-        if plotting:
-            plt.plot(f_std)
-            plt.plot(f_opt)
-            # plt.plot(bad_channel)
-            plt.show()
-            plt.plot(f_opt/np.sqrt(var))
-            plt.show()
-        return f_opt, var, P, M_bp
-
 
 
 
@@ -618,8 +600,8 @@ def write4waveinclude(w0, w1, outfile):
     t = fits.BinTableHDU.from_columns(cols)
     t.writeto(outfile, overwrite=True, output_verify='ignore')
 
-def PolyfitClip(xx, yy, dg, ww=[1.], clip=4., max_iter=10, \
-                plotting=False, reject=False):
+def PolyfitClip(x, y, dg, m, w=None, clip=4., max_iter=10, \
+                plotting=False):
     """
     Perform weighted least-square polynomial fit,
     iterratively cliping pixels above a certain sigma threshold
@@ -637,37 +619,34 @@ def PolyfitClip(xx, yy, dg, ww=[1.], clip=4., max_iter=10, \
     ----------
     Polynomial fit params
     """
-    if plotting:
-        import matplotlib.pyplot as plt
-    mask = (np.isnan(xx)) | (np.isnan(yy)) | (np.isinf(xx)) | (np.isinf(yy))
-    xx = xx[~mask]
-    yy = yy[~mask]
-    if len(ww)<2:
+    if np.sum(m) < 0.1*len(m):
+        return np.zeros(dg), m
+    xx = np.copy(x)
+    yy = np.copy(y)
+    mask = np.copy(m)
+    if w is None:
         ww = np.ones_like(xx)
-    if np.sum(mask) > 0.9*len(mask):
-        return np.zeros(dg)
+    else:
+        ww = np.copy(w)
+    # mask = (np.isnan(xx)) | (np.isnan(yy)) | (np.isinf(xx)) | (np.isinf(yy))
     ite=0
     while ite < max_iter:
-        poly = np.polynomial.polynomial.polyfit(xx, yy, dg, w=ww)
-        y_model = np.polynomial.polynomial.polyval(xx, poly)
+        poly = Poly.polyfit(xx[mask], yy[mask], dg, w=ww[mask])
+        y_model = Poly.polyval(xx, poly)
         res = yy - y_model
-        threshold = np.std(res)*clip
+        threshold = np.std(res[mask])*clip
         if plotting and ite>0:
-            plt.plot(yy)
-            plt.plot(y_model)
-            plt.show()
+            # plt.plot(yy)
+            # plt.plot(y_model)
+            # plt.show()
             plt.plot(res)
             plt.axhline(threshold)
             plt.axhline(-threshold)
+            plt.ylim((-1.2*threshold,1.2*threshold))
             plt.show()
-        if np.sum(np.abs(res) >= threshold) > 0.1:
-            xx, yy, ww = xx[np.abs(res) < threshold], \
-				yy[np.abs(res) < threshold], \
-				ww[np.abs(res) < threshold]
+        if np.any(np.abs(res[mask]) > threshold):
+            mask = mask & (np.abs(res) < threshold)
         else:
             break
         ite+=1
-    if reject: #return the xx without outliers
-        return poly, xx
-    else:
-        return poly
+    return y_model, mask

@@ -2,8 +2,6 @@
 __all__ = []
 
 
-from ctypes import util
-from fileinput import filename
 import os
 import sys
 import json
@@ -35,6 +33,8 @@ class Pipeline:
         self.calib_file = os.path.join(self.calpath, "calib_info.txt") 
         self.header_file = os.path.join(self.calpath, "header_info.txt")
         self.product_file = os.path.join(self.outpath, "product_info.txt")
+        self.gain=[2.15, 2.19, 2.0]
+
         # self.detlin_path = '/run/media/yzhang/disk/cr2res_cal_detlin_coeffs.fits'
 
         if not os.path.exists(os.path.join(self.workpath, self.night)):
@@ -401,7 +401,7 @@ class Pipeline:
             self.add_to_calib('BLAZE_w{}.fits'.format(item_wlen), "BLAZE")
 
 
-    def obs_nodding(self, combine=False, debug=True):
+    def obs_nodding(self, debug=True):
         self.noddingpath = os.path.join(self.outpath, "obs_nodding")
         if not os.path.exists(self.noddingpath):
             os.makedirs(self.noddingpath)
@@ -492,6 +492,7 @@ class Pipeline:
                                 gain = hdu[d].header[self.key_gain]
                                 frame.append(hdu[d].data)
                                 frame_err.append(su.detector_shotnoise(hdu[d].data, ron[j], GAIN=gain, NDIT=ndit))
+                                
                         dt_list.append(frame)
                         err_list.append(frame_err)
                     dt_bkg, err_bkg = su.combine_detector_images(dt_list, err_list, collapse='mean')
@@ -509,7 +510,9 @@ class Pipeline:
                             for j,d in enumerate(range(1, len(hdu))):
                                 gain = hdu[d].header[self.key_gain]
                                 frame.append(hdu[d].data)
-                                frame_err.append(su.detector_shotnoise(hdu[d].data, ron[j], GAIN=gain, NDIT=ndit))
+                                frame_err.append(np.zeros_like(hdu[d].data))
+                                # frame_err.append(su.detector_shotnoise(hdu[d].data, ron[j], GAIN=gain, NDIT=ndit))
+                                # hdr[self.key_gain+str(j)] = gain
                         frame_bkg_cor, err_bkg_cor = su.combine_detector_images([frame, -dt_bkg], [frame_err, err_bkg], collapse='sum')
                         frame_bkg_cor, err_bkg_cor = su.util_correct_readout_artifact(frame_bkg_cor, err_bkg_cor, bpm, tw, debug=False)
                         frame_bkg_cor, err_bkg_cor = su.util_flat_fielding(frame_bkg_cor, err_bkg_cor, flat, debug=False)
@@ -527,22 +530,46 @@ class Pipeline:
                             nod = 1
                         # if not combine:
                         #   extract
-                
-                if combine:
-                    for pos in ['A', 'B']:
-                        dt, dt_err = [], []
-                        indices = (self.product_info[self.key_caltype] == 'NODDING_FRAME') & (self.product_info[self.key_nodpos] == pos)
-                        for file in self.product_info[indices][self.key_filename]:
-                            with fits.open(os.path.join(self.outpath, file)) as hdu:
-                                hdr = hdu[0].header
-                                dt.append(hdu[0].data)
-                                dt_err.append(hdu[1].data)
-                        combined, combined_err = su.combine_detector_images(dt, dt_err, collapse='mean')
-                        file_name = os.path.join(self.noddingpath, 'Nodding_combined_{}_{}.fits'.format(pos, item_wlen))
-                        su.wfits(file_name, combined, hdr, im_err=combined_err)
-                        self.add_to_product("./obs_nodding/"+'Nodding_combined_{}_{}.fits'.format(pos, item_wlen), "NODDING_COMBINED")
+    
+    def obs_nodding_combine(self, debug=True):
+        self.noddingpath = os.path.join(self.outpath, "obs_nodding")
+        if not os.path.exists(self.noddingpath):
+            os.makedirs(self.noddingpath)
+        
+        indices = (self.product_info[self.key_caltype] == 'NODDING_FRAME')
 
-    def extract1d_from_combined(self, companion_sep=None, debug=True):        
+        # Check unique WLEN setting
+        unique_wlen = set()
+        for item in self.product_info[indices][self.key_wlen]:
+            unique_wlen.add(item)
+        if len(unique_wlen) == 0:
+            print("Unique WLEN settings: none")
+        else:
+            print(f"Unique WLEN settings: {unique_wlen}\n")
+
+        for item_wlen in unique_wlen:            
+            indices_wlen = indices & (self.product_info[self.key_wlen] == item_wlen)
+            for pos in ['A', 'B']:
+                dt, dt_err = [], []
+                indices = indices_wlen & (self.product_info[self.key_nodpos] == pos)
+                for j, file in enumerate(self.product_info[indices][self.key_filename]):
+                    with fits.open(os.path.join(self.outpath, file)) as hdu:
+                        hdr = hdu[0].header
+                        dt.append(hdu[0].data)
+                        dt_err.append(hdu[1].data)
+
+                        # plt.imshow(hdu[1].data[0], vmin=0, vmax=8)
+                        # plt.show()
+                print("Combining {0:d} frames at slit position {1:s}...".format(j+1, pos))
+                combined, combined_err = su.combine_detector_images(dt, dt_err, collapse='mean')
+                # plt.imshow(combined_err[0]<1)
+                # plt.imshow(combined_err[0], vmin=0, vmax=8)
+                # plt.show()
+                file_name = os.path.join(self.noddingpath, 'Nodding_combined_{}_{}.fits'.format(pos, item_wlen))
+                su.wfits(file_name, combined, hdr, im_err=combined_err)
+                self.add_to_product("./obs_nodding/"+'Nodding_combined_{}_{}.fits'.format(pos, item_wlen), "NODDING_COMBINED")
+
+    def extract1d_nodding(self, companion_sep=None, debug=True):        
         indices = (self.product_info[self.key_caltype] == 'NODDING_COMBINED')
 
         # Check unique WLEN setting
@@ -587,13 +614,16 @@ class Pipeline:
                 nodthrow = hdr[self.key_nodthrow]
                 slitlen = hdr[self.key_slitlen]
                 f0 = 0.5+nod*nodthrow/2./slitlen
+                
+                # hdu_ref = fits.open('/mnt/media/data/Users/yzhang/Projects/2M0103_CRIRES/2021-10-16/product/obs_nodding/cr2res_obs_nodding_combinedA_000.fits')
+                # dt_err = [hdu_ref[2].data/2., hdu_ref[4].data/2., hdu_ref[6].data/2.]
                 if companion_sep is None:
                     print("Location of target on slit: ", f0)
-                    su.util_extract_spec(dt, dt_err, bpm, tw, slit, blaze, f0=f0, debug=debug)
+                    su.util_extract_spec(dt, dt_err, bpm, tw, slit, blaze, gains=self.gain, f0=f0, debug=debug)
                 else:
                     f1 = f0 - companion_sep/slitlen
                     print("Location of star and companion: {0:.3f}, {1:.3f}".format(f0, f1))
-                    su.util_extract_spec(dt, dt_err, bpm, tw, slit, blaze, f0=f1, aper_half=10, debug=debug)
+                    su.util_extract_spec(dt, dt_err, bpm, tw, slit, blaze, gains=self.gain, f0=f1, aper_half=10, debug=debug)
                     # su.util_extract_spec(dt, dt_err, bpm, tw, slit, blaze, f0=f0, debug=debug)
 
 
