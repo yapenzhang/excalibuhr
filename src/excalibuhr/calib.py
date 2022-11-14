@@ -34,6 +34,7 @@ class Pipeline:
         self.header_file = os.path.join(self.calpath, "header_info.txt")
         self.product_file = os.path.join(self.outpath, "product_info.txt")
         self.gain=[2.15, 2.19, 2.0]
+        
 
         # self.detlin_path = '/run/media/yzhang/disk/cr2res_cal_detlin_coeffs.fits'
 
@@ -304,7 +305,10 @@ class Pipeline:
             self.add_to_calib('TW_FLAT_w{}.fits'.format(item_wlen), "TRACE_TW")
             
 
-    def cal_slit_curve(self, debug=False):
+    def cal_slit_curve(self, key_wave_min, key_wave_max, key_wave_cen, debug=False):
+        self.key_wave_min = key_wave_min # #1-10
+        self.key_wave_max = key_wave_max  #1-10
+        self.key_wave_cen = key_wave_cen  #1-10
 
         indices_fpet = self.header_info[self.key_dtype] == "WAVE,FPET"
 
@@ -336,15 +340,29 @@ class Pipeline:
             for file in self.calib_info[indices_bpm][self.key_filename]:
                 bpm = fits.getdata(os.path.join(self.calpath, file))
 
+            wlen_mins, wlen_maxs = [], []
             with fits.open(os.path.join(self.rawpath, file_fpet)) as hdu:
                 hdr = hdu[0].header
                 fpet = np.array([hdu[i].data for i in range(1, len(hdu))]) - dark
+                for i in range(1, len(hdu)):
+                    wlen_min, wlen_max = [], []
+                    header = hdu[i].header
+                    for j in range(1,11):
+                        if float(header[self.key_wave_cen+str(j)]) > 0:
+                            wlen_min.append(header[self.key_wave_min+str(j)])
+                            wlen_max.append(header[self.key_wave_max+str(j)])
+                    wlen_mins.append(wlen_min)
+                    wlen_maxs.append(wlen_max)
 
-            slit = su.util_slit_curve(fpet, bpm, tw, debug=debug)
+            slit, wlens = su.util_slit_curve(fpet, bpm, tw, wlen_mins, wlen_maxs, debug=debug)
 
             file_name = os.path.join(self.calpath, 'SLIT_TILT_w{}.fits'.format(item_wlen))
             su.wfits(file_name, slit, hdr)
             self.add_to_calib('SLIT_TILT_w{}.fits'.format(item_wlen), "SLIT_TILT")
+
+            file_name = os.path.join(self.calpath, 'INIT_WLEN_{}.fits'.format(item_wlen))
+            su.wfits(file_name, wlens, hdr)
+            self.add_to_calib('INIT_WLEN_{}.fits'.format(item_wlen), "INIT_WLEN")
 
 
     
@@ -516,12 +534,12 @@ class Pipeline:
                         frame_bkg_cor, err_bkg_cor = su.combine_detector_images([frame, -dt_bkg], [frame_err, err_bkg], collapse='sum')
                         frame_bkg_cor, err_bkg_cor = su.util_correct_readout_artifact(frame_bkg_cor, err_bkg_cor, bpm, tw, debug=False)
                         frame_bkg_cor, err_bkg_cor = su.util_flat_fielding(frame_bkg_cor, err_bkg_cor, flat, debug=False)
+                        # plt.imshow((err_bkg_cor)[2], vmin=0, vmax=20)
+                        # plt.show()
 
                         file_name = os.path.join(self.noddingpath, 'Nodding_{}'.format(file))
                         su.wfits(file_name, frame_bkg_cor, hdr, im_err=err_bkg_cor)
                         self.add_to_product("./obs_nodding/"+'Nodding_{}'.format(file), "NODDING_FRAME")
-                        # plt.imshow((frame_bkg_cor)[2], vmin=-20, vmax=20)
-                        # plt.show()
                         # plt.imshow((frame_bkg_cor/flat)[2], vmin=-20, vmax=20)
                         # plt.show()
                         if hdr[self.key_nodpos]=='A':
@@ -569,7 +587,11 @@ class Pipeline:
                 su.wfits(file_name, combined, hdr, im_err=combined_err)
                 self.add_to_product("./obs_nodding/"+'Nodding_combined_{}_{}.fits'.format(pos, item_wlen), "NODDING_COMBINED")
 
-    def extract1d_nodding(self, companion_sep=None, debug=True):        
+    def extract1d_nodding(self, companion_sep=None, debug=False):    
+        self.noddingpath = os.path.join(self.outpath, "obs_nodding")
+        if not os.path.exists(self.noddingpath):
+            os.makedirs(self.noddingpath)
+
         indices = (self.product_info[self.key_caltype] == 'NODDING_COMBINED')
 
         # Check unique WLEN setting
@@ -586,6 +608,7 @@ class Pipeline:
             indices_tw = (self.calib_info[self.key_caltype] == "TRACE_TW") & (self.calib_info[self.key_wlen] == item_wlen)
             indices_slit = (self.calib_info[self.key_caltype] == "SLIT_TILT") & (self.calib_info[self.key_wlen] == item_wlen)
             indices_bpm = (self.calib_info[self.key_caltype] == "FLAT_BPM") & (self.calib_info[self.key_wlen] == item_wlen)
+            indices_wave = (self.calib_info[self.key_caltype] == "INIT_WLEN") & (self.calib_info[self.key_wlen] == item_wlen)
             
             assert (indices_blaze.sum())<2, "More than one calibration file."
             assert (indices_tw.sum())<2, "More than one calibration file."
@@ -600,14 +623,26 @@ class Pipeline:
             slit = fits.getdata(os.path.join(self.calpath, file))
             file = self.calib_info[indices_blaze][self.key_filename].iloc[0]
             blaze = fits.getdata(os.path.join(self.calpath, file))
+            file = self.calib_info[indices_wave][self.key_filename].iloc[0]
+            wlens = fits.getdata(os.path.join(self.calpath, file))
+            
 
-            dt, dt_err = [], []
+            # pip_blaze = '/mnt/media/data/Users/yzhang/Projects/2M0103_CRIRES/2021-10-16/calib/util_extract_flat/cr2res_util_calib_calibrated_collapsed_extr1D.fits'
+            # dt = fits.getdata(pip_blaze)
+            # w, y = dt['02_01_WL'], dt['02_01_SPEC']
+            # print(dt.columns)
+            # plt.plot(y/np.max(y))
+            # plt.plot(blaze[0][0]/np.max(blaze[0][0]))
+            # plt.show()
+            # sys.exit()
+            
             for file in self.product_info[indices_wlen][self.key_filename]:
                 with fits.open(os.path.join(self.outpath, file)) as hdu:
                     hdr = hdu[0].header
                     dt = hdu[0].data
                     dt_err = hdu[1].data
-                if hdr[self.key_nodpos]=='A':
+                pos = hdr[self.key_nodpos]
+                if pos =='A':
                     nod = -1
                 else:
                     nod = 1                    
@@ -619,12 +654,24 @@ class Pipeline:
                 # dt_err = [hdu_ref[2].data/2., hdu_ref[4].data/2., hdu_ref[6].data/2.]
                 if companion_sep is None:
                     print("Location of target on slit: ", f0)
-                    su.util_extract_spec(dt, dt_err, bpm, tw, slit, blaze, gains=self.gain, f0=f0, debug=debug)
+                    flux_pri, err_pri = su.util_extract_spec(dt, dt_err, bpm, tw, slit, blaze, gains=self.gain, f0=f0, debug=debug)
+
+                    file_name = os.path.join(self.noddingpath, 'Extr1D_Nodding_combined_{}_{}_{}.fits'.format(pos, item_wlen, 'PRIMARY'))
+                    su.wfits(file_name, flux_pri, hdr, im_err=err_pri)
+                    self.add_to_product("./obs_nodding/"+'Extr1D_Nodding_combined_{}_{}_{}.fits'.format(pos, item_wlen, 'PRIMARY'), "Extr1D_PRIMARY")
                 else:
                     f1 = f0 - companion_sep/slitlen
                     print("Location of star and companion: {0:.3f}, {1:.3f}".format(f0, f1))
-                    su.util_extract_spec(dt, dt_err, bpm, tw, slit, blaze, gains=self.gain, f0=f1, aper_half=10, debug=debug)
-                    # su.util_extract_spec(dt, dt_err, bpm, tw, slit, blaze, f0=f0, debug=debug)
+                    flux_sec, err_sec = su.util_extract_spec(dt, dt_err, bpm, tw, slit, blaze, gains=self.gain, f0=f1, aper_half=10, debug=debug)
+                    flux_pri, err_pri = su.util_extract_spec(dt, dt_err, bpm, tw, slit, blaze, gains=self.gain, aper_half=10, f0=f0, debug=debug)
+
+                    file_name = os.path.join(self.noddingpath, 'Extr1D_Nodding_combined_{}_{}_{}.fits'.format(pos, item_wlen, 'PRIMARY'))
+                    su.wfits(file_name, flux_pri, hdr, im_err=err_pri)
+                    self.add_to_product("./obs_nodding/"+'Extr1D_Nodding_combined_{}_{}_{}.fits'.format(pos, item_wlen, 'PRIMARY'), "Extr1D_PRIMARY")
+
+                    file_name = os.path.join(self.noddingpath, 'Extr1D_Nodding_combined_{}_{}_{}.fits'.format(pos, item_wlen, 'SECONDARY'))
+                    su.wfits(file_name, flux_sec, hdr, im_err=err_sec)
+                    self.add_to_product("./obs_nodding/"+'Extr1D_Nodding_combined_{}_{}_{}.fits'.format(pos, item_wlen, 'SECONDARY'), "Extr1D_SECONDARY")
 
 
         # savename = outpath / f"spec_{tag[:3]}_nod{which_nod}_{j:02d}.npz"
@@ -633,5 +680,36 @@ class Pipeline:
         # stdout = subprocess.DEVNULL #None
         # subprocess.run(esorex, cwd=outpath, stdout=stdout, check=True)
 
+    def refine_wlen_solution(self, debug=False):    
+        self.noddingpath = os.path.join(self.outpath, "obs_nodding")
+        if not os.path.exists(self.noddingpath):
+            os.makedirs(self.noddingpath)
 
+        indices = (self.product_info[self.key_caltype] == 'Extr1D_PRIMARY')
+
+        # Check unique WLEN setting
+        unique_wlen = set()
+        for item in self.product_info[indices][self.key_wlen]:
+            unique_wlen.add(item)
+        print(f"Unique WLEN settings: {unique_wlen}\n")
+
+        for item_wlen in unique_wlen:
+            
+            indices_wlen = indices & (self.product_info[self.key_wlen] == item_wlen)
+
+            indices_wave = (self.calib_info[self.key_caltype] == "INIT_WLEN") & (self.calib_info[self.key_wlen] == item_wlen)
+            file = self.calib_info[indices_wave][self.key_filename].iloc[0]
+            wlen_init = fits.getdata(os.path.join(self.calpath, file))
+
+            indices_blaze = (self.calib_info[self.key_caltype] == "BLAZE") & (self.calib_info[self.key_wlen] == item_wlen)
+            file = self.calib_info[indices_blaze][self.key_filename].iloc[0]
+            blaze = fits.getdata(os.path.join(self.calpath, file))
+
+            for file in self.product_info[indices_wlen][self.key_filename]:
+                with fits.open(os.path.join(self.outpath, file)) as hdu:
+                    hdr = hdu[0].header
+                    dt = hdu[0].data
+                    dt_err = hdu[1].data
+                su.util_wlen_solution(dt, dt_err, wlen_init, blaze)
+            
 

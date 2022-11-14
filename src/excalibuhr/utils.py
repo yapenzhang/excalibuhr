@@ -90,11 +90,13 @@ def util_order_trace(im, debug=False):
     return poly_trace
 
 
-def util_slit_curve(im, bpm, tw, debug=False):
-    slit_meta = [] # (detector, poly_meta2, order) 
-    for d, (det, badpix, trace) in enumerate(zip(im, bpm, tw)):
-        slit_meta.append(slit_curve(det, badpix, trace, debug=debug))
-    return slit_meta
+def util_slit_curve(im, bpm, tw, wlen_mins, wlen_maxs, debug=False):
+    slit_meta, wlens = [], [] # (detector, poly_meta2, order) 
+    for d, (det, badpix, trace, wlen_min, wlen_max) in enumerate(zip(im, bpm, tw, wlen_mins, wlen_maxs)):
+        slit, wlen = slit_curve(det, badpix, trace, wlen_min, wlen_max, debug=debug)
+        slit_meta.append(slit)
+        wlens.append(wlen)
+    return slit_meta, wlens
 
 def util_master_flat_norm(im, bpm, tw, slit, badpix_clip_count=1e2, debug=False):
     blazes, flat_norm  = [], []
@@ -135,13 +137,24 @@ def util_flat_fielding(im, im_err, flat, debug=False):
     return im_corr, err_corr
 
 def util_extract_spec(im, im_err, bpm, tw, slit, blazes, gains, f0=0.5, aper_half=15, debug=False):
-    extracted  = []
+    flux, err  = [], []
     for d, (det, det_err, badpix, trace, slit_meta, blaze, gain) in enumerate(zip(im, im_err,  bpm, tw, slit, blazes, gains)):
         det_rect, err_rect = spectral_rectify_interp(det, det_err,  badpix, trace, slit_meta, debug=False)
         # det_rect, err_rect = trace_rectify_interp(det_rect, err_rect, trace, debug=False)
-        extracted.append(extract_spec(det_rect, err_rect, badpix, trace, blaze, gain=gain, f0=f0, aper_half=aper_half, debug=debug))
-    return np.array(extracted)
+        f_opt, f_err = extract_spec(det_rect, err_rect, badpix, trace, gain=gain, f0=f0, aper_half=aper_half, debug=debug)
+        flux.append(f_opt)
+        err.append(f_err)
 
+    return np.array(flux), np.array(err)
+
+def util_wlen_solution(dt, dt_err, wlen_init, blazes, debug=False):
+    flux, err  = [], []
+    # w_tellu, f_tellu = run_sky_calc()
+    for d, (flux, flux_err, w_init, blaze) in enumerate(zip(dt, dt_err, wlen_init, blazes)):
+        w_cal = wlen_solution(flux, flux_err, w_init, blaze, debug=False)
+        # flux.append(f_opt)
+        # err.append(f_err)
+    return np.array(flux), np.array(err)
 
 def order_trace(det, poly_order=2, sigma_threshold=3, sub_factor=64, order_length_min=125, debug=False):
     # im = np.copy(det)
@@ -236,7 +249,7 @@ def order_trace(det, poly_order=2, sigma_threshold=3, sub_factor=64, order_lengt
 
 
 
-def slit_curve(det, badpix, trace, poly_order=2, spacing=40, sub_factor=4, debug=False):
+def slit_curve(det, badpix, trace, wlen_min, wlen_max, poly_order=2, spacing=40, sub_factor=4, debug=False):
     badpix = (badpix | np.isnan(det))
     im = np.where(badpix, signal.medfilt2d(det, 5), det)
     im = np.where(np.isnan(im), signal.medfilt2d(im, 5), im)
@@ -244,10 +257,10 @@ def slit_curve(det, badpix, trace, poly_order=2, spacing=40, sub_factor=4, debug
 
     xx = np.arange(im.shape[1])
     trace_upper, trace_lower = trace
-    meta0, meta1, meta2 = [], [], [] # (order, poly_meta) 
+    meta0, meta1, meta2, wlen = [], [], [], [] # (order, poly_meta) 
     # if debug:
     #     plt.imshow(im, vmin=200, vmax=1e4)
-    for o, (upper, lower) in enumerate(zip(trace_upper, trace_lower)):
+    for o, (upper, lower, w_min, w_max) in enumerate(zip(trace_upper, trace_lower, wlen_min, wlen_max)):
         middle = (upper+lower)/2.
         yy_upper = Poly.polyval(xx, upper)
         yy_lower = Poly.polyval(xx, lower)
@@ -260,6 +273,7 @@ def slit_curve(det, badpix, trace, poly_order=2, spacing=40, sub_factor=4, debug
             peaks, properties = signal.find_peaks(im[row], distance=spacing, width=5) # doesn't work with nans
             width = np.median(properties['widths'])
             peaks = peaks[(peaks<(im.shape[1]-width)) & (peaks>(width))]
+            # calculate center of mass of the peaks
             cens = [np.sum(xx[int(p-width):int(p+width)]*im[row][int(p-width):int(p+width)])/np.sum(im[row][int(p-width):int(p+width)]) for p in peaks]
             slit_image.extend([[p, row] for p in cens])
             # print(np.diff(cens))
@@ -299,7 +313,19 @@ def slit_curve(det, badpix, trace, poly_order=2, spacing=40, sub_factor=4, debug
         meta0.append(poly_meta0)
         meta1.append(poly_meta1)
         meta2.append(poly_meta2)
+        
 
+        ww = np.linspace(w_min, w_max, len(xx))
+        # wavelength grid
+        grid_poly = Poly.polyfit([0, len(xx)], [w_min, w_max], 1)
+        # mapping from measured positions to linear spacing 
+        w_lin = np.linspace(x_slit[0], x_slit[-1], len(x_slit))
+        cal_poly = Poly.polyfit(w_lin, x_slit-w_lin, 2)
+        xx_offset = Poly.polyval(xx, cal_poly) # relative shift in pixel
+        ww_cal = Poly.polyval(xx+xx_offset, grid_poly) # to wavelength
+        wlen.append(ww_cal)
+
+        
         if debug:
             xx_grid = pivot
             # xx_grid = np.arange(0, im.shape[1], 100)
@@ -310,11 +336,16 @@ def slit_curve(det, badpix, trace, poly_order=2, spacing=40, sub_factor=4, debug
     if debug:
         plt.imshow(im, vmin=200, vmax=2e4)
         plt.show()
+        # plt.plot(w_lin, x_slit-w_lin)
+        # plt.plot(w_lin, Poly.polyval(w_lin, cal_poly))
+        # plt.show()
+        # plt.plot(xx, ww_cal-ww)
+        # plt.show()
 
     # check rectified image
     # if debug:
     #     spectral_rectify_interp(im, trace, [meta0, meta1, meta2], debug=debug)
-    return [meta0, meta1, meta2]
+    return [meta0, meta1, meta2], wlen
 
 def spectral_rectify_interp(im, im_err, badpix, trace, slit_mata, debug=False):
     bpm = (badpix.astype(bool) | np.isnan(im))
@@ -482,12 +513,12 @@ def readout_artifact(det, det_err, badpix, trace, Nborder=10, debug=False):
         plt.show()
     return det-ron_col, np.sqrt(det_err**2+err_col**2)
 
-def extract_spec(im, im_err, bpm, trace, blaze, gain=2., f0=0.5, aper_half=20, mode='optimal', sigma=5, debug=False):
+def extract_spec(im, im_err, bpm, trace, gain=2., f0=0.5, aper_half=20, mode='optimal', sigma=5, debug=False):
     im_copy = np.copy(im)
     bpm_copy = np.copy(bpm)
     err_copy = np.copy(im_err)
     xx_grid = np.arange(0, im.shape[1])
-    blaze_orders = []
+    flux, err = [],[]
     trace_upper, trace_lower = trace
 
     for o, (poly_upper, poly_lower) in enumerate(zip(trace_upper, trace_lower)):
@@ -502,14 +533,15 @@ def extract_spec(im, im_err, bpm, trace, blaze, gain=2., f0=0.5, aper_half=20, m
         obj_cen = slit_len*f0
         # print(slit_len, f0, obj_cen)
         
-        f_opt, var = optimal_extraction(im_sub.T, im_err_sub.T**2, bpm_sub.T, int(np.round(obj_cen)), aper_half, blaze=blaze[o], gain=gain, debug=debug) 
+        f_opt, f_err = optimal_extraction(im_sub.T, im_err_sub.T**2, bpm_sub.T, int(np.round(obj_cen)), aper_half, gain=gain, debug=debug) 
+        flux.append(f_opt)
+        err.append(f_err)
+
+    return np.array(flux), np.array(err)
 
 
-    return #np.array(blaze_orders)
-
-
-def optimal_extraction(D_full, V_full, bpm_full, obj_cen, aper_half, return_profile=False, badpix_clip=3, max_iter=10, blaze=None, gain=2., etol=1e-6, debug=False):
-
+def optimal_extraction(D_full, V_full, bpm_full, obj_cen, aper_half, return_profile=False, badpix_clip=3, max_iter=10, gain=2., NDIT=1., etol=1e-6, debug=False):
+    # TODO: NDIT from header.
     D = D_full[:,obj_cen-aper_half:obj_cen+aper_half+1]
     V = V_full[:,obj_cen-aper_half:obj_cen+aper_half+1]
     bpm = bpm_full[:,obj_cen-aper_half:obj_cen+aper_half+1]
@@ -540,11 +572,11 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen, aper_half, return_prof
 
     ite = 0
     M_bp = np.copy(M_bp_init)
-    V_new = V + D / gain
+    V_new = V + D / gain / NDIT
     while ite < max_iter:
         f_opt = np.sum(M_bp*P*D/V_new, axis=1)/(np.sum(M_bp*P*P/V_new, axis=1)+etol)
         Res = M_bp * (D - P*np.tile(f_opt, (P.shape[1],1)).T)**2/V_new
-        V_new = V + P*np.tile(np.abs(f_opt), (P.shape[1],1)).T /gain
+        V_new = V + P*np.tile(np.abs(f_opt), (P.shape[1],1)).T /gain / NDIT
         if np.all(Res < badpix_clip**2):
             break
         for x in wave_x:
@@ -554,9 +586,7 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen, aper_half, return_prof
 
     f_opt = np.sum(M_bp*P*D/V_new, axis=1)/(np.sum(M_bp*P*P/V_new, axis=1)+etol)
     var = np.sum(M_bp*P, axis=1)/(np.sum(M_bp*P*P/V_new, axis=1)+etol) * np.sum(Res)/(np.sum(M_bp)-len(f_opt)) # rescale errbar by chi2
-    if not blaze is None:
-        norm = np.sum(M_bp*P*np.tile(blaze, (P.shape[1],1)).T, axis=1)
-        norm /= np.nanmedian(norm)
+    
     if debug:
         # print("Number of iterations: ", ite)
         print("Reduced chi2: ", np.sum(Res)/(np.sum(M_bp)-len(f_opt)))
@@ -567,17 +597,12 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen, aper_half, return_prof
         # plt.plot(f_opt/np.sqrt(var))
         plt.plot(f_opt/np.sqrt(var))
         plt.show()
-        plt.plot(norm)
-        plt.show()
 
 
     if return_profile:
-        return f_opt, var, P, M_bp
+        return f_opt, np.sqrt(var), P, M_bp
     else:
-        return f_opt, var
-
-
-
+        return f_opt, np.sqrt(var)
 
 
 #-------------------------------------------------------------------------
