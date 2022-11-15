@@ -258,6 +258,7 @@ class Pipeline:
                        (self.calib_info[self.key_DIT] == dit)
         indices_bpm = (self.calib_info[self.key_caltype] == "DARK_BPM") & \
                       (self.calib_info[self.key_DIT] == dit)
+        print('indices_dark.sum()', indices_dark.sum())
         assert (indices_dark.sum())<2
         # What's the use in a for-loop here?
         for file in self.calib_info[indices_dark][self.key_filename]:
@@ -321,13 +322,16 @@ class Pipeline:
         for item_wlen in unique_wlen:
             indices_flat = indices & ((self.calib_info[self.key_DIT] == dit) & \
                                       (self.calib_info[self.key_wlen] == item_wlen))
+            print('indices_flat.sum()', indices_flat.sum())
             assert (indices_flat.sum())<2
             for file in self.calib_info[indices_flat][self.key_filename]:
                 flat = fits.getdata(os.path.join(self.calpath, file))
                 hdr = fits.getheader(os.path.join(self.calpath, file))
             
+            # Fit polynomials to the trace edges
             trace = su.util_order_trace(flat, debug=debug)
 
+            # Save the polynomial coefficients
             file_name = os.path.join(self.calpath, 'TW_FLAT_w{}.fits'.format(item_wlen))
             su.wfits(file_name, trace, hdr)
             self.add_to_calib('TW_FLAT_w{}.fits'.format(item_wlen), "TRACE_TW")

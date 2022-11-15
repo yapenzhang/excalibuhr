@@ -93,6 +93,8 @@ def detector_shotnoise(im, ron, GAIN=2., NDIT=1):
     return np.sqrt(np.abs(im)/GAIN/NDIT + ron**2)
 
 def util_order_trace(im, debug=False):
+
+    # Loop over each detector
     poly_trace  = []
     for d, det in enumerate(im):
         trace = order_trace(det, debug=debug)
@@ -173,36 +175,56 @@ def order_trace(det, poly_order=2, sigma_threshold=3, sub_factor=64, order_lengt
     im = np.where(np.isnan(det), signal.medfilt2d(det, 5), det)
     # im = np.where(np.isnan(im), signal.medfilt2d(im, 5), im)
     # im = np.nan_to_num(im)
+
+    # Sub-sample the image along the horizontal axis
     xx = np.arange(im.shape[1])
     xx_bin = np.arange((sub_factor-1)/2., im.shape[1], sub_factor)
-    #print('xx_bin', xx_bin)
     # xx_bin = xx[::sub_factor]
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=RuntimeWarning)
-        im_bin = np.nanmedian(im.reshape(im.shape[0], im.shape[1]//sub_factor, sub_factor), axis=2)
+        im_bin = np.nanmedian(im.reshape(im.shape[0], 
+                                         im.shape[1]//sub_factor, 
+                                         sub_factor), 
+                              axis=2)
+    
     xx_loc, upper, lower   = [], [], []
     poly_upper, poly_lower = [], []
 
     if debug:
         plt.imshow(im, vmin=1000, vmax=2e4)
 
+    # Subtract a shifted image from its un-shifted self
+    # The result is approximately the trace edge
     im_grad = np.abs(im_bin[1:,:]-im_bin[:-1,:])
+
+    # Set insignificant signal to 0
     cont_std = np.nanstd(im_grad, axis=0)
-    im_grad = im_grad - cont_std*sigma_threshold
-    im_grad[im_grad<0] = 0
+    im_grad[(im_grad < cont_std*sigma_threshold)] = 0
 
     width = 3
     len_threshold = 80
+    # Loop over each column in the sub-sampled image
     for i in range(im_grad.shape[1]):
         yy = im_grad[:,int(i)]
         # indices,_ = signal.find_peaks(im_grad[:,i], distance=30, height=cont_std[i]*sigma_threshold)
+        
+        # Find the pixels where the signal is significant
         indices = signal.argrelextrema(yy, np.greater)[0]
+
         if len(indices)%2!=0 or (indices[1::2]-indices[::2]).min() < len_threshold:
             print("Warning: Data are too noisy to clearly identify edges. Consider increase 'sub_factor' in 'order_trace'.")
             continue
-        cens = np.array([np.sum(xx[int(p-width):int(p+width)]*yy[int(p-width):int(p+width)])/np.sum(yy[int(p-width):int(p+width)]) for p in indices])
+
+        # Find the y-coordinates of the edges, weighted by the significance of the signal
+        cens = np.array([np.sum(xx[int(p-width):int(p+width)]*yy[int(p-width):int(p+width)]) / \
+                         np.sum(yy[int(p-width):int(p+width)]) \
+                         for p in indices])
+
+        # Order of y-coordinates is lower, upper, lower, ...
         lower.append(cens[::2])
         upper.append(cens[1::2])
+
+        # Real x-coordinate of this column
         xx_loc.append(xx_bin[i])
 
         # if len(indices)!=14:
@@ -217,11 +239,15 @@ def order_trace(det, poly_order=2, sigma_threshold=3, sub_factor=64, order_lengt
 
     upper = np.array(upper).T
     lower = np.array(lower).T
+    # Loop over each order
     for (loc_up, loc_low) in zip(upper, lower):
+        # Fit polynomials to the upper and lower edges of each order
         poly_up = Poly.polyfit(xx_loc, loc_up, poly_order)
         poly_low = Poly.polyfit(xx_loc, loc_low, poly_order)
+
         yy_up = Poly.polyval(xx, poly_up)
         yy_low = Poly.polyval(xx, poly_low)
+
         slit_len = yy_up - yy_low
         if slit_len.min() > order_length_min:
             poly_upper.append(poly_up)
