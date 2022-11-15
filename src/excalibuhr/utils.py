@@ -31,27 +31,36 @@ def wfits(fname, im, hdr=None, im_err=None):
     new_hdul.writeto(fname, overwrite=True, output_verify='ignore') 
 
 def util_master_dark(dt, collapse='median', badpix_clip=5):
-    if collapse == 'median':
-        master = np.nanmedian(dt, axis=0)
-    elif collapse == 'mean':
-        master = np.nanmean(dt, axis=0)
-    rons = np.nanstd(dt, axis=0)/np.sqrt(len(dt))
-
-    badpix = np.zeros_like(master).astype(bool)
-    for i, det in enumerate(master):
-        filtered_data = stats.sigma_clip(det, sigma=badpix_clip, axis=0)
-        badpix[i] = filtered_data.mask
-        master[i][badpix[i]] = np.nan
-    return master, rons, badpix
-
-def util_master_flat(dt, dark, collapse='median', badpix_clip=5):
+    # Combine the darks
     if collapse == 'median':
         master = np.nanmedian(dt, axis=0)
     elif collapse == 'mean':
         master = np.nanmean(dt, axis=0)
     
+    # Calculate the read-out noise as the stddev, scaled by 
+    # the square-root of the number of observations
+    rons = np.nanstd(dt, axis=0)/np.sqrt(len(dt))
+
+    # Apply a sigma-clip to identify the bad pixels
+    badpix = np.zeros_like(master).astype(bool)
+    for i, det in enumerate(master):
+        filtered_data = stats.sigma_clip(det, sigma=badpix_clip, axis=0)
+        badpix[i] = filtered_data.mask
+        master[i][badpix[i]] = np.nan
+    
+    return master, rons, badpix
+
+def util_master_flat(dt, dark, collapse='median', badpix_clip=5):
+    # Combine the flats
+    if collapse == 'median':
+        master = np.nanmedian(dt, axis=0)
+    elif collapse == 'mean':
+        master = np.nanmean(dt, axis=0)
+    
+    # Dark-subtract the master flat
     master -= dark
 
+    # Apply a sigma-clip to identify the bad pixels
     badpix = np.zeros_like(master).astype(bool)
     for i, det in enumerate(master):
         with warnings.catch_warnings():
@@ -61,6 +70,7 @@ def util_master_flat(dt, dark, collapse='median', badpix_clip=5):
         master[i][badpix[i]] = np.nan
         # plt.imshow(badpix[i])
         # plt.show()
+
     return master, badpix
 
 def combine_detector_images(dt, err, collapse='mean'):
@@ -85,7 +95,7 @@ def detector_shotnoise(im, ron, GAIN=2., NDIT=1):
 def util_order_trace(im, debug=False):
     poly_trace  = []
     for d, det in enumerate(im):
-        trace= order_trace(det, debug=debug)
+        trace = order_trace(det, debug=debug)
         poly_trace.append(trace)
     return poly_trace
 
@@ -157,18 +167,21 @@ def util_wlen_solution(dt, dt_err, wlen_init, blazes, debug=False):
     return np.array(flux), np.array(err)
 
 def order_trace(det, poly_order=2, sigma_threshold=3, sub_factor=64, order_length_min=125, debug=False):
+
+    # Replace NaN-pixels with the median-filtered values
     # im = np.copy(det)
     im = np.where(np.isnan(det), signal.medfilt2d(det, 5), det)
     # im = np.where(np.isnan(im), signal.medfilt2d(im, 5), im)
     # im = np.nan_to_num(im)
     xx = np.arange(im.shape[1])
     xx_bin = np.arange((sub_factor-1)/2., im.shape[1], sub_factor)
+    #print('xx_bin', xx_bin)
     # xx_bin = xx[::sub_factor]
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=RuntimeWarning)
         im_bin = np.nanmedian(im.reshape(im.shape[0], im.shape[1]//sub_factor, sub_factor), axis=2)
-    xx_loc, upper, lower  = [], [], []
-    poly_upper, poly_lower  = [], []
+    xx_loc, upper, lower   = [], [], []
+    poly_upper, poly_lower = [], []
 
     if debug:
         plt.imshow(im, vmin=1000, vmax=2e4)

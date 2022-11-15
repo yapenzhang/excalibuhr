@@ -38,6 +38,7 @@ class Pipeline:
 
         # self.detlin_path = '/run/media/yzhang/disk/cr2res_cal_detlin_coeffs.fits'
 
+        # Create the directories if they do not exist
         if not os.path.exists(os.path.join(self.workpath, self.night)):
             os.makedirs(os.path.join(self.workpath, self.night))
 
@@ -54,8 +55,10 @@ class Pipeline:
         #     os.remove(self.header_file)
         #     os.remove(self.calib_file)
 
+        # If present, read the info files
         if os.path.isfile(self.header_file):
             self.header_info = pd.read_csv(self.header_file, sep=';')
+            print('\nHeader info:')
             print(self.header_info)
         else:
             self.header_info = None 
@@ -65,12 +68,14 @@ class Pipeline:
 
         if os.path.isfile(self.calib_file):
             self.calib_info = pd.read_csv(self.calib_file, sep=';')
+            print('\nCalib info:')
             print(self.calib_info)
         else:
             self.calib_info = None
 
         if os.path.isfile(self.product_file):
             self.product_info = pd.read_csv(self.product_file, sep=';')
+            print('\nProduct info:')
             print(self.product_info)
         else:
             self.product_info = None        
@@ -97,6 +102,10 @@ class Pipeline:
 
     def extract_header(self):
 
+        #if self.header_info is not None:
+        #    # Header extraction was already performed
+        #    return
+
         print("Extracting FITS headers...\n")
 
         # keywords = ['ARCFILE', 'ORIGFILE', 'DATE-OBS', 'RA', 'DEC', 'OBJECT', 'MJD-OBS', \
@@ -112,23 +121,27 @@ class Pipeline:
         
         raw_files = Path(self.rawpath).glob("*.fits")
 
+        # Dictionary to store the header info
         header_dict = {}
         for key_item in keywords:
             header_dict[key_item] = []
 
         for file_item in raw_files:
             header = fits.getheader(file_item)
+
+            # Rename the file
             if self.key_filename in header:
                 shutil.move(file_item, os.path.join(self.rawpath, header[self.key_filename]))
 
+            # Add header value to the dictionary
             for key_item in keywords:
                 if key_item in header:
                     header_dict[key_item].append(header[key_item])
                 else:
                     header_dict[key_item].append(None)
 
+        # Save the dictionary as a csv-file
         self.header_info = pd.DataFrame(data=header_dict)
-        
         self.header_info.to_csv(os.path.join(self.calpath,'header_info.txt'), index=False, sep=';')
 
     def add_to_calib(self, file, cal_type):
@@ -166,7 +179,7 @@ class Pipeline:
         self.product_info.to_csv(os.path.join(self.outpath,'product_info.txt'), index=False, sep=';')
 
     def cal_dark(self, verbose=True):
-        indices = self.header_info[self.key_dtype] == "DARK"
+        indices = (self.header_info[self.key_dtype] == "DARK")
 
         # Check unique DIT
         unique_dit = set()
@@ -178,17 +191,22 @@ class Pipeline:
         else:
             print(f"Unique DIT values: {unique_dit}\n")
 
-        # master dark
+        # Create a master dark for each unique DIT
         for item in unique_dit:
-            indices_dit = self.header_info[indices][self.key_DIT] == item
+            
+            indices_dit = (self.header_info[indices][self.key_DIT] == item)
+            
+            # Store each dark-observation in a list
             dt = []
             for file in self.header_info[indices][indices_dit][self.key_filename]:
                 with fits.open(os.path.join(self.rawpath, file)) as hdu:
                     hdr = hdu[0].header
                     dt.append(np.array([hdu[i].data for i in range(1, len(hdu))]))
             
+            # Per detector, median-combine the darks and determine the bad pixels
             master, rons, badpix = su.util_master_dark(dt, badpix_clip=5)
             
+            # Save the master dark, read-out noise, and bad-pixel maps
             file_name = os.path.join(self.calpath, 'DARK_MASTER_DIT{}.fits'.format(item))
             su.wfits(file_name, master, hdr)
             self.add_to_calib('DARK_MASTER_DIT{}.fits'.format(item), "DARK_MASTER")
@@ -211,7 +229,7 @@ class Pipeline:
     def cal_flat_raw(self, verbose=True):
         indices = self.header_info[self.key_dtype] == "FLAT"
 
-        # Only utilize one DIT setting for master flat
+        # Use the longest DIT for the master flat
         unique_dit = set()
         for item in self.header_info[indices][self.key_DIT]:
             unique_dit.add(item)
@@ -235,26 +253,34 @@ class Pipeline:
         else:
             print(f"Unique WLEN settings: {unique_wlen}\n")
 
-        indices_dark = (self.calib_info[self.key_caltype] == "DARK_MASTER") & (self.calib_info[self.key_DIT] == dit)
-        indices_bpm = (self.calib_info[self.key_caltype] == "DARK_BPM") & (self.calib_info[self.key_DIT] == dit)
+        # Select master dark and bad-pixel mask corresponding to DIT
+        indices_dark = (self.calib_info[self.key_caltype] == "DARK_MASTER") & \
+                       (self.calib_info[self.key_DIT] == dit)
+        indices_bpm = (self.calib_info[self.key_caltype] == "DARK_BPM") & \
+                      (self.calib_info[self.key_DIT] == dit)
         assert (indices_dark.sum())<2
+        # What's the use in a for-loop here?
         for file in self.calib_info[indices_dark][self.key_filename]:
             dark = fits.getdata(os.path.join(self.calpath, file))
         for file in self.calib_info[indices_bpm][self.key_filename]:
             badpix = fits.getdata(os.path.join(self.calpath, file))
 
-        # master flat
+        # Create a master flat for each unique WLEN setting
         for item_wlen in unique_wlen:
-            indices_dit = indices & ((self.header_info[self.key_DIT] == dit) & (self.calib_info[self.key_wlen] == item_wlen))
+            indices_dit = indices & ((self.header_info[self.key_DIT] == dit) & \
+                                     (self.header_info[self.key_wlen] == item_wlen))
 
+            # Store each flat-observation in a list
             dt = []
             for file in self.header_info[indices_dit][self.key_filename]:
                 with fits.open(os.path.join(self.rawpath, file)) as hdu:
                     hdr = hdu[0].header
                     dt.append(np.array([hdu[i].data for i in range(1, len(hdu))]))
 
+            # Per detector, median-combine the flats and determine the bad pixels
             master, badpix = su.util_master_flat(dt, dark, collapse='median')
 
+            # Save the master flat and bad-pixel map
             file_name = os.path.join(self.calpath, 'FLAT_MASTER_w{}.fits'.format(item_wlen))
             su.wfits(file_name, master, hdr)
             self.add_to_calib('FLAT_MASTER_w{}.fits'.format(item_wlen), "FLAT_MASTER")
@@ -291,8 +317,10 @@ class Pipeline:
         # for file in self.calib_info[indices_bpm][self.key_filename]:
         #     bpm = fits.getdata(os.path.join(self.calpath, file))
         
+        # Identify the trace from the master flat of each WLEN setting
         for item_wlen in unique_wlen:
-            indices_flat = indices & ((self.calib_info[self.key_DIT] == dit) & (self.calib_info[self.key_wlen] == item_wlen))
+            indices_flat = indices & ((self.calib_info[self.key_DIT] == dit) & \
+                                      (self.calib_info[self.key_wlen] == item_wlen))
             assert (indices_flat.sum())<2
             for file in self.calib_info[indices_flat][self.key_filename]:
                 flat = fits.getdata(os.path.join(self.calpath, file))
