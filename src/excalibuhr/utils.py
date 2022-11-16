@@ -103,6 +103,8 @@ def util_order_trace(im, debug=False):
 
 
 def util_slit_curve(im, bpm, tw, wlen_mins, wlen_maxs, debug=False):
+
+    # Loop over each detector
     slit_meta, wlens = [], [] # (detector, poly_meta2, order) 
     for d, (det, badpix, trace, wlen_min, wlen_max) in enumerate(zip(im, bpm, tw, wlen_mins, wlen_maxs)):
         slit, wlen = slit_curve(det, badpix, trace, wlen_min, wlen_max, debug=debug)
@@ -215,7 +217,8 @@ def order_trace(det, poly_order=2, sigma_threshold=3, sub_factor=64, order_lengt
             print("Warning: Data are too noisy to clearly identify edges. Consider increase 'sub_factor' in 'order_trace'.")
             continue
 
-        # Find the y-coordinates of the edges, weighted by the significance of the signal
+        # Find the y-coordinates of the edges, weighted by the 
+        # significance of the signal (i.e. center-of-mass)
         cens = np.array([np.sum(xx[int(p-width):int(p+width)]*yy[int(p-width):int(p+width)]) / \
                          np.sum(yy[int(p-width):int(p+width)]) \
                          for p in indices])
@@ -289,6 +292,8 @@ def order_trace(det, poly_order=2, sigma_threshold=3, sub_factor=64, order_lengt
 
 
 def slit_curve(det, badpix, trace, wlen_min, wlen_max, poly_order=2, spacing=40, sub_factor=4, debug=False):
+
+    # Replace bad pixels with the median-filtered values
     badpix = (badpix | np.isnan(det))
     im = np.where(badpix, signal.medfilt2d(det, 5), det)
     im = np.where(np.isnan(im), signal.medfilt2d(im, 5), im)
@@ -299,52 +304,82 @@ def slit_curve(det, badpix, trace, wlen_min, wlen_max, poly_order=2, spacing=40,
     meta0, meta1, meta2, wlen = [], [], [], [] # (order, poly_meta) 
     # if debug:
     #     plt.imshow(im, vmin=200, vmax=1e4)
+    
+    # Loop over each order
     for o, (upper, lower, w_min, w_max) in enumerate(zip(trace_upper, trace_lower, wlen_min, wlen_max)):
+        # Find the upper, central, and lower edges of the order 
+        # with the polynomial coefficients
         middle = (upper+lower)/2.
         yy_upper = Poly.polyval(xx, upper)
         yy_lower = Poly.polyval(xx, lower)
         yy_mid = Poly.polyval(xx, middle)
+
         if debug:
             plt.plot(xx, yy_upper, 'r')
             plt.plot(xx, yy_lower, 'r')
+        
+        # Loop over each pixel-row in a sub-sampled image
         slit_image, x_slit, poly_slit = [], [], []
         for row in range(int(yy_lower.min()), int(yy_upper.max()), sub_factor):
+            # Find the pixels (along horizontal axis) where signal is significant
             peaks, properties = signal.find_peaks(im[row], distance=spacing, width=5) # doesn't work with nans
             width = np.median(properties['widths'])
             peaks = peaks[(peaks<(im.shape[1]-width)) & (peaks>(width))]
-            # calculate center of mass of the peaks
-            cens = [np.sum(xx[int(p-width):int(p+width)]*im[row][int(p-width):int(p+width)])/np.sum(im[row][int(p-width):int(p+width)]) for p in peaks]
+
+            # Calculate center-of-mass of the peaks
+            cens = [np.sum(xx[int(p-width):int(p+width)]*im[row][int(p-width):int(p+width)]) / \
+                    np.sum(im[row][int(p-width):int(p+width)]) \
+                    for p in peaks]
             slit_image.extend([[p, row] for p in cens])
             # print(np.diff(cens))
+
+            # Select the rows that are closest to the mid-point
             if np.abs(row-int(yy_mid[len(xx)//2])) < sub_factor:
                 pivot = cens
-                bins = sorted([x-spacing/2. for x in cens] + [x+spacing/2. for x in cens])
-            # print(len(peaks))
-            # plt.plot(xx, im[row])
-            # plt.plot(peaks, im[row][peaks],'x')
-            # plt.plot(cens, im[row][peaks],'x')
-            # # for p in peaks:
-            # #     plt.axvline(p-width)
-            # #     plt.axvline(p+width)
-            # plt.show()
+                bins = sorted([x-spacing/2. for x in cens] + \
+                              [x+spacing/2. for x in cens])
+
+            """
+            print(len(peaks))
+            plt.plot(xx, im[row])
+            plt.plot(peaks, im[row][peaks],'x')
+            plt.plot(cens, im[row][peaks],'x')
+            # for p in peaks:
+            #     plt.axvline(p-width)
+            #     plt.axvline(p+width)
+            plt.show()
+            """
+        
+        #print(slit_image)
+
         slit_image = np.array(slit_image)
+        # Index of bin to which each peak belongs
         indices = np.digitize(slit_image[:,0], bins)
+
+        # Loop over every other bin
         for i in range(1, len(bins), 2):
-            xs = slit_image[:,0][indices == i]
-            ys = slit_image[:,1][indices == i]
+            xs = slit_image[:,0][indices == i] # x-coordinate of peaks
+            ys = slit_image[:,1][indices == i] # y-coordinate of corresponding rows
+
+            # Fit a polynomial to the the fpet signal
             poly = Poly.polyfit(ys, xs, poly_order)
             poly_orth = Poly.polyfit(xs, ys, poly_order)
 
-            ### find mid point on slit image, i.e. the intersection of two polynomials
+            # Find mid-point on slit image, i.e. the intersection of two polynomials
             root = Poly.polyroots(poly_orth-middle)
             if np.iscomplexobj(root):
-                continue 
-            root = root[(root>int(xs.min()-2))&(root<int(xs.max()+2))]
+                continue
+            # Select the intersection within the valid x-coordinates
+            root = root[(root>int(xs.min()-2)) & (root<int(xs.max()+2))]
             x_slit.append(root.mean())
+
             poly_slit.append(poly)
-            # plt.plot(root.mean(), Poly.polyval(root.mean(), middle), 'ko')
+            #plt.plot(root.mean(), Poly.polyval(root.mean(), middle), 'ko')
             yy = np.arange(int(yy_lower.min()-5), int(yy_upper.max()+5))
-            # plt.plot(Poly.polyval(yy, poly), yy, 'r')
+            #plt.plot(Poly.polyval(yy, poly), yy, 'r')
+
+        # Fit a polynomial to the polynomial coefficients
+        # using the x-coordinates of the fpet signal
         poly_slit = np.array(poly_slit)
         poly_meta0 = Poly.polyfit(x_slit, poly_slit[:,0], poly_order)
         poly_meta1 = Poly.polyfit(x_slit, poly_slit[:,1], poly_order)
@@ -353,11 +388,10 @@ def slit_curve(det, badpix, trace, wlen_min, wlen_max, poly_order=2, spacing=40,
         meta1.append(poly_meta1)
         meta2.append(poly_meta2)
         
-
+        # Determine the wavelength solution along the detectors/orders
         ww = np.linspace(w_min, w_max, len(xx))
-        # wavelength grid
-        grid_poly = Poly.polyfit([0, len(xx)], [w_min, w_max], 1)
-        # mapping from measured positions to linear spacing 
+        grid_poly = Poly.polyfit([0, len(xx)], [w_min, w_max], 1) # Wavelength grid
+        # Mapping from measured positions to linear spacing 
         w_lin = np.linspace(x_slit[0], x_slit[-1], len(x_slit))
         cal_poly = Poly.polyfit(w_lin, x_slit-w_lin, 2)
         xx_offset = Poly.polyval(xx, cal_poly) # relative shift in pixel
@@ -368,12 +402,14 @@ def slit_curve(det, badpix, trace, wlen_min, wlen_max, poly_order=2, spacing=40,
         if debug:
             xx_grid = pivot
             # xx_grid = np.arange(0, im.shape[1], 100)
-            poly_full = np.array([Poly.polyval(xx_grid, poly_meta0), Poly.polyval(xx_grid, poly_meta1),Poly.polyval(xx_grid, poly_meta2)]).T
+            poly_full = np.array([Poly.polyval(xx_grid, poly_meta0), 
+                                  Poly.polyval(xx_grid, poly_meta1),
+                                  Poly.polyval(xx_grid, poly_meta2)]).T
             for x in range(len(xx_grid)):
-                plt.plot(Poly.polyval(yy, poly_full[x]), yy, 'r:', zorder=10)
+                plt.plot(Poly.polyval(yy, poly_full[x]), yy, 'r--', zorder=10)
 
     if debug:
-        plt.imshow(im, vmin=200, vmax=2e4)
+        plt.imshow(np.log10(im), )#vmin=200, vmax=2e4)
         plt.show()
         # plt.plot(w_lin, x_slit-w_lin)
         # plt.plot(w_lin, Poly.polyval(w_lin, cal_poly))

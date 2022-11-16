@@ -338,10 +338,11 @@ class Pipeline:
             
 
     def cal_slit_curve(self, key_wave_min, key_wave_max, key_wave_cen, debug=False):
-        self.key_wave_min = key_wave_min # #1-10
+        self.key_wave_min = key_wave_min  #1-10
         self.key_wave_max = key_wave_max  #1-10
         self.key_wave_cen = key_wave_cen  #1-10
 
+        # Select the Fabry-Perot etalon calibrations
         indices_fpet = self.header_info[self.key_dtype] == "WAVE,FPET"
 
         # Check unique WLEN setting
@@ -354,40 +355,57 @@ class Pipeline:
         else:
             print(f"Unique WLEN settings: {unique_wlen}\n")
 
+        # Identify the slit curvature for each WLEN setting
         for item_wlen in unique_wlen:
-            indices = self.header_info[indices_fpet][self.key_wlen] == item_wlen
+            indices = (self.header_info[indices_fpet][self.key_wlen] == item_wlen)
             dit = self.header_info[indices_fpet][indices][self.key_DIT].iloc[0]
             file_fpet = self.header_info[indices_fpet][indices][self.key_filename].iloc[0]
 
-            indices_dark = (self.calib_info[self.key_caltype] == "DARK_MASTER") & (self.calib_info[self.key_DIT] == dit)
+            indices_dark = (self.calib_info[self.key_caltype] == "DARK_MASTER") & \
+                           (self.calib_info[self.key_DIT] == dit)
             indices_bpm = (self.calib_info[self.key_caltype] == "FLAT_BPM")
-            indices_tw = (self.calib_info[self.key_caltype] == "TRACE_TW") & (self.calib_info[self.key_wlen] == item_wlen)
+            indices_tw = (self.calib_info[self.key_caltype] == "TRACE_TW") & \
+                         (self.calib_info[self.key_wlen] == item_wlen)
+            
             assert (indices_dark.sum())<2
             assert (indices_bpm.sum())<2
             assert (indices_tw.sum())<2
+            # Read the trace-wave, master dark and bad-pixel mask
             file = self.calib_info[indices_tw][self.key_filename].iloc[0]
             tw = fits.getdata(os.path.join(self.calpath, file))
+
             file = self.calib_info[indices_dark][self.key_filename].iloc[0]
             dark = fits.getdata(os.path.join(self.calpath, file))
+            # What's the use in a for-loop here?
             for file in self.calib_info[indices_bpm][self.key_filename]:
                 bpm = fits.getdata(os.path.join(self.calpath, file))
 
             wlen_mins, wlen_maxs = [], []
             with fits.open(os.path.join(self.rawpath, file_fpet)) as hdu:
+                # Dark-subtract the fpet observation
                 hdr = hdu[0].header
                 fpet = np.array([hdu[i].data for i in range(1, len(hdu))]) - dark
+
+                # Loop over the detectors
                 for i in range(1, len(hdu)):
                     wlen_min, wlen_max = [], []
                     header = hdu[i].header
+
+                    # Loop over all orders of this WLEN setting
                     for j in range(1,11):
                         if float(header[self.key_wave_cen+str(j)]) > 0:
+                            # Store the minimum and maximum wavelengths
+                            # on this detector and order
                             wlen_min.append(header[self.key_wave_min+str(j)])
                             wlen_max.append(header[self.key_wave_max+str(j)])
                     wlen_mins.append(wlen_min)
                     wlen_maxs.append(wlen_max)
 
+            # Assess the slit curvature and wavelengths along the orders
             slit, wlens = su.util_slit_curve(fpet, bpm, tw, wlen_mins, wlen_maxs, debug=debug)
 
+            # Save the polynomial coefficients describing the slit curvature 
+            # and wavelength solution
             file_name = os.path.join(self.calpath, 'SLIT_TILT_w{}.fits'.format(item_wlen))
             su.wfits(file_name, slit, hdr)
             self.add_to_calib('SLIT_TILT_w{}.fits'.format(item_wlen), "SLIT_TILT")
@@ -419,19 +437,28 @@ class Pipeline:
         else:
             print(f"Unique WLEN settings: {unique_wlen}\n")
 
+        # Normalize the master flat of each WLEN setting
         for item_wlen in unique_wlen:
-            indices_flat = indices & ((self.calib_info[self.key_DIT] == dit) & (self.calib_info[self.key_wlen] == item_wlen))
+            indices_flat = indices & ((self.calib_info[self.key_DIT] == dit) & \
+                                      (self.calib_info[self.key_wlen] == item_wlen))
 
-            indices_bpm = (self.calib_info[self.key_caltype] == "FLAT_BPM") & (self.calib_info[self.key_DIT] == dit)
-            indices_tw = (self.calib_info[self.key_caltype] == "TRACE_TW") & (self.calib_info[self.key_wlen] == item_wlen)
-            indices_slit = (self.calib_info[self.key_caltype] == "SLIT_TILT") & (self.calib_info[self.key_wlen] == item_wlen)
+            indices_bpm = (self.calib_info[self.key_caltype] == "FLAT_BPM") & \
+                          (self.calib_info[self.key_DIT] == dit)
+            indices_tw = (self.calib_info[self.key_caltype] == "TRACE_TW") & \
+                         (self.calib_info[self.key_wlen] == item_wlen)
+            indices_slit = (self.calib_info[self.key_caltype] == "SLIT_TILT") & \
+                           (self.calib_info[self.key_wlen] == item_wlen)
             assert (indices_bpm.sum())<2
             assert (indices_tw.sum())<2
             assert (indices_slit.sum())<2
+
+            # Read in the trace-wave, bad-pixel, and slit-curvature files
             file = self.calib_info[indices_tw][self.key_filename].iloc[0]
             tw = fits.getdata(os.path.join(self.calpath, file))
             file = self.calib_info[indices_slit][self.key_filename].iloc[0]
             slit = fits.getdata(os.path.join(self.calpath, file))
+            # What's the use in a for-loop here
+            print(self.calib_info[indices_bpm][self.key_filename])
             for file in self.calib_info[indices_bpm][self.key_filename]:
                 bpm = fits.getdata(os.path.join(self.calpath, file))
 
