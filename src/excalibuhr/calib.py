@@ -13,12 +13,12 @@ import pandas as pd
 import subprocess
 from astropy.io import fits
 from astroquery.eso import Eso
+import skycalc_ipy
 # from numpy.polynomial import polynomial as Poly
 # from scipy import ndimage
 # from scipy.interpolate import CubicSpline, interp1d
 import excalibuhr.utils as su
 import excalibuhr.plotting as pu
-import matplotlib.pyplot as plt 
 
 class Pipeline:
 
@@ -513,7 +513,7 @@ class Pipeline:
                                 
                         dt_list.append(frame)
                         err_list.append(frame_err)
-                    dt_bkg, err_bkg = su.combine_detector_images(dt_list, err_list, collapse='mean')
+                    dt_bkg, err_bkg = su.combine_frames(dt_list, err_list, collapse='mean')
                     
                     pos = set()
                     for p in df_nods[self.key_nodpos].iloc[row+(-1)**(i%2)*Nexp_per_nod:row+(-1)**(i%2)*Nexp_per_nod+Nexp_per_nod]:
@@ -531,7 +531,7 @@ class Pipeline:
                                 frame_err.append(np.zeros_like(hdu[d].data))
                                 # frame_err.append(su.detector_shotnoise(hdu[d].data, ron[j], GAIN=gain, NDIT=ndit))
                                 # hdr[self.key_gain+str(j)] = gain
-                        frame_bkg_cor, err_bkg_cor = su.combine_detector_images([frame, -dt_bkg], [frame_err, err_bkg], collapse='sum')
+                        frame_bkg_cor, err_bkg_cor = su.combine_frames([frame, -dt_bkg], [frame_err, err_bkg], collapse='sum')
                         frame_bkg_cor, err_bkg_cor = su.util_correct_readout_artifact(frame_bkg_cor, err_bkg_cor, bpm, tw, debug=False)
                         frame_bkg_cor, err_bkg_cor = su.util_flat_fielding(frame_bkg_cor, err_bkg_cor, flat, debug=False)
                         # plt.imshow((err_bkg_cor)[2], vmin=0, vmax=20)
@@ -579,7 +579,7 @@ class Pipeline:
                         # plt.imshow(hdu[1].data[0], vmin=0, vmax=8)
                         # plt.show()
                 print("Combining {0:d} frames at slit position {1:s}...".format(j+1, pos))
-                combined, combined_err = su.combine_detector_images(dt, dt_err, collapse='mean')
+                combined, combined_err = su.combine_frames(dt, dt_err, collapse='mean')
                 # plt.imshow(combined_err[0]<1)
                 # plt.imshow(combined_err[0], vmin=0, vmax=8)
                 # plt.show()
@@ -674,12 +674,6 @@ class Pipeline:
                     self.add_to_product("./obs_nodding/"+'Extr1D_Nodding_combined_{}_{}_{}.fits'.format(pos, item_wlen, 'SECONDARY'), "Extr1D_SECONDARY")
 
 
-        # savename = outpath / f"spec_{tag[:3]}_nod{which_nod}_{j:02d}.npz"
-        # np.savez(savename, WAVE=wlen, FLUX=spec, FLUX_ERR=spec_err)
-
-        # stdout = subprocess.DEVNULL #None
-        # subprocess.run(esorex, cwd=outpath, stdout=stdout, check=True)
-
     def refine_wlen_solution(self, debug=False):    
         self.noddingpath = os.path.join(self.outpath, "obs_nodding")
         if not os.path.exists(self.noddingpath):
@@ -693,6 +687,10 @@ class Pipeline:
             unique_wlen.add(item)
         print(f"Unique WLEN settings: {unique_wlen}\n")
 
+        indices_tellu = (self.calib_info[self.key_caltype] == "TELLU") 
+        file = self.calib_info[indices_tellu][self.key_filename].iloc[0]
+        tellu = fits.getdata(os.path.join(self.calpath, file))
+
         for item_wlen in unique_wlen:
             
             indices_wlen = indices & (self.product_info[self.key_wlen] == item_wlen)
@@ -705,11 +703,186 @@ class Pipeline:
             file = self.calib_info[indices_blaze][self.key_filename].iloc[0]
             blaze = fits.getdata(os.path.join(self.calpath, file))
 
+            dt = []
             for file in self.product_info[indices_wlen][self.key_filename]:
                 with fits.open(os.path.join(self.outpath, file)) as hdu:
                     hdr = hdu[0].header
-                    dt = hdu[0].data
-                    dt_err = hdu[1].data
-                su.util_wlen_solution(dt, dt_err, wlen_init, blaze)
+                    dt.append(hdu[0].data)
+            dt = np.sum(dt, axis=0)
+            wlen_cal = su.util_wlen_solution(dt, wlen_init, blaze, tellu, debug=debug)
             
+            file_name = os.path.join(self.noddingpath, 'CAL_WLEN_{}.fits'.format(item_wlen))
+            su.wfits(file_name, wlen_cal, hdr)
+            self.add_to_product("./obs_nodding/"+'CAL_WLEN_{}.fits'.format(item_wlen), "CAL_WLEN")
 
+    def save_extracted_data(self, debug=True):
+        self.noddingpath = os.path.join(self.outpath, "obs_nodding")
+
+        for target in ['PRIMARY', 'SECONDARY', 'STD']:
+            indices = (self.product_info[self.key_caltype] == f'Extr1D_{target}')
+            if np.sum(indices)>0:
+
+                # Check unique WLEN setting
+                unique_wlen = set()
+                for item in self.product_info[indices][self.key_wlen]:
+                    unique_wlen.add(item)
+                print(f"Unique WLEN settings: {unique_wlen}\n")
+
+                wlens, blazes, specs, errs = [],[],[],[]
+                for item_wlen in unique_wlen:
+                    
+                    indices_wlen = indices & (self.product_info[self.key_wlen] == item_wlen)
+
+                    indices_wave = (self.product_info[self.key_caltype] == "CAL_WLEN") & (self.product_info[self.key_wlen] == item_wlen)
+                    file = self.product_info[indices_wave][self.key_filename].iloc[0]
+                    wlen = fits.getdata(os.path.join(self.outpath, file))
+                    wlens.append(wlen)
+
+                    indices_blaze = (self.calib_info[self.key_caltype] == "BLAZE") & (self.calib_info[self.key_wlen] == item_wlen)
+                    file = self.calib_info[indices_blaze][self.key_filename].iloc[0]
+                    blaze = fits.getdata(os.path.join(self.calpath, file))
+                    blazes.append(blaze)
+
+                    dt, dt_err = [], []
+                    for file in self.product_info[indices_wlen][self.key_filename]:
+                        with fits.open(os.path.join(self.outpath, file)) as hdu:
+                            # hdr = hdu[0].header
+                            dt.append(hdu[0].data)
+                            dt_err.append(hdu[1].data)
+                    master, master_err = su.combine_frames(dt, dt_err, collapse='mean')
+                    specs.append(master)
+                    errs.append(master_err)
+
+                #unravel spectra in each order and detector to a 1D array.
+                w, f, f_err = su.util_unravel_spec(np.array(wlens), np.array(specs), np.array(errs), np.array(blazes), debug=debug)
+
+                file_name = os.path.join(self.outpath, f'SPEC_{target}.dat')
+                header = "Wlen(nm) Flux Flux_err"
+                np.savetxt(file_name, np.c_[w, f, f_err], header=header)
+
+
+
+
+    def run_skycalc(self, pwv: float = 5) -> None:
+        """
+        Method for running the Python wrapper of SkyCalc
+        (see https://skycalc-ipy.readthedocs.io).
+
+        Parameters
+        ----------
+        pwv : float
+            Precipitable water vapor (default: 3.5) that is used for
+            the telluric spectrum. 
+
+        Returns
+        -------
+        NoneType
+            None
+        """
+
+        # self._print_section("Run SkyCalc")
+
+        # Create output folder
+
+        # if not os.path.exists(output_dir):
+        #     os.makedirs(output_dir)
+
+        # Indices with SCIENCE frames
+        indices = self.header_info[self.key_catg] == "SCIENCE"
+
+        # Setup SkyCalc object
+
+        print("SkyCalc settings:")
+
+        sky_calc = skycalc_ipy.SkyCalc()
+
+        wlen_id= self.header_info[indices][self.key_wlen].iloc[0]
+        slit_width= self.header_info[indices][self.key_slitwid].iloc[0]
+        mjd_start = self.header_info[indices][self.key_mjd].iloc[0]
+        ra_mean = np.mean(self.header_info[self.key_ra][indices])
+        dec_mean = np.mean(self.header_info[self.key_dec][indices])
+
+        sky_calc.get_almanac_data(
+            ra=ra_mean,
+            dec=dec_mean,
+            date=None,
+            mjd=mjd_start,
+            observatory="paranal",
+            update_values=True,
+        )
+
+        print(f"  - MJD = {mjd_start:.2f}")
+        print(f"  - RA (deg) = {ra_mean:.2f}")
+        print(f"  - Dec (deg) = {dec_mean:.2f}")
+
+        # See https://skycalc-ipy.readthedocs.io/en/latest/GettingStarted.html
+        sky_calc["msolflux"] = 130
+
+        if wlen_id[0] == "Y":
+            sky_calc["wmin"] = 500.0  # (nm)
+            sky_calc["wmax"] = 1500.0  # (nm)
+
+        elif wlen_id[0] == "J":
+            sky_calc["wmin"] = 800.0  # (nm)
+            sky_calc["wmax"] = 2000.0  # (nm)
+
+        elif wlen_id[0] == "H":
+            sky_calc["wmin"] = 1000.0  # (nm)
+            sky_calc["wmax"] = 2500.0  # (nm)
+
+        elif wlen_id[0] == "K":
+            sky_calc["wmin"] = 1850.0  # (nm)
+            sky_calc["wmax"] = 2560.0  # (nm)
+
+        elif wlen_id[0] == "L":
+            sky_calc["wmin"] = 2500.0  # (nm)
+            sky_calc["wmax"] = 4500.0  # (nm)
+
+        else:
+            raise NotImplementedError(
+                f"The wavelength range for {wlen_id} is not yet implemented."
+            )
+
+        sky_calc["wgrid_mode"] = "fixed_spectral_resolution"
+        sky_calc["wres"] = 2e5
+        sky_calc["pwv"] = pwv
+
+        print(f"  - Wavelength range (nm) = {sky_calc['wmin']} - {sky_calc['wmax']}")
+        print(f"  - lambda / Dlambda = {sky_calc['wres']}")
+        print(f"  - Airmass = {sky_calc['airmass']:.2f}")
+        print(f"  - PWV (mm) = {sky_calc['pwv']}\n")
+
+        # Get telluric spectra from SkyCalc
+
+        print("Get telluric spectrum with SkyCalc...", end="", flush=True)
+
+        # temp_file =  os.path.join(self.calpath , "skycalc_temp.fits")
+        # sky_spec = sky_calc.get_sky_spectrum(filename=temp_file)
+        wave, trans, _ = sky_calc.get_sky_spectrum(return_type="arrays")
+
+        print(" [DONE]\n")
+
+        # Convolve spectra
+
+        if slit_width == "w_0.2":
+            spec_res = 100000.0
+        elif slit_width == "w_0.4":
+            spec_res = 50000.0
+        else:
+            raise ValueError(f"Slit width {slit_width} not recognized.")
+
+        print(f"Slit width = {slit_width}")
+        print(f"Smoothing spectrum to R = {spec_res}\n")
+
+        trans = su.SpecConvolve(wave.value, trans, out_res=spec_res, in_res=sky_calc["wres"])
+
+        transm_spec = np.column_stack((1e3 * wave.value, trans))
+        out_file= os.path.join(self.calpath, "TRANSM_SPEC.fits")
+        su.wfits(out_file, transm_spec)
+        self.add_to_calib('TRANSM_SPEC.fits', "TELLU")
+        # header = "Wavelength (nm) - Transmission"
+        # np.savetxt(out_file, transm_spec, header=header)
+
+
+        # stdout = subprocess.DEVNULL #None
+        # subprocess.run(esorex, cwd=outpath, stdout=stdout, check=True)
