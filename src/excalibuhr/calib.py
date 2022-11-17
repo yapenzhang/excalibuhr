@@ -457,16 +457,18 @@ class Pipeline:
             tw = fits.getdata(os.path.join(self.calpath, file))
             file = self.calib_info[indices_slit][self.key_filename].iloc[0]
             slit = fits.getdata(os.path.join(self.calpath, file))
-            # What's the use in a for-loop here
-            print(self.calib_info[indices_bpm][self.key_filename])
+            # What's the use in a for-loop here?
             for file in self.calib_info[indices_bpm][self.key_filename]:
                 bpm = fits.getdata(os.path.join(self.calpath, file))
 
+            # Read in the master flat
+            # What's the use in a for-loop here?
             assert (indices_flat.sum())<2
             for file in self.calib_info[indices_flat][self.key_filename]:
                 flat = fits.getdata(os.path.join(self.calpath, file))
                 hdr = fits.getheader(os.path.join(self.calpath, file))
             
+            # Normalize the master flat with the order-specific blaze functions
             flat_norm, blazes = su.util_master_flat_norm(flat, bpm, tw, slit, debug=debug)
 
             file_name = os.path.join(self.calpath, 'FLAT_NORM_w{}.fits'.format(item_wlen))
@@ -479,6 +481,8 @@ class Pipeline:
 
 
     def obs_nodding(self, debug=True):
+
+        # Create the obs_nodding directory if it does not exist yet
         self.noddingpath = os.path.join(self.outpath, "obs_nodding")
         if not os.path.exists(self.noddingpath):
             os.makedirs(self.noddingpath)
@@ -493,6 +497,7 @@ class Pipeline:
         else:
             print(f"Unique WLEN settings: {unique_wlen}\n")
 
+        # Loop over each WLEN setting
         for item_wlen in unique_wlen:
             
             indices_wlen = indices & (self.header_info[self.key_wlen] == item_wlen)
@@ -505,11 +510,17 @@ class Pipeline:
             else:
                 print("Wavelength setting {}; Unique DIT values {} \n".format(item_wlen, unique_dit))
 
-            indices_flat = (self.calib_info[self.key_caltype] == "FLAT_NORM") & (self.calib_info[self.key_wlen] == item_wlen)
-            indices_blaze = (self.calib_info[self.key_caltype] == "BLAZE") & (self.calib_info[self.key_wlen] == item_wlen)
-            indices_tw = (self.calib_info[self.key_caltype] == "TRACE_TW") & (self.calib_info[self.key_wlen] == item_wlen)
-            indices_slit = (self.calib_info[self.key_caltype] == "SLIT_TILT") & (self.calib_info[self.key_wlen] == item_wlen)
-            indices_bpm = (self.calib_info[self.key_caltype] == "FLAT_BPM") & (self.calib_info[self.key_wlen] == item_wlen)
+            # Select the corresponding calibration files
+            indices_flat = (self.calib_info[self.key_caltype] == "FLAT_NORM") & \
+                           (self.calib_info[self.key_wlen] == item_wlen)
+            indices_blaze = (self.calib_info[self.key_caltype] == "BLAZE") & \
+                            (self.calib_info[self.key_wlen] == item_wlen)
+            indices_tw = (self.calib_info[self.key_caltype] == "TRACE_TW") & \
+                         (self.calib_info[self.key_wlen] == item_wlen)
+            indices_slit = (self.calib_info[self.key_caltype] == "SLIT_TILT") & \
+                           (self.calib_info[self.key_wlen] == item_wlen)
+            indices_bpm = (self.calib_info[self.key_caltype] == "FLAT_BPM") & \
+                          (self.calib_info[self.key_wlen] == item_wlen)
             
             assert (indices_flat.sum())<2, "More than one calibration file."
             assert (indices_blaze.sum())<2, "More than one calibration file."
@@ -528,19 +539,27 @@ class Pipeline:
             file = self.calib_info[indices_flat][self.key_filename].iloc[0]
             flat = fits.getdata(os.path.join(self.calpath, file))
             
+            # Loop over each DIT
             for item_dit in unique_dit:
 
-                indices_ron = (self.calib_info[self.key_caltype] == "DARK_RON") & (self.calib_info[self.key_DIT] == item_dit)
+                # Open the read-out noise file
+                indices_ron = (self.calib_info[self.key_caltype] == "DARK_RON")# & \
+                              #(self.calib_info[self.key_DIT] == item_dit)
                 file_ron = os.path.join(self.calpath, self.calib_info[indices_ron][self.key_filename].iloc[0])
                 ron = fits.getdata(os.path.join(self.calpath, file_ron))
 
-                indices_nod_A = indices_wlen & (self.header_info[self.key_DIT] == item_dit) & (self.header_info[self.key_nodpos] == 'A')
-                indices_nod_B = indices_wlen & (self.header_info[self.key_DIT] == item_dit) & (self.header_info[self.key_nodpos] == 'B')
+                indices_nod_A = indices_wlen & (self.header_info[self.key_DIT] == item_dit) & \
+                                (self.header_info[self.key_nodpos] == 'A')
+                indices_nod_B = indices_wlen & (self.header_info[self.key_DIT] == item_dit) & \
+                                (self.header_info[self.key_nodpos] == 'B')
                 df_nods = self.header_info[indices_nod_A | indices_nod_B].sort_values(self.key_filename)
 
                 nod_a_count = sum(indices_nod_A)
                 nod_b_count = sum(indices_nod_B)
-                Nexp_per_nod = int(nod_a_count//self.header_info[indices_nod_A][self.key_nabcycle].iloc[0])
+                #print(nod_a_count, self.header_info[indices_nod_A][self.key_nabcycle])
+                #print(self.key_nabcycle)
+                #Nexp_per_nod = int(nod_a_count//self.header_info[indices_nod_A][self.key_nabcycle].iloc[0])
+                Nexp_per_nod = int(self.header_info[indices_nod_A][self.key_nexp_per_nod].iloc[0])
 
                 print(f"Number of exposures at nod A: {nod_a_count}")
                 print(f"Number of exposures at nod B: {nod_b_count}")
@@ -555,43 +574,68 @@ class Pipeline:
                 slitlen = df_nods[self.key_slitlen].iloc[0]
                 
                 for i, row in enumerate(range(0, df_nods.shape[0], Nexp_per_nod)):
+                    # Select the following background measurement 
+                    # (i.e. the other nod position)
                     pos_bkg = set()
                     for p in df_nods[self.key_nodpos].iloc[row:row+Nexp_per_nod]:
                         pos_bkg.add(p)
                     print("BKG: ", pos_bkg)
-                    file_list = [os.path.join(self.rawpath, item) for item in df_nods[self.key_filename].iloc[row:row+Nexp_per_nod]]
+                    
+                    file_list = [os.path.join(self.rawpath, item) \
+                                 for item in df_nods[self.key_filename].iloc[row:row+Nexp_per_nod]
+                                 ]
                     dt_list, err_list = [], []
+                    print(len(file_list))
+                    # Loop over the observations at the next nod position
                     for file in file_list:
                         frame, frame_err = [], []
                         with fits.open(file) as hdu:
                             ndit = hdu[0].header[self.key_NDIT]
-                            for j,d in enumerate(range(1, len(hdu))):
+                            
+                            # Loop over the detectors
+                            for j, d in enumerate(range(1, len(hdu))):
                                 gain = hdu[d].header[self.key_gain]
                                 frame.append(hdu[d].data)
+                                # Calculate the shot-noise for this detector
                                 frame_err.append(su.detector_shotnoise(hdu[d].data, ron[j], GAIN=gain, NDIT=ndit))
                                 
                         dt_list.append(frame)
                         err_list.append(frame_err)
+                    
+                    # Mean-combine the images if there are multiple exposures per nod
                     dt_bkg, err_bkg = su.combine_detector_images(dt_list, err_list, collapse='mean')
                     
+                    # Select the current nod position
                     pos = set()
-                    for p in df_nods[self.key_nodpos].iloc[row+(-1)**(i%2)*Nexp_per_nod:row+(-1)**(i%2)*Nexp_per_nod+Nexp_per_nod]:
+                    for p in df_nods[self.key_nodpos].iloc[row+(-1)**(i%2)*Nexp_per_nod:\
+                                                           row+(-1)**(i%2)*Nexp_per_nod+Nexp_per_nod]:
                         pos.add(p)
+                    
                     assert pos != pos_bkg, "Subtracting frames at the same nodding position."
-                    for file in df_nods[self.key_filename].iloc[row+(-1)**(i%2)*Nexp_per_nod:row+(-1)**(i%2)*Nexp_per_nod+Nexp_per_nod]:
-                        print("files",file, "POS: ", pos)
+
+                    # Loop over the observations of the current nod position
+                    for file in df_nods[self.key_filename].iloc[row+(-1)**(i%2)*Nexp_per_nod:
+                                                                row+(-1)**(i%2)*Nexp_per_nod+Nexp_per_nod]:
+                        print("files", file, "POS: ", pos)
                         frame, frame_err = [], []
                         with fits.open(os.path.join(self.rawpath, file)) as hdu:
                             hdr = hdu[0].header
                             ndit = hdr[self.key_NDIT]
-                            for j,d in enumerate(range(1, len(hdu))):
+
+                            # Loop over the detectors
+                            for j, d in enumerate(range(1, len(hdu))):
                                 gain = hdu[d].header[self.key_gain]
                                 frame.append(hdu[d].data)
-                                frame_err.append(np.zeros_like(hdu[d].data))
-                                # frame_err.append(su.detector_shotnoise(hdu[d].data, ron[j], GAIN=gain, NDIT=ndit))
-                                # hdr[self.key_gain+str(j)] = gain
-                        frame_bkg_cor, err_bkg_cor = su.combine_detector_images([frame, -dt_bkg], [frame_err, err_bkg], collapse='sum')
+                                # Calculate the shot-noise for this detector
+                                #frame_err.append(np.zeros_like(hdu[d].data))
+                                frame_err.append(su.detector_shotnoise(hdu[d].data, ron[j], GAIN=gain, NDIT=ndit))
+                                hdr[self.key_gain+str(j)] = gain
+
+                        # Subtract the nod-pair from each other
+                        frame_bkg_cor, err_bkg_cor = su.combine_detector_images([frame, -dt_bkg], [frame_err, err_bkg], 
+                                                                                collapse='sum')
                         frame_bkg_cor, err_bkg_cor = su.util_correct_readout_artifact(frame_bkg_cor, err_bkg_cor, bpm, tw, debug=False)
+                        # Apply the flat-fielding, only now??
                         frame_bkg_cor, err_bkg_cor = su.util_flat_fielding(frame_bkg_cor, err_bkg_cor, flat, debug=False)
                         # plt.imshow((err_bkg_cor)[2], vmin=0, vmax=20)
                         # plt.show()

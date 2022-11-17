@@ -113,12 +113,21 @@ def util_slit_curve(im, bpm, tw, wlen_mins, wlen_maxs, debug=False):
     return slit_meta, wlens
 
 def util_master_flat_norm(im, bpm, tw, slit, badpix_clip_count=1e2, debug=False):
+    
+    # Loop over each detector
     blazes, flat_norm  = [], []
     for d, (det, badpix, trace, slit_meta) in enumerate(zip(im, bpm, tw, slit)):
+        
+        # Set low signal to NaN
         det[det<badpix_clip_count] = np.nan
-        det_rect = spectral_rectify_interp(det, badpix, trace, slit_meta, debug=debug)
+
+        det_rect, _ = spectral_rectify_interp(det, np.sqrt(det), badpix, trace, slit_meta, debug=debug)
+
+        # Retrieve the blaze function by mean-collapsing 
+        # the master flat along the slit
         blaze_orders = mean_collapse(det_rect, trace, debug=debug)
         blazes.append(blaze_orders)
+
         flat_norm.append(blaze_norm(det, trace, slit_meta, blaze_orders, debug=debug))
 
     return flat_norm, blazes
@@ -422,10 +431,12 @@ def slit_curve(det, badpix, trace, wlen_min, wlen_max, poly_order=2, spacing=40,
     #     spectral_rectify_interp(im, trace, [meta0, meta1, meta2], debug=debug)
     return [meta0, meta1, meta2], wlen
 
-def spectral_rectify_interp(im, im_err, badpix, trace, slit_mata, debug=False):
+def spectral_rectify_interp(im, im_err, badpix, trace, slit_meta, debug=False):
+
     bpm = (badpix.astype(bool) | np.isnan(im))
     im_rect_spec = np.copy(im)
     err_rect_spec = np.copy(im_err)
+
     # im_rect_spec[badpix.astype(bool)] = np.nan
     # if debug:
     #     plt.figure(figsize=(10,10))
@@ -436,33 +447,58 @@ def spectral_rectify_interp(im, im_err, badpix, trace, slit_mata, debug=False):
     #     plt.imshow(im_rect_spec[1095:1285, 1040:1230], vmin=-20, vmax=20)
     #     plt.savefig('im_b.png')
     #     plt.show()
+
     bpm_interp = np.zeros_like(bpm).astype(float)
     xx_grid = np.arange(0, im.shape[1])
     # xx_grid = np.arange(0.-edge, im.shape[1]+edge)
-    meta0, meta1, meta2 = slit_mata
+    meta0, meta1, meta2 = slit_meta
     trace_upper, trace_lower = trace
 
-    for o, (poly_upper, poly_lower, poly_meta0, poly_meta1, poly_meta2) in enumerate(zip(trace_upper, trace_lower, meta0, meta1, meta2)):
+    # Loop over each order
+    for o, (poly_upper, poly_lower, poly_meta0, poly_meta1, poly_meta2) in \
+        enumerate(zip(trace_upper, trace_lower, meta0, meta1, meta2)):
+
+        # Get the upper and lower edges of the order
         yy_upper = Poly.polyval(xx_grid, poly_upper)
         yy_lower = Poly.polyval(xx_grid, poly_lower)
         yy_grid = np.arange(int(yy_lower.min()), int(yy_upper.max()+1))
 
-        poly_full = np.array([Poly.polyval(xx_grid, poly_meta0), Poly.polyval(xx_grid, poly_meta1),Poly.polyval(xx_grid, poly_meta2)]).T
+        # Retrieve a pixel-grid using the slit-curvature 
+        # polynomial coefficients
+        poly_full = np.array([Poly.polyval(xx_grid, poly_meta0), 
+                              Poly.polyval(xx_grid, poly_meta1), 
+                              Poly.polyval(xx_grid, poly_meta2)]).T
         isowlen_grid = np.empty((len(yy_grid), len(xx_grid)))
+        # Loop over the horizontal axis
         for x in range(len(xx_grid)):
             isowlen_grid[:, x] = Poly.polyval(yy_grid, poly_full[x])
-                                
-        for i, (x_isowlen, data_row, err_row, mask) in enumerate(zip(isowlen_grid, im[yy_grid], im_err[yy_grid], bpm[yy_grid])):
+
+        # Loop over each row in the order
+        for i, (x_isowlen, data_row, err_row, mask) in \
+            enumerate(zip(isowlen_grid, im[yy_grid], im_err[yy_grid], bpm[yy_grid])):
+
             # mask = np.isnan(data_row)
             if np.sum(mask)>0.5*len(mask):
-                continue     
-            im_rect_spec[int(yy_grid[0]+i)] = interp1d(xx_grid[~mask], data_row[~mask], kind='cubic', bounds_error=False, fill_value=np.nan)(x_isowlen)
-            err_rect_spec[int(yy_grid[0]+i)] = interp1d(xx_grid[~mask], err_row[~mask], kind='cubic', bounds_error=False, fill_value=np.nan)(x_isowlen)
+                continue
+
+            # Correct for the slit-curvature by interpolating onto the pixel-grid
+            im_rect_spec[int(yy_grid[0]+i)] = interp1d(xx_grid[~mask], data_row[~mask], kind='cubic', 
+                                                       bounds_error=False, fill_value=np.nan
+                                                       )(x_isowlen)
+
+            err_rect_spec[int(yy_grid[0]+i)] = interp1d(xx_grid[~mask], err_row[~mask], kind='cubic', 
+                                                        bounds_error=False, fill_value=np.nan
+                                                        )(x_isowlen)
+
+            # Correct for the slit tilt? ...
+            # ...
+
     #         bpm_interp[int(yy_grid[0]+i)] = interp1d(xx_grid, mask.astype(float), kind='cubic', bounds_error=False, fill_value=np.nan)(x_isowlen)
     # badpix_new = np.abs(bpm_interp)>1e-1
     if debug:
-        plt.imshow(im_rect_spec, vmin=-20, vmax=20)
+        plt.imshow(im_rect_spec, )#vmin=-20, vmax=20)
         plt.show()
+
     return im_rect_spec, err_rect_spec
 
 def trace_rectify_interp(im, im_err, trace, debug=False):
@@ -497,56 +533,79 @@ def mean_collapse(im, trace, f0=0.5, fw=0.5, sigma=5, edge=10, debug=False):
     blaze_orders = []
     trace_upper, trace_lower = trace
 
+    # Loop over each order
     for o, (poly_upper, poly_lower) in enumerate(zip(trace_upper, trace_lower)):
         yy_upper = Poly.polyval(xx_grid, poly_upper)
         yy_lower = Poly.polyval(xx_grid, poly_lower)
         blaze = np.zeros_like(xx_grid, dtype=np.float64)
-        indices = [range(int(low+(f0-fw)*(up-low)), int(low+(f0+fw)*(up-low))+1) for (up, low) in zip(yy_upper, yy_lower)]
-        for i, indice in enumerate(indices):
-            mask = np.isnan(im_copy[indice,i])
+        indices = [range(int(low+(f0-fw)*(up-low)), 
+                         int(low+(f0+fw)*(up-low))+1) \
+                   for (up, low) in zip(yy_upper, yy_lower)]
+
+        # Loop over each column
+        for i in range(len(indices)):
+            mask = np.isnan(im_copy[indices[i],i])
             if np.sum(mask)>0.9*len(mask):
-                blaze[i] = np.nan    
+                blaze[i] = np.nan
             else:
-                blaze[i],_, _ = stats.sigma_clipped_stats(im_copy[indice,i][~mask], sigma=sigma)
+                blaze[i], _, _ = stats.sigma_clipped_stats(im_copy[indices[i],i][~mask], 
+                                                           sigma=sigma)
         blaze_orders.append(blaze)
         # plt.plot(xx_grid, blaze)
         # plt.show()
 
     return np.array(blaze_orders)
 
-def blaze_norm(im, trace, slit_mata, blaze_orders, edge=10, f0=0.5, fw=0.5, debug=False):
+def blaze_norm(im, trace, slit_meta, blaze_orders, edge=10, f0=0.5, fw=0.5, debug=False):
+    
     xx_grid_o = np.arange(0, im.shape[1])
     im_norm = np.copy(im)
     im_copy = np.ones_like(im, dtype=np.float64)*np.nan
     xx_grid = np.arange(0, im.shape[1])
     # xx_grid = np.arange(0.-edge, 2048+edge)
-    meta0, meta1, meta2 = slit_mata
+    meta0, meta1, meta2 = slit_meta
     trace_upper, trace_lower = trace
 
+    print('blaze_orders', blaze_orders.shape)
 
-    plt.plot(xx_grid, blaze_orders[0])
-    plt.show()
+    #plt.plot(xx_grid, blaze_orders[0])
+    #plt.show()
 
-    for o, (poly_upper, poly_lower, poly_meta0, poly_meta1, poly_meta2, blaze) in enumerate(zip(trace_upper, trace_lower, meta0, meta1, meta2, blaze_orders)):
+    # Loop over each order
+    for o, (poly_upper, poly_lower, poly_meta0, poly_meta1, poly_meta2, blaze) in \
+        enumerate(zip(trace_upper, trace_lower, meta0, meta1, meta2, blaze_orders)):
+
         yy_upper = Poly.polyval(xx_grid, poly_upper)
         yy_lower = Poly.polyval(xx_grid, poly_lower)
         # yy_mid = (yy_upper+yy_lower)/2.
         yy_grid = np.arange(int(yy_lower.min()), int(yy_upper.max()+1))
 
-        poly_full = np.array([Poly.polyval(xx_grid, poly_meta0), Poly.polyval(xx_grid, poly_meta1),Poly.polyval(xx_grid, poly_meta2)]).T
+        # Retrieve a pixel-grid using the slit-curvature 
+        # polynomial coefficients
+        poly_full = np.array([Poly.polyval(xx_grid, poly_meta0), 
+                              Poly.polyval(xx_grid, poly_meta1),
+                              Poly.polyval(xx_grid, poly_meta2)]).T
         isowlen_grid = np.empty((len(yy_grid), len(xx_grid)))
+        # Loop over the horizontal axis
         for x in range(len(xx_grid)):
             isowlen_grid[:, x] = Poly.polyval(yy_grid, poly_full[x])
-                                
+        
+        # Loop over each row in the order
         for i, x_isowlen in enumerate(isowlen_grid):
+            
             mask = np.isnan(blaze)
             if np.sum(mask)>0.9*len(mask):
                 continue
-            im_copy[int(yy_grid[0]+i)] = interp1d(x_isowlen[~mask], blaze[~mask], kind='cubic', bounds_error=False, fill_value=np.nan)(xx_grid_o)
+
+            # Correct for the slit-curvature by interpolating onto the pixel-grid
+            im_copy[int(yy_grid[0]+i)] = interp1d(x_isowlen[~mask], blaze[~mask], kind='cubic', 
+                                                  bounds_error=False, fill_value=np.nan
+                                                  )(xx_grid_o)
         # for i in range(len(xx_grid)):
         #     im_copy[int(yy_lower.min()):int(yy_lower[i])+1,i] = np.nan
         #     im_copy[int(yy_upper[i]):int(yy_upper.max()+1)+1,i] = np.nan
-        
+
+    # Normalize the image by the blaze function
     im_norm /= im_copy
     im_norm[im_norm<0.1] = np.nan
     if debug:
