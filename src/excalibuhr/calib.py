@@ -258,7 +258,6 @@ class Pipeline:
                        (self.calib_info[self.key_DIT] == dit)
         indices_bpm = (self.calib_info[self.key_caltype] == "DARK_BPM") & \
                       (self.calib_info[self.key_DIT] == dit)
-        print('indices_dark.sum()', indices_dark.sum())
         assert (indices_dark.sum())<2
         # What's the use in a for-loop here?
         for file in self.calib_info[indices_dark][self.key_filename]:
@@ -322,7 +321,6 @@ class Pipeline:
         for item_wlen in unique_wlen:
             indices_flat = indices & ((self.calib_info[self.key_DIT] == dit) & \
                                       (self.calib_info[self.key_wlen] == item_wlen))
-            print('indices_flat.sum()', indices_flat.sum())
             assert (indices_flat.sum())<2
             for file in self.calib_info[indices_flat][self.key_filename]:
                 flat = fits.getdata(os.path.join(self.calpath, file))
@@ -487,7 +485,9 @@ class Pipeline:
         if not os.path.exists(self.noddingpath):
             os.makedirs(self.noddingpath)
 
+        # Select the science observations
         indices = self.header_info[self.key_catg] == "SCIENCE"
+
         # Check unique WLEN setting
         unique_wlen = set()
         for item in self.header_info[indices][self.key_wlen]:
@@ -585,7 +585,6 @@ class Pipeline:
                                  for item in df_nods[self.key_filename].iloc[row:row+Nexp_per_nod]
                                  ]
                     dt_list, err_list = [], []
-                    print(len(file_list))
                     # Loop over the observations at the next nod position
                     for file in file_list:
                         frame, frame_err = [], []
@@ -645,7 +644,7 @@ class Pipeline:
                         self.add_to_product("./obs_nodding/"+'Nodding_{}'.format(file), "NODDING_FRAME")
                         # plt.imshow((frame_bkg_cor/flat)[2], vmin=-20, vmax=20)
                         # plt.show()
-                        if hdr[self.key_nodpos]=='A':
+                        if hdr[self.key_nodpos] == 'A':
                             nod = -1
                         else:
                             nod = 1
@@ -653,10 +652,13 @@ class Pipeline:
                         #   extract
     
     def obs_nodding_combine(self, debug=True):
+
+        # Create the obs_nodding directory if it does not exist yet
         self.noddingpath = os.path.join(self.outpath, "obs_nodding")
         if not os.path.exists(self.noddingpath):
             os.makedirs(self.noddingpath)
         
+        # Select the obs_nodding observations
         indices = (self.product_info[self.key_caltype] == 'NODDING_FRAME')
 
         # Check unique WLEN setting
@@ -668,11 +670,16 @@ class Pipeline:
         else:
             print(f"Unique WLEN settings: {unique_wlen}\n")
 
+        # Loop over each WLEN setting
         for item_wlen in unique_wlen:            
             indices_wlen = indices & (self.product_info[self.key_wlen] == item_wlen)
+
+            # Loop over the nodding positions
             for pos in ['A', 'B']:
                 dt, dt_err = [], []
                 indices = indices_wlen & (self.product_info[self.key_nodpos] == pos)
+
+                # Loop over the observations at each nodding position
                 for j, file in enumerate(self.product_info[indices][self.key_filename]):
                     with fits.open(os.path.join(self.outpath, file)) as hdu:
                         hdr = hdu[0].header
@@ -681,20 +688,28 @@ class Pipeline:
 
                         # plt.imshow(hdu[1].data[0], vmin=0, vmax=8)
                         # plt.show()
+                
+                # Mean-combine the images per detector for each nodding position
                 print("Combining {0:d} frames at slit position {1:s}...".format(j+1, pos))
                 combined, combined_err = su.combine_detector_images(dt, dt_err, collapse='mean')
+
                 # plt.imshow(combined_err[0]<1)
                 # plt.imshow(combined_err[0], vmin=0, vmax=8)
                 # plt.show()
+
+                # Save the combined obs_nodding observation
                 file_name = os.path.join(self.noddingpath, 'Nodding_combined_{}_{}.fits'.format(pos, item_wlen))
                 su.wfits(file_name, combined, hdr, im_err=combined_err)
                 self.add_to_product("./obs_nodding/"+'Nodding_combined_{}_{}.fits'.format(pos, item_wlen), "NODDING_COMBINED")
 
     def extract1d_nodding(self, companion_sep=None, debug=False):    
+        
+        # Create the obs_nodding directory if it does not exist yet
         self.noddingpath = os.path.join(self.outpath, "obs_nodding")
         if not os.path.exists(self.noddingpath):
             os.makedirs(self.noddingpath)
 
+        # Select the combined obs_nodding observations
         indices = (self.product_info[self.key_caltype] == 'NODDING_COMBINED')
 
         # Check unique WLEN setting
@@ -703,15 +718,22 @@ class Pipeline:
             unique_wlen.add(item)
         print(f"Unique WLEN settings: {unique_wlen}\n")
 
+        # Loop over each WLEN setting
         for item_wlen in unique_wlen:
             
             indices_wlen = indices & (self.product_info[self.key_wlen] == item_wlen)
 
-            indices_blaze = (self.calib_info[self.key_caltype] == "BLAZE") & (self.calib_info[self.key_wlen] == item_wlen)
-            indices_tw = (self.calib_info[self.key_caltype] == "TRACE_TW") & (self.calib_info[self.key_wlen] == item_wlen)
-            indices_slit = (self.calib_info[self.key_caltype] == "SLIT_TILT") & (self.calib_info[self.key_wlen] == item_wlen)
-            indices_bpm = (self.calib_info[self.key_caltype] == "FLAT_BPM") & (self.calib_info[self.key_wlen] == item_wlen)
-            indices_wave = (self.calib_info[self.key_caltype] == "INIT_WLEN") & (self.calib_info[self.key_wlen] == item_wlen)
+            # Select the corresponding calibration files
+            indices_blaze = (self.calib_info[self.key_caltype] == "BLAZE") & \
+                            (self.calib_info[self.key_wlen] == item_wlen)
+            indices_tw = (self.calib_info[self.key_caltype] == "TRACE_TW") & \
+                         (self.calib_info[self.key_wlen] == item_wlen)
+            indices_slit = (self.calib_info[self.key_caltype] == "SLIT_TILT") & \
+                           (self.calib_info[self.key_wlen] == item_wlen)
+            indices_bpm = (self.calib_info[self.key_caltype] == "FLAT_BPM") & \
+                          (self.calib_info[self.key_wlen] == item_wlen)
+            indices_wave = (self.calib_info[self.key_caltype] == "INIT_WLEN") & \
+                           (self.calib_info[self.key_wlen] == item_wlen)
             
             assert (indices_blaze.sum())<2, "More than one calibration file."
             assert (indices_tw.sum())<2, "More than one calibration file."
@@ -739,34 +761,46 @@ class Pipeline:
             # plt.show()
             # sys.exit()
             
+            # Loop over each combined obs_nodding observation
             for file in self.product_info[indices_wlen][self.key_filename]:
+
                 with fits.open(os.path.join(self.outpath, file)) as hdu:
                     hdr = hdu[0].header
                     dt = hdu[0].data
                     dt_err = hdu[1].data
                 pos = hdr[self.key_nodpos]
-                if pos =='A':
+                if pos == 'A':
                     nod = -1
                 else:
                     nod = 1                    
                 nodthrow = hdr[self.key_nodthrow]
                 slitlen = hdr[self.key_slitlen]
-                f0 = 0.5+nod*nodthrow/2./slitlen
+                # Slit-fraction of centered for the nod-throw
+                f0 = 0.5 + nod*nodthrow/2./slitlen
                 
                 # hdu_ref = fits.open('/mnt/media/data/Users/yzhang/Projects/2M0103_CRIRES/2021-10-16/product/obs_nodding/cr2res_obs_nodding_combinedA_000.fits')
                 # dt_err = [hdu_ref[2].data/2., hdu_ref[4].data/2., hdu_ref[6].data/2.]
                 if companion_sep is None:
+                    # The slit is centered on the target
                     print("Location of target on slit: ", f0)
-                    flux_pri, err_pri = su.util_extract_spec(dt, dt_err, bpm, tw, slit, blaze, gains=self.gain, f0=f0, debug=debug)
+                    
+                    # Extract a 1D spectrum for the target
+                    flux_pri, err_pri = su.util_extract_spec(dt, dt_err, bpm, tw, slit, blaze, aper_half=20, 
+                                                             gains=self.gain, f0=f0, debug=debug)
 
                     file_name = os.path.join(self.noddingpath, 'Extr1D_Nodding_combined_{}_{}_{}.fits'.format(pos, item_wlen, 'PRIMARY'))
                     su.wfits(file_name, flux_pri, hdr, im_err=err_pri)
                     self.add_to_product("./obs_nodding/"+'Extr1D_Nodding_combined_{}_{}_{}.fits'.format(pos, item_wlen, 'PRIMARY'), "Extr1D_PRIMARY")
                 else:
+                    # The slit is centered on the star, not the companion
                     f1 = f0 - companion_sep/slitlen
                     print("Location of star and companion: {0:.3f}, {1:.3f}".format(f0, f1))
-                    flux_sec, err_sec = su.util_extract_spec(dt, dt_err, bpm, tw, slit, blaze, gains=self.gain, f0=f1, aper_half=10, debug=debug)
-                    flux_pri, err_pri = su.util_extract_spec(dt, dt_err, bpm, tw, slit, blaze, gains=self.gain, aper_half=10, f0=f0, debug=debug)
+
+                    # Extract a 1D spectrum for the primary and secondary targets
+                    flux_sec, err_sec = su.util_extract_spec(dt, dt_err, bpm, tw, slit, blaze, 
+                                                             gains=self.gain, f0=f1, aper_half=20, debug=debug)
+                    flux_pri, err_pri = su.util_extract_spec(dt, dt_err, bpm, tw, slit, blaze, 
+                                                             gains=self.gain, aper_half=20, f0=f0, debug=debug)
 
                     file_name = os.path.join(self.noddingpath, 'Extr1D_Nodding_combined_{}_{}_{}.fits'.format(pos, item_wlen, 'PRIMARY'))
                     su.wfits(file_name, flux_pri, hdr, im_err=err_pri)
@@ -775,6 +809,10 @@ class Pipeline:
                     file_name = os.path.join(self.noddingpath, 'Extr1D_Nodding_combined_{}_{}_{}.fits'.format(pos, item_wlen, 'SECONDARY'))
                     su.wfits(file_name, flux_sec, hdr, im_err=err_sec)
                     self.add_to_product("./obs_nodding/"+'Extr1D_Nodding_combined_{}_{}_{}.fits'.format(pos, item_wlen, 'SECONDARY'), "Extr1D_SECONDARY")
+                
+                # TODO: Slit is not centered on any source
+                # ...
+                # What aperture size???
 
 
         # savename = outpath / f"spec_{tag[:3]}_nod{which_nod}_{j:02d}.npz"

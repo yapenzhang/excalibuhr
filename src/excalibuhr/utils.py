@@ -121,6 +121,7 @@ def util_master_flat_norm(im, bpm, tw, slit, badpix_clip_count=1e2, debug=False)
         # Set low signal to NaN
         det[det<badpix_clip_count] = np.nan
 
+        # Correct for the slit-curvature
         det_rect, _ = spectral_rectify_interp(det, np.sqrt(det), badpix, trace, slit_meta, debug=debug)
 
         # Retrieve the blaze function by mean-collapsing 
@@ -160,11 +161,19 @@ def util_flat_fielding(im, im_err, flat, debug=False):
     return im_corr, err_corr
 
 def util_extract_spec(im, im_err, bpm, tw, slit, blazes, gains, f0=0.5, aper_half=15, debug=False):
+    
+    # Loop over each detector
     flux, err  = [], []
-    for d, (det, det_err, badpix, trace, slit_meta, blaze, gain) in enumerate(zip(im, im_err,  bpm, tw, slit, blazes, gains)):
+    for d, (det, det_err, badpix, trace, slit_meta, blaze, gain) in \
+        enumerate(zip(im, im_err,  bpm, tw, slit, blazes, gains)):
+
+        # Correct for the slit-curvature
         det_rect, err_rect = spectral_rectify_interp(det, det_err,  badpix, trace, slit_meta, debug=False)
         # det_rect, err_rect = trace_rectify_interp(det_rect, err_rect, trace, debug=False)
-        f_opt, f_err = extract_spec(det_rect, err_rect, badpix, trace, gain=gain, f0=f0, aper_half=aper_half, debug=debug)
+
+        # Extract a 1D spectrum
+        f_opt, f_err = extract_spec(det_rect, err_rect, badpix, trace, 
+                                    gain=gain, f0=f0, aper_half=aper_half, debug=debug)
         flux.append(f_opt)
         err.append(f_err)
 
@@ -566,8 +575,6 @@ def blaze_norm(im, trace, slit_meta, blaze_orders, edge=10, f0=0.5, fw=0.5, debu
     meta0, meta1, meta2 = slit_meta
     trace_upper, trace_lower = trace
 
-    print('blaze_orders', blaze_orders.shape)
-
     #plt.plot(xx_grid, blaze_orders[0])
     #plt.show()
 
@@ -648,6 +655,7 @@ def readout_artifact(det, det_err, badpix, trace, Nborder=10, debug=False):
     return det-ron_col, np.sqrt(det_err**2+err_col**2)
 
 def extract_spec(im, im_err, bpm, trace, gain=2., f0=0.5, aper_half=20, mode='optimal', sigma=5, debug=False):
+
     im_copy = np.copy(im)
     bpm_copy = np.copy(bpm)
     err_copy = np.copy(im_err)
@@ -658,16 +666,22 @@ def extract_spec(im, im_err, bpm, trace, gain=2., f0=0.5, aper_half=20, mode='op
     for o, (poly_upper, poly_lower) in enumerate(zip(trace_upper, trace_lower)):
         # poly_mid = (poly_upper + poly_lower)/2.
         # yy_mid = Poly.polyval(xx_grid, poly_mid)
+        
+        # Crop out the order from the frame
         yy_upper = Poly.polyval(xx_grid, poly_upper)[len(xx_grid)//2] 
         yy_lower = Poly.polyval(xx_grid, poly_lower)[len(xx_grid)//2] 
         slit_len = (yy_upper-yy_lower)
         im_sub = im_copy[int(yy_lower):int(yy_upper+1)]
         im_err_sub = err_copy[int(yy_lower):int(yy_upper+1)]
         bpm_sub = bpm_copy[int(yy_lower):int(yy_upper+1)]
+
+        # Pixel-location of target
         obj_cen = slit_len*f0
         # print(slit_len, f0, obj_cen)
         
-        f_opt, f_err = optimal_extraction(im_sub.T, im_err_sub.T**2, bpm_sub.T, int(np.round(obj_cen)), aper_half, gain=gain, debug=debug) 
+        # Extract a 1D spectrum using the optimal extraction algorithm
+        f_opt, f_err = optimal_extraction(im_sub.T, im_err_sub.T**2, bpm_sub.T, int(np.round(obj_cen)), 
+                                          aper_half, gain=gain, debug=debug) 
         flux.append(f_opt)
         err.append(f_err)
 
@@ -676,9 +690,12 @@ def extract_spec(im, im_err, bpm, trace, gain=2., f0=0.5, aper_half=20, mode='op
 
 def optimal_extraction(D_full, V_full, bpm_full, obj_cen, aper_half, return_profile=False, badpix_clip=3, max_iter=10, gain=2., NDIT=1., etol=1e-6, debug=False):
     # TODO: NDIT from header.
-    D = D_full[:,obj_cen-aper_half:obj_cen+aper_half+1]
-    V = V_full[:,obj_cen-aper_half:obj_cen+aper_half+1]
+
+    D = D_full[:,obj_cen-aper_half:obj_cen+aper_half+1] # Observation
+    V = V_full[:,obj_cen-aper_half:obj_cen+aper_half+1] # Variance
     bpm = bpm_full[:,obj_cen-aper_half:obj_cen+aper_half+1]
+
+    # Sigma-clip the observation and add bad-pixels to map
     filtered_D = stats.sigma_clip(D, sigma=badpix_clip, axis=0)
     bpm = filtered_D.mask | bpm 
     D = np.nan_to_num(D, nan=etol)
@@ -691,9 +708,11 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen, aper_half, return_prof
     D_norm = np.zeros_like(D)
     P = np.zeros_like(D)
 
+    # Normalize the observation per pixel-row
     for x in spatial_x:
         D_norm[:,x] = D[:,x]/(f_std+etol)
 
+    # For each row, fit polynomial, iteratively clipping pixels
     for x in spatial_x:
         p_model, M_bp_new = PolyfitClip(wave_x, \
                         D_norm[:,x], 2, M_bp_init[:,x], \
@@ -701,6 +720,8 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen, aper_half, return_prof
         P[:,x] = p_model
         # M_bp_init[:,x] = M_bp_new
     P[P<=0] = etol
+
+    # Normalize the polynomial model (profile) per pixel-column
     for w in wave_x:
         P[w] /= np.sum(P[w])
 
@@ -708,22 +729,44 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen, aper_half, return_prof
     M_bp = np.copy(M_bp_init)
     V_new = V + D / gain / NDIT
     while ite < max_iter:
-        f_opt = np.sum(M_bp*P*D/V_new, axis=1)/(np.sum(M_bp*P*P/V_new, axis=1)+etol)
+        # Optimally extracted spectrum, obtained by accounting
+        # for the profile and variance
+        f_opt = np.sum(M_bp*P*D/V_new, axis=1) / (np.sum(M_bp*P*P/V_new, axis=1) + etol)
+        
+        # Residual of expanded optimally extracted spectrum and the observation
         Res = M_bp * (D - P*np.tile(f_opt, (P.shape[1],1)).T)**2/V_new
-        V_new = V + P*np.tile(np.abs(f_opt), (P.shape[1],1)).T /gain / NDIT
+
+        # Calculate a new variance with the optimally extracted spectrum
+        V_new = V + P*np.tile(np.abs(f_opt), (P.shape[1],1)).T / gain / NDIT
+
+        # Halt iterations if residuals are small enough
         if np.all(Res < badpix_clip**2):
             break
+
         for x in wave_x:
             if np.any(Res[x]>badpix_clip**2):
                 M_bp[x, np.argmax(Res[x]-badpix_clip**2)] = 0.
-        ite += 1 
+        ite += 1
 
-    f_opt = np.sum(M_bp*P*D/V_new, axis=1)/(np.sum(M_bp*P*P/V_new, axis=1)+etol)
-    var = np.sum(M_bp*P, axis=1)/(np.sum(M_bp*P*P/V_new, axis=1)+etol) * np.sum(Res)/(np.sum(M_bp)-len(f_opt)) # rescale errbar by chi2
-    
+    # Final optimally extracted spectrum
+    f_opt = np.sum(M_bp*P*D/V_new, axis=1) / (np.sum(M_bp*P*P/V_new, axis=1)+etol)
+    # Rescale the variance by the chi2
+    var = np.sum(M_bp*P, axis=1) / (np.sum(M_bp*P*P/V_new, axis=1)+etol) * np.sum(Res)/(np.sum(M_bp)-len(f_opt))
+
     if debug:
         # print("Number of iterations: ", ite)
         print("Reduced chi2: ", np.sum(Res)/(np.sum(M_bp)-len(f_opt)))
+
+        D[M_bp == 0] = np.nan
+        fig, ax = plt.subplots(nrows=2)
+        ax[0].imshow(D.T, aspect='auto', vmin=(P*np.tile(f_opt, (P.shape[1],1)).T).min(),
+                    vmax=(P*np.tile(f_opt, (P.shape[1],1)).T).max())
+        ax[1].imshow((P*np.tile(f_opt, (P.shape[1],1)).T).T, aspect='auto',
+                    vmin=(P*np.tile(f_opt, (P.shape[1],1)).T).min(),
+                    vmax=(P*np.tile(f_opt, (P.shape[1],1)).T).max())
+        plt.show()
+
+        """
         # plt.plot(f_std)
         plt.plot(f_opt)
         plt.show()
@@ -731,7 +774,7 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen, aper_half, return_prof
         # plt.plot(f_opt/np.sqrt(var))
         plt.plot(f_opt/np.sqrt(var))
         plt.show()
-
+        """
 
     if return_profile:
         return f_opt, np.sqrt(var), P, M_bp
