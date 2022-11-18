@@ -102,15 +102,11 @@ def util_order_trace(im, debug=False):
     return poly_trace
 
 
-def util_slit_curve(im, bpm, tw, wlen_mins, wlen_maxs, debug=False):
-
+def util_slit_curve(im, tw, wlen_mins, wlen_maxs, debug=False):
     # Loop over each detector
     slit_meta, wlens = [], [] # (detector, poly_meta2, order) 
-    for d, (det, badpix, trace, wlen_min, wlen_max) in enumerate(zip(im, bpm, tw, wlen_mins, wlen_maxs)):
-        # hacking a peculiar value for wavlength range from the header
-        if d==2:
-            wlen_min[-1] = 1949.085
-        slit, wlen = slit_curve(det, badpix, trace, wlen_min, wlen_max, debug=debug)
+    for d, (det, trace, wlen_min, wlen_max) in enumerate(zip(im, tw, wlen_mins, wlen_maxs)):
+        slit, wlen = slit_curve(det, trace, wlen_min, wlen_max, debug=debug)
         slit_meta.append(slit)
         wlens.append(wlen)
     return slit_meta, wlens
@@ -326,19 +322,14 @@ def order_trace(det, poly_order=2, sigma_threshold=3, sub_factor=64, order_lengt
 
 
 
-def slit_curve(det, badpix, trace, wlen_min, wlen_max, poly_order=2, spacing=40, sub_factor=4, debug=False):
+def slit_curve(det, trace, wlen_min, wlen_max, poly_order=2, spacing=40, sub_factor=4, debug=False):
 
-    # Replace bad pixels with the median-filtered values
-    badpix = (badpix | np.isnan(det))
-    im = np.where(badpix, signal.medfilt2d(det, 5), det)
-    im = np.where(np.isnan(im), signal.medfilt2d(im, 5), im)
-    im = np.nan_to_num(im)
+    badpix = np.isnan(det)
+    im = np.ma.masked_array(det, mask=badpix)
 
     xx = np.arange(im.shape[1])
     trace_upper, trace_lower = trace
     meta0, meta1, meta2, wlen = [], [], [], [] # (order, poly_meta) 
-    # if debug:
-    #     plt.imshow(im, vmin=200, vmax=1e4)
     
     # Loop over each order
     for o, (upper, lower, w_min, w_max) in enumerate(zip(trace_upper, trace_lower, wlen_min, wlen_max)):
@@ -355,37 +346,48 @@ def slit_curve(det, badpix, trace, wlen_min, wlen_max, poly_order=2, spacing=40,
         
         # Loop over each pixel-row in a sub-sampled image
         slit_image, x_slit, poly_slit = [], [], []
-        for row in range(int(yy_lower.min()), int(yy_upper.max()), sub_factor):
+        N_lines = 0
+        for row in range(int(yy_lower.min()+1), int(yy_upper.max()), sub_factor):
+
+            # combine a few rows (N=sub_factor) to increase S/N and reject outliers
+            im_masked = stats.sigma_clip(im[row:row+sub_factor], sigma=2, axis=0, masked=True)
+            spec = np.ma.mean(im_masked, axis=0)
+            mask = (np.sum(im_masked.mask, axis=0) > 0.7*sub_factor)
+            badchannel = np.argwhere(mask)[:,0]
+            # mask neighboring pixels as well
+            badchannel = np.concatenate((badchannel, badchannel+1, badchannel-1), axis=None)
+
+            # measure the baseline of the spec to be 10% lowest values
+            height = np.median(np.sort(spec[~mask])[:len(spec)//10])
+
             # Find the pixels (along horizontal axis) where signal is significant
-            peaks, properties = signal.find_peaks(im[row], distance=spacing, width=5) # doesn't work with nans
+            peaks, properties = signal.find_peaks(spec, distance=spacing, width=10, height=2*height) 
+            # mask the peaks identified due to bad channels
+            peaks = np.array([item for item in peaks if not item in badchannel])
+
+            # leave out lines around detector edge
             width = np.median(properties['widths'])
             peaks = peaks[(peaks<(im.shape[1]-width)) & (peaks>(width))]
 
             # Calculate center-of-mass of the peaks
-            cens = [np.sum(xx[int(p-width):int(p+width)]*im[row][int(p-width):int(p+width)]) / \
-                    np.sum(im[row][int(p-width):int(p+width)]) \
+            cens = [np.sum(xx[int(p-width):int(p+width)]*spec[int(p-width):int(p+width)]) / \
+                    np.sum(spec[int(p-width):int(p+width)]) \
                     for p in peaks]
-            slit_image.extend([[p, row] for p in cens])
-            # print(np.diff(cens))
+            slit_image.extend([[p, row+(sub_factor-1)/2.] for p in cens])
 
-            # Select the rows that are closest to the mid-point
-            if np.abs(row-int(yy_mid[len(xx)//2])) < sub_factor:
-                pivot = cens
-                bins = sorted([x-spacing/2. for x in cens] + \
-                              [x+spacing/2. for x in cens])
-
-            """
-            print(len(peaks))
-            plt.plot(xx, im[row])
-            plt.plot(peaks, im[row][peaks],'x')
-            plt.plot(cens, im[row][peaks],'x')
-            # for p in peaks:
-            #     plt.axvline(p-width)
-            #     plt.axvline(p+width)
-            plt.show()
-            """
-        
-        #print(slit_image)
+            # generate bins to divide the peaks in groups
+            # when maximum number of fpet lines are identified in the order
+            if len(peaks) > N_lines:
+                bins = sorted([x-spacing for x in cens] + \
+                              [x+spacing for x in cens])
+                N_lines = len(peaks)
+            
+            # plt.plot(xx, spec)
+            # plt.plot(peaks, spec[peaks],'x')
+            # plt.plot(cens, spec[peaks],'x')
+            # # for p in badchannel:
+            # #     plt.axvline(p)
+            # plt.show()
 
         slit_image = np.array(slit_image)
         # Index of bin to which each peak belongs
@@ -406,12 +408,14 @@ def slit_curve(det, badpix, trace, wlen_min, wlen_max, poly_order=2, spacing=40,
                 continue
             # Select the intersection within the valid x-coordinates
             root = root[(root>int(xs.min()-2)) & (root<int(xs.max()+2))]
-            x_slit.append(root.mean())
+            # x_slit stores the x-coordinates of each fpet line at the slit center
+            if len(root)>0:
+                x_slit.append(root.mean())
+                poly_slit.append(poly)
 
-            poly_slit.append(poly)
-            #plt.plot(root.mean(), Poly.polyval(root.mean(), middle), 'ko')
-            yy = np.arange(int(yy_lower.min()-5), int(yy_upper.max()+5))
-            #plt.plot(Poly.polyval(yy, poly), yy, 'r')
+            # plt.plot(root.mean(), Poly.polyval(root.mean(), middle), 'ko')
+            # plt.plot(Poly.polyval(yy, poly), yy, 'r')
+            # plt.scatter(xs, ys)
 
         # Fit a polynomial to the polynomial coefficients
         # using the x-coordinates of the fpet signal
@@ -423,11 +427,18 @@ def slit_curve(det, badpix, trace, wlen_min, wlen_max, poly_order=2, spacing=40,
         meta1.append(poly_meta1)
         meta2.append(poly_meta2)
         
+        if debug:
+            xx_grid = x_slit
+            yy = np.arange(int(yy_lower.min()-5), int(yy_upper.max()+5))
+            # xx_grid = np.arange(0, im.shape[1], 100)
+            poly_full = np.array([Poly.polyval(xx_grid, poly_meta0), 
+                                  Poly.polyval(xx_grid, poly_meta1),
+                                  Poly.polyval(xx_grid, poly_meta2)]).T
+            for x in range(len(xx_grid)):
+                plt.plot(Poly.polyval(yy, poly_full[x]), yy, 'r--', zorder=10)
+
         # Determine the wavelength solution along the detectors/orders
-        ww = np.linspace(w_min, w_max, len(xx))
-        dw = ww[1] - ww[0] # Wavelength grid
-        
-        # Mapping from measured positions to linear spacing, fitting with 2nd-order poly
+        # Mapping from measured fpet positions to a linear-spaced grid, fitting with 2nd-order poly
         dx_slit = np.median(np.diff(x_slit))
         xx_lin = np.linspace(x_slit[-1]-dx_slit*(len(x_slit)), x_slit[-1], len(x_slit))
         poly = Poly.polyfit(x_slit, xx_lin, 2)
@@ -437,17 +448,8 @@ def slit_curve(det, badpix, trace, wlen_min, wlen_max, poly_order=2, spacing=40,
         ww_cal = Poly.polyval(Poly.polyval(xx, poly), grid_poly)
         wlen.append(ww_cal)
         
-        if debug:
-            xx_grid = pivot
-            # xx_grid = np.arange(0, im.shape[1], 100)
-            poly_full = np.array([Poly.polyval(xx_grid, poly_meta0), 
-                                  Poly.polyval(xx_grid, poly_meta1),
-                                  Poly.polyval(xx_grid, poly_meta2)]).T
-            for x in range(len(xx_grid)):
-                plt.plot(Poly.polyval(yy, poly_full[x]), yy, 'r--', zorder=10)
-
     if debug:
-        plt.imshow(np.log10(im), )#vmin=200, vmax=2e4)
+        plt.imshow(im, vmin=100, vmax=2e4)
         plt.show()
         # plt.plot(xx, ww_cal)
         # plt.plot(xx, ww)

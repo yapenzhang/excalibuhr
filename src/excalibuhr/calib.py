@@ -374,9 +374,6 @@ class Pipeline:
 
             file = self.calib_info[indices_dark][self.key_filename].iloc[0]
             dark = fits.getdata(os.path.join(self.calpath, file))
-            # What's the use in a for-loop here?
-            for file in self.calib_info[indices_bpm][self.key_filename]:
-                bpm = fits.getdata(os.path.join(self.calpath, file))
 
             wlen_mins, wlen_maxs = [], []
             with fits.open(os.path.join(self.rawpath, file_fpet)) as hdu:
@@ -400,7 +397,7 @@ class Pipeline:
                     wlen_maxs.append(wlen_max)
 
             # Assess the slit curvature and wavelengths along the orders
-            slit, wlens = su.util_slit_curve(fpet, bpm, tw, wlen_mins, wlen_maxs, debug=debug)
+            slit, wlens = su.util_slit_curve(fpet, tw, wlen_mins, wlen_maxs, debug=debug)
 
             # Save the polynomial coefficients describing the slit curvature 
             # and wavelength solution
