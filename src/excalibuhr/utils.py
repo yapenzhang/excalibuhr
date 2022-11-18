@@ -73,7 +73,7 @@ def util_master_flat(dt, dark, collapse='median', badpix_clip=5):
 
     return master, badpix
 
-def combine_detector_images(dt, err, collapse='mean'):
+def combine_frames(dt, err, collapse='mean'):
     if collapse == 'median':
         master = np.nanmedian(dt, axis=0)
         master_err = np.sqrt(np.nansum(np.square(err), axis=0))/np.sum(~np.isnan(dt), axis=0)
@@ -107,6 +107,9 @@ def util_slit_curve(im, bpm, tw, wlen_mins, wlen_maxs, debug=False):
     # Loop over each detector
     slit_meta, wlens = [], [] # (detector, poly_meta2, order) 
     for d, (det, badpix, trace, wlen_min, wlen_max) in enumerate(zip(im, bpm, tw, wlen_mins, wlen_maxs)):
+        # hacking a peculiar value for wavlength range from the header
+        if d==2:
+            wlen_min[-1] = 1949.085
         slit, wlen = slit_curve(det, badpix, trace, wlen_min, wlen_max, debug=debug)
         slit_meta.append(slit)
         wlens.append(wlen)
@@ -179,14 +182,28 @@ def util_extract_spec(im, im_err, bpm, tw, slit, blazes, gains, f0=0.5, aper_hal
 
     return np.array(flux), np.array(err)
 
-def util_wlen_solution(dt, dt_err, wlen_init, blazes, debug=False):
-    flux, err  = [], []
-    # w_tellu, f_tellu = run_sky_calc()
-    for d, (flux, flux_err, w_init, blaze) in enumerate(zip(dt, dt_err, wlen_init, blazes)):
-        w_cal = wlen_solution(flux, flux_err, w_init, blaze, debug=False)
-        # flux.append(f_opt)
-        # err.append(f_err)
-    return np.array(flux), np.array(err)
+def util_wlen_solution(dt, wlen_init, blazes, tellu, debug=False):
+    wlen_cal  = []
+    for d, (flux, w_init, blaze) in enumerate(zip(dt, wlen_init, blazes)):
+        w_cal = wlen_solution(flux, w_init, blaze, tellu, debug=debug)
+        wlen_cal.append(w_cal)
+    return np.array(wlen_cal)
+
+def util_unravel_spec(wlens, specs, errs, blazes, debug=False):
+    # shape: (wlen_settings, detectors, orders, -1)
+    N_set, N_det, N_ord, Nx = wlens.shape
+    wlen_flatten = np.reshape(wlens, (N_set*N_det*N_ord, Nx))
+    indices = np.argsort(wlen_flatten[:,0])
+    wlen = wlen_flatten[indices].flatten()
+    unraveled = []
+    for dt in [specs, errs, blazes]:
+        dt_flatten = np.reshape(dt, (N_set*N_det*N_ord, Nx))
+        unraveled.append(dt_flatten[indices].flatten())
+    spec, err, norm = unraveled
+    if debug:
+        plt.plot(wlen, spec/norm)
+        plt.show()
+    return wlen, spec/norm, err/norm
 
 def order_trace(det, poly_order=2, sigma_threshold=3, sub_factor=64, order_length_min=125, debug=False):
 
@@ -408,14 +425,17 @@ def slit_curve(det, badpix, trace, wlen_min, wlen_max, poly_order=2, spacing=40,
         
         # Determine the wavelength solution along the detectors/orders
         ww = np.linspace(w_min, w_max, len(xx))
-        grid_poly = Poly.polyfit([0, len(xx)], [w_min, w_max], 1) # Wavelength grid
-        # Mapping from measured positions to linear spacing 
-        w_lin = np.linspace(x_slit[0], x_slit[-1], len(x_slit))
-        cal_poly = Poly.polyfit(w_lin, x_slit-w_lin, 2)
-        xx_offset = Poly.polyval(xx, cal_poly) # relative shift in pixel
-        ww_cal = Poly.polyval(xx+xx_offset, grid_poly) # to wavelength
+        dw = ww[1] - ww[0] # Wavelength grid
+        
+        # Mapping from measured positions to linear spacing, fitting with 2nd-order poly
+        dx_slit = np.median(np.diff(x_slit))
+        xx_lin = np.linspace(x_slit[-1]-dx_slit*(len(x_slit)), x_slit[-1], len(x_slit))
+        poly = Poly.polyfit(x_slit, xx_lin, 2)
+        
+        # Fix the end of the wavelength grid to be values from the header
+        grid_poly = Poly.polyfit([Poly.polyval(xx, poly)[0], Poly.polyval(xx, poly)[-1]], [w_min, w_max], 1)
+        ww_cal = Poly.polyval(Poly.polyval(xx, poly), grid_poly)
         wlen.append(ww_cal)
-
         
         if debug:
             xx_grid = pivot
@@ -429,10 +449,11 @@ def slit_curve(det, badpix, trace, wlen_min, wlen_max, poly_order=2, spacing=40,
     if debug:
         plt.imshow(np.log10(im), )#vmin=200, vmax=2e4)
         plt.show()
-        # plt.plot(w_lin, x_slit-w_lin)
-        # plt.plot(w_lin, Poly.polyval(w_lin, cal_poly))
+        # plt.plot(xx, ww_cal)
+        # plt.plot(xx, ww)
         # plt.show()
-        # plt.plot(xx, ww_cal-ww)
+        # w_slit = Poly.polyval(Poly.polyval(x_slit, poly), grid_poly)
+        # plt.plot(np.diff(w_slit))
         # plt.show()
 
     # check rectified image
@@ -781,6 +802,160 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen, aper_half, return_prof
     else:
         return f_opt, np.sqrt(var)
 
+
+
+def wlen_solution(fluxes, w_init, blazes, transm_spec, minimum_strength=0.005, debug=False):
+    wlens = []
+    # if debug:
+    #     fig, axes = plt.subplots(1, 7, figsize=(9, 3), sharex=True, sharey=True)
+    for o in range(len(fluxes)):
+        f, wlen_init, blaze = fluxes[o], w_init[o], blazes[o]
+        f = f/blaze
+        index_o = (transm_spec[:,0]>np.min(wlen_init)) & (transm_spec[:,0]<np.max(wlen_init))
+        if np.std(transm_spec[:,1][index_o]) > minimum_strength: # Check if there are enough telluric features in this wavelength range
+            # Calculate the cross-correlation between data and template
+            (opt_b, opt_a) = xcor_wlen_solution(f, wlen_init, transm_spec)
+
+            # Plot correlation map
+            # if debug:
+                
+            #     plt.sca(axes[o])
+            #     plt.title(f"order {o}")
+            #     plt.imshow(
+            #         cross_corr,
+            #         extent=[-0.5, 0.5, 0.98, 1.02],
+            #         origin="lower",
+            #         aspect="auto",
+            #     )
+            #     plt.colorbar()
+            #     plt.axhline(opt_a, ls="--", color="white")
+            #     plt.axvline(opt_b, ls="--", color="white")
+
+        else:
+            warnings.warn(
+                    "Not enough telluric features to "
+                    "correct wavelength for "
+                    f"order {o}"
+                )
+            opt_a = 1.0
+            opt_b = 0.0
+
+        if debug:
+            print(
+                        f"   - {o} -> lambda = {opt_b:.4f} "
+                        f"+ {opt_a:.4f} * lambda'")
+
+        mean_wavel = np.mean(wlen_init)
+        wlen_cal = opt_a * (wlen_init - mean_wavel) + mean_wavel + opt_b
+        wlens.append(wlen_cal)
+
+        if debug:
+            plt.plot(wlen_init, f/np.nanmedian(f), alpha=0.8, color='b')
+            plt.plot(wlen_cal, f/np.nanmedian(f), alpha=0.8, color='orange')
+    if debug:
+        plt.plot(transm_spec[:,0], transm_spec[:,1], alpha=0.8, color='k')
+        plt.show()
+
+    return wlens
+
+def xcor_wlen_solution(spec, wavel, transm_spec, 
+        accuracy: float = 0.002,
+        slope_range: float = 0.01,
+        offset_range: float = 0.3,
+        continuum_smooth_length : int = 101,
+        return_cross_corr: bool = False)-> tuple([np.ndarray, float, float]):
+        
+        template_interp = interp1d(
+            transm_spec[:,0], transm_spec[:,1], 
+            kind="linear", bounds_error=True
+        )
+
+        # Remove continuum and nans of spectra.
+        # The continuum is estimated by smoothing the
+        # spectrum with a 2nd order Savitzky-Golay filter
+        spec = spec[10:-10]
+        wavel = wavel[10:-10]
+        nans = np.isnan(spec) + (spec<0.1*np.nanmedian(spec))
+        continuum = signal.savgol_filter(
+            spec[~nans], window_length=continuum_smooth_length,
+            polyorder=2, mode='interp')
+        
+        spec_flat = spec[~nans] - continuum
+        outliers = np.abs(spec_flat)>(5*np.nanstd(spec))
+        spec_flat[outliers]=0
+
+        # Don't use the edges as that sometimes gives problems
+        spec_flat = spec_flat[10:-10]
+        used_wavel = wavel[~nans][10:-10]
+
+        # Prepare cross-correlation grid
+        dlam = (wavel[-1]-np.mean(wavel))/2
+        da = accuracy/dlam
+        N_a = int(np.ceil(slope_range*2 / da) // 2 * 2 + 1)
+        N_b = int(np.ceil(1.0 / accuracy) // 2 * 2 + 1)
+
+
+        a_grid = np.linspace(
+            1.-slope_range, 1.+slope_range, N_a)[:, np.newaxis, np.newaxis]
+        b_grid = np.linspace(
+            -offset_range, offset_range, N_b)[np.newaxis, :, np.newaxis]
+
+        mean_wavel = np.mean(wavel)
+        wl_matrix = a_grid * (used_wavel[np.newaxis, np.newaxis, :]
+                            - mean_wavel) + mean_wavel + b_grid
+        template = template_interp(wl_matrix) - 1.
+
+        # Calculate the cross-correlation
+        # between data and template
+        cross_corr = template.dot(spec_flat)
+
+        # Find optimal wavelength solution
+        opt_idx = np.unravel_index(
+            np.argmax(cross_corr), cross_corr.shape)
+        opt_a = a_grid[opt_idx[0], 0, 0]
+        opt_b = b_grid[0, opt_idx[1], 0]
+
+        if np.abs(1.-opt_a) >= slope_range or np.abs(opt_b) >= offset_range:
+            warnings.warn("Hit the edge of grid when optimizing the wavelength solution."
+                          f"Slope: {opt_a}({slope_range}), offset: {opt_b}({offset_range}).")
+
+        if return_cross_corr:
+            return  cross_corr, (opt_b, opt_a)
+        else:
+            return (opt_b, opt_a)
+
+
+def SpecConvolve(in_wlen, in_flux, out_res, in_res=1e6, verbose=False):
+    """
+    Convolve the input spectrum to a lower resolution.
+    ----------
+    Parameters
+    ----------
+    in_wlen : Wavelength array 
+    in_flux : spectrum at high resolution
+    in_res : input resolution (high) R~w/dw
+    out_res : output resolution (low)
+    verbose : if True, print out the sigma of Gaussian filter used
+    ----------
+    Returns
+    ----------
+    Convolved spectrum
+    """
+    # delta lambda of resolution element is FWHM of the LSF's standard deviation:
+    sigma_LSF = np.sqrt(1./out_res**2-1./in_res**2)/(2.*np.sqrt(2.*np.log(2.)))
+
+    spacing = np.mean(2.*np.diff(in_wlen)/ \
+      (in_wlen[1:]+in_wlen[:-1]))
+
+    # Calculate the sigma to be used in the gauss filter in pixels
+    sigma_LSF_gauss_filter = sigma_LSF/spacing
+
+    flux_LSF = ndimage.gaussian_filter(in_flux, \
+                               sigma = sigma_LSF_gauss_filter, \
+                               mode = 'nearest')
+    if verbose:
+        print("Guassian filter sigma = {} pix".format(sigma_LSF_gauss_filter))
+    return flux_LSF
 
 #-------------------------------------------------------------------------
 
