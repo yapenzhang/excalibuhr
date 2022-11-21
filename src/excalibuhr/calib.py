@@ -698,7 +698,8 @@ class Pipeline:
                 su.wfits(file_name, combined, hdr, im_err=combined_err)
                 self.add_to_product("./obs_nodding/"+'Nodding_combined_{}_{}.fits'.format(pos, item_wlen), "NODDING_COMBINED")
 
-    def extract1d_nodding(self, companion_sep=None, debug=False):    
+    def extract1d_nodding(self, f_star=None, companion_sep=None, 
+                          aper_prim=20, aper_comp=10, debug=False):    
         
         # Create the obs_nodding directory if it does not exist yet
         self.noddingpath = os.path.join(self.outpath, "obs_nodding")
@@ -728,8 +729,8 @@ class Pipeline:
                            (self.calib_info[self.key_wlen] == item_wlen)
             indices_bpm = (self.calib_info[self.key_caltype] == "FLAT_BPM") & \
                           (self.calib_info[self.key_wlen] == item_wlen)
-            indices_wave = (self.calib_info[self.key_caltype] == "INIT_WLEN") & \
-                           (self.calib_info[self.key_wlen] == item_wlen)
+            # indices_wave = (self.calib_info[self.key_caltype] == "INIT_WLEN") & \
+            #                (self.calib_info[self.key_wlen] == item_wlen)
             
             assert (indices_blaze.sum())<2, "More than one calibration file."
             assert (indices_tw.sum())<2, "More than one calibration file."
@@ -744,18 +745,8 @@ class Pipeline:
             slit = fits.getdata(os.path.join(self.calpath, file))
             file = self.calib_info[indices_blaze][self.key_filename].iloc[0]
             blaze = fits.getdata(os.path.join(self.calpath, file))
-            file = self.calib_info[indices_wave][self.key_filename].iloc[0]
-            wlens = fits.getdata(os.path.join(self.calpath, file))
-            
-
-            # pip_blaze = '/mnt/media/data/Users/yzhang/Projects/2M0103_CRIRES/2021-10-16/calib/util_extract_flat/cr2res_util_calib_calibrated_collapsed_extr1D.fits'
-            # dt = fits.getdata(pip_blaze)
-            # w, y = dt['02_01_WL'], dt['02_01_SPEC']
-            # print(dt.columns)
-            # plt.plot(y/np.max(y))
-            # plt.plot(blaze[0][0]/np.max(blaze[0][0]))
-            # plt.show()
-            # sys.exit()
+            # file = self.calib_info[indices_wave][self.key_filename].iloc[0]
+            # wlens = fits.getdata(os.path.join(self.calpath, file))
             
             # Loop over each combined obs_nodding observation
             for file in self.product_info[indices_wlen][self.key_filename]:
@@ -765,24 +756,28 @@ class Pipeline:
                     dt = hdu[0].data
                     dt_err = hdu[1].data
                 pos = hdr[self.key_nodpos]
+                slitlen = hdr[self.key_slitlen]
                 if pos == 'A':
                     nod = -1
                 else:
                     nod = 1                    
                 nodthrow = hdr[self.key_nodthrow]
-                slitlen = hdr[self.key_slitlen]
-                # Slit-fraction of centered for the nod-throw
-                f0 = 0.5 + nod*nodthrow/2./slitlen
-                
-                # hdu_ref = fits.open('/mnt/media/data/Users/yzhang/Projects/2M0103_CRIRES/2021-10-16/product/obs_nodding/cr2res_obs_nodding_combinedA_000.fits')
-                # dt_err = [hdu_ref[2].data/2., hdu_ref[4].data/2., hdu_ref[6].data/2.]
+                if f_star is None:
+                    # determine the location of peak signal from data
+                    f0 = su.peak_slit_fraction(dt[0], tw[0], debug=debug) 
+                else:
+                    f0 = f_star[pos]
+                    # # Slit-fraction of centered for the nod-throw
+                    # f = 0.5 + nod*nodthrow/2./slitlen
+
                 if companion_sep is None:
                     # The slit is centered on the target
                     print("Location of target on slit: ", f0)
                     
                     # Extract a 1D spectrum for the target
-                    flux_pri, err_pri = su.util_extract_spec(dt, dt_err, bpm, tw, slit, blaze, aper_half=20, 
-                                                             gains=self.gain, f0=f0, debug=debug)
+                    flux_pri, err_pri = su.util_extract_spec(dt, dt_err, bpm, tw, slit, blaze,  
+                                                             gains=self.gain, f0=f0, 
+                                                             aper_half=aper_prim, debug=debug)
 
                     file_name = os.path.join(self.noddingpath, 'Extr1D_Nodding_combined_{}_{}_{}.fits'.format(pos, item_wlen, 'PRIMARY'))
                     su.wfits(file_name, flux_pri, hdr, im_err=err_pri)
@@ -794,9 +789,11 @@ class Pipeline:
 
                     # Extract a 1D spectrum for the primary and secondary targets
                     flux_sec, err_sec = su.util_extract_spec(dt, dt_err, bpm, tw, slit, blaze, 
-                                                             gains=self.gain, f0=f1, aper_half=20, debug=debug)
+                                                             gains=self.gain, f0=f1, 
+                                                             aper_half=aper_comp, debug=debug)
                     flux_pri, err_pri = su.util_extract_spec(dt, dt_err, bpm, tw, slit, blaze, 
-                                                             gains=self.gain, aper_half=20, f0=f0, debug=debug)
+                                                             gains=self.gain, f0=f0, 
+                                                             aper_half=aper_prim, debug=debug)
 
                     file_name = os.path.join(self.noddingpath, 'Extr1D_Nodding_combined_{}_{}_{}.fits'.format(pos, item_wlen, 'PRIMARY'))
                     su.wfits(file_name, flux_pri, hdr, im_err=err_pri)
@@ -806,9 +803,6 @@ class Pipeline:
                     su.wfits(file_name, flux_sec, hdr, im_err=err_sec)
                     self.add_to_product("./obs_nodding/"+'Extr1D_Nodding_combined_{}_{}_{}.fits'.format(pos, item_wlen, 'SECONDARY'), "Extr1D_SECONDARY")
                 
-                # TODO: Slit is not centered on any source
-                # ...
-                # What aperture size???
 
 
     def refine_wlen_solution(self, debug=False):    

@@ -185,6 +185,26 @@ def util_wlen_solution(dt, wlen_init, blazes, tellu, debug=False):
         wlen_cal.append(w_cal)
     return np.array(wlen_cal)
 
+def peak_slit_fraction(im, trace, debug=False):
+    frac = []
+    xx_grid = np.arange(im.shape[1])
+    trace_upper, trace_lower = trace
+    for o, (poly_upper, poly_lower) in enumerate(zip(trace_upper, trace_lower)):
+        # Crop out the order from the frame
+        yy_upper = Poly.polyval(xx_grid, poly_upper)[len(xx_grid)//2] 
+        yy_lower = Poly.polyval(xx_grid, poly_lower)[len(xx_grid)//2] 
+        slit_len = (yy_upper-yy_lower)
+        im_sub = im[int(yy_lower):int(yy_upper+1)]
+
+        # white-light (collpase along wavlengths) psf
+        profile = np.nanmedian(im_sub, axis=1)
+        # # Pixel-location of target
+        f0 = np.argmax(profile) 
+        frac.append((f0)/slit_len)
+
+    return np.mean(frac)
+
+
 def util_unravel_spec(wlens, specs, errs, blazes, debug=False):
     # shape: (wlen_settings, detectors, orders, -1)
     N_set, N_det, N_ord, Nx = wlens.shape
@@ -774,14 +794,14 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen, aper_half, return_prof
     # Final optimally extracted spectrum
     f_opt = np.sum(M_bp*P*D/V_new, axis=1) / (np.sum(M_bp*P*P/V_new, axis=1)+etol)
     # Rescale the variance by the chi2
-    var = np.sum(M_bp*P, axis=1) / (np.sum(M_bp*P*P/V_new, axis=1)+etol) * np.sum(Res)/(np.sum(M_bp)-len(f_opt))
+    var = 1. / (np.sum(M_bp*P*P/V_new, axis=1)+etol) * np.sum(Res)/(np.sum(M_bp)-len(f_opt))
 
     if debug:
         # print("Number of iterations: ", ite)
         print("Reduced chi2: ", np.sum(Res)/(np.sum(M_bp)-len(f_opt)))
 
         D[M_bp == 0] = np.nan
-        fig, ax = plt.subplots(nrows=2)
+        fig, ax = plt.subplots(nrows=2, sharex=True)
         ax[0].imshow(D.T, aspect='auto', vmin=(P*np.tile(f_opt, (P.shape[1],1)).T).min(),
                     vmax=(P*np.tile(f_opt, (P.shape[1],1)).T).max())
         ax[1].imshow((P*np.tile(f_opt, (P.shape[1],1)).T).T, aspect='auto',
@@ -789,15 +809,13 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen, aper_half, return_prof
                     vmax=(P*np.tile(f_opt, (P.shape[1],1)).T).max())
         plt.show()
 
-        """
-        # plt.plot(f_std)
+        '''
         plt.plot(f_opt)
         plt.show()
-        # var = np.sum(M_bp*P, axis=1)/(np.sum(M_bp*P*P/V_new, axis=1)+etol) 
-        # plt.plot(f_opt/np.sqrt(var))
         plt.plot(f_opt/np.sqrt(var))
         plt.show()
-        """
+        '''
+        
 
     if return_profile:
         return f_opt, np.sqrt(var), P, M_bp
