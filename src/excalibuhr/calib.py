@@ -34,6 +34,7 @@ class Pipeline:
         self.header_file = os.path.join(self.calpath, "header_info.txt")
         self.product_file = os.path.join(self.outpath, "product_info.txt")
         self.gain=[2.15, 2.19, 2.0]
+        self.pix_scale=0.059 #arcsec
         
 
         # self.detlin_path = '/run/media/yzhang/disk/cr2res_cal_detlin_coeffs.fits'
@@ -107,16 +108,6 @@ class Pipeline:
         #    return
 
         print("Extracting FITS headers...\n")
-
-        # keywords = ['ARCFILE', 'ORIGFILE', 'DATE-OBS', 'RA', 'DEC', 'OBJECT', 'MJD-OBS', \
-        #             'ESO OBS TARG NAME', 'ESO OBS PROG ID', 'ESO OBS ID', 'ESO OBS WATERVAPOUR', \
-        #             'ESO TPL ID', 'ESO DPR CATG', 'ESO DPR TECH', 'ESO DPR TYPE', 'ESO DET EXP ID', \
-        #             'ESO DET SEQ1 DIT', 'ESO DET NDIT', 'ESO SEQ NEXPO', 'ESO SEQ NODPOS', 'ESO SEQ NODTHROW', \
-        #             'ESO SEQ CUMOFFSETX', 'ESO SEQ CUMOFFSETY', 'ESO SEQ JITTERVAL', 'ESO TEL AIRM START', \
-        #             'ESO TEL IA FWHM', 'ESO TEL AMBI TAU0', 'ESO TEL AMBI IWV START', 'ESO INS WLEN CWLEN', \
-        #             'ESO INS GRAT1 ORDER', 'ESO INS WLEN ID', 'ESO INS SLIT1 NAME', 'ESO INS SLIT1 WID', \
-        #             'ESO INS1 OPTI1 NAME', 'ESO INS1 DROT POSANG', 'ESO INS1 FSEL ALPHA', 'ESO INS1 FSEL DELTA', \
-        #             'ESO AOS RTC LOOP STATE']
         keywords = self.header_keys.values() 
         
         raw_files = Path(self.rawpath).glob("*.fits")
@@ -475,7 +466,7 @@ class Pipeline:
             self.add_to_calib('BLAZE_w{}.fits'.format(item_wlen), "BLAZE")
 
 
-    def obs_nodding(self, debug=True):
+    def obs_nodding(self, debug=False):
 
         # Create the obs_nodding directory if it does not exist yet
         self.noddingpath = os.path.join(self.outpath, "obs_nodding")
@@ -566,10 +557,6 @@ class Pipeline:
                 #     warnings.warn("There is an unequal number of exposures at nod A and nod B.")
                 # print(df_nods)
                 
-                # nodding pair AB subtraction
-                nodthrow = df_nods[self.key_nodthrow].iloc[0]
-                slitlen = df_nods[self.key_slitlen].iloc[0]
-                
                 for i, row in enumerate(range(0, df_nods.shape[0], Nexp_per_nod)):
                     # Select the following background measurement 
                     # (i.e. the other nod position)
@@ -590,10 +577,10 @@ class Pipeline:
                             
                             # Loop over the detectors
                             for j, d in enumerate(range(1, len(hdu))):
-                                gain = hdu[d].header[self.key_gain]
+                                # gain = hdu[d].header[self.key_gain]
                                 frame.append(hdu[d].data)
                                 # Calculate the shot-noise for this detector
-                                frame_err.append(su.detector_shotnoise(hdu[d].data, ron[j], GAIN=gain, NDIT=ndit))
+                                frame_err.append(su.detector_shotnoise(hdu[d].data, ron[j], GAIN=self.gain[j], NDIT=ndit))
                                 
                         dt_list.append(frame)
                         err_list.append(frame_err)
@@ -620,24 +607,21 @@ class Pipeline:
 
                             # Loop over the detectors
                             for j, d in enumerate(range(1, len(hdu))):
-                                gain = hdu[d].header[self.key_gain]
                                 frame.append(hdu[d].data)
                                 # Calculate the shot-noise for this detector
                                 frame_err.append(np.zeros_like(hdu[d].data))
                                 # frame_err.append(su.detector_shotnoise(hdu[d].data, ron[j], GAIN=gain, NDIT=ndit))
-                                # hdr[self.key_gain+str(j)] = gain
                         
                         # Subtract the nod-pair from each other
                         frame_bkg_cor, err_bkg_cor = su.combine_frames([frame, -dt_bkg], [frame_err, err_bkg], collapse='sum')
-                        
+                        # correct vertical strips due to readout artifacts
                         frame_bkg_cor, err_bkg_cor = su.util_correct_readout_artifact(frame_bkg_cor, err_bkg_cor, bpm, tw, debug=False)
-                        # Apply the flat-fielding, only now??
+                        # Apply the flat-fielding
                         frame_bkg_cor, err_bkg_cor = su.util_flat_fielding(frame_bkg_cor, err_bkg_cor, flat, debug=False)
-                        # plt.imshow((err_bkg_cor)[2], vmin=0, vmax=20)
-                        # plt.show()
+
 
                         file_name = os.path.join(self.noddingpath, 'Nodding_{}'.format(file))
-                        su.wfits(file_name, frame_bkg_cor, hdr, im_err=err_bkg_cor)
+                        su.wfits(file_name, frame_bkg_cor, hdr, ext_list=err_bkg_cor)
                         self.add_to_product("./obs_nodding/"+'Nodding_{}'.format(file), "NODDING_FRAME")
                         # plt.imshow((frame_bkg_cor/flat)[2], vmin=-20, vmax=20)
                         # plt.show()
@@ -645,8 +629,9 @@ class Pipeline:
                             nod = -1
                         else:
                             nod = 1
+                        # TODO: time series observations
                         # if not combine:
-                        #   extract
+                        #   extract here
     
     def obs_nodding_combine(self, debug=True):
 
@@ -671,35 +656,48 @@ class Pipeline:
         for item_wlen in unique_wlen:            
             indices_wlen = indices & (self.product_info[self.key_wlen] == item_wlen)
 
+            indices_tw = (self.calib_info[self.key_caltype] == "TRACE_TW") & \
+                         (self.calib_info[self.key_wlen] == item_wlen)
+
+            file = self.calib_info[indices_tw][self.key_filename].iloc[0]
+            tw = fits.getdata(os.path.join(self.calpath, file))
+
             # Loop over the nodding positions
             for pos in ['A', 'B']:
-                dt, dt_err = [], []
                 indices = indices_wlen & (self.product_info[self.key_nodpos] == pos)
+                frames, frames_err = [], []
 
                 # Loop over the observations at each nodding position
                 for j, file in enumerate(self.product_info[indices][self.key_filename]):
                     with fits.open(os.path.join(self.outpath, file)) as hdu:
                         hdr = hdu[0].header
-                        dt.append(hdu[0].data)
-                        dt_err.append(hdu[1].data)
+                        # in case of jittering
+                        if np.isclose(hdr[self.key_jitter], 0):
+                            dt, dt_err = hdu[0].data, hdu[1].data
+                        else:
+                            # integer shift only!
+                            dt, dt_err = su.align_jitter(hdu[0].data, hdu[1].data, int(np.round(hdr[self.key_jitter]/self.pix_scale)), tw, debug=False)
+                        
+                        frames.append(dt)
+                        frames_err.append(dt_err)
 
                         # plt.imshow(hdu[1].data[0], vmin=0, vmax=8)
                         # plt.show()
-                
+
                 # Mean-combine the images per detector for each nodding position
                 print("Combining {0:d} frames at slit position {1:s}...".format(j+1, pos))
-                combined, combined_err = su.combine_frames(dt, dt_err, collapse='mean')
+                combined, combined_err = su.combine_frames(frames, frames_err, collapse='mean')
                 # plt.imshow(combined_err[0]<1)
                 # plt.imshow(combined_err[0], vmin=0, vmax=8)
                 # plt.show()
 
                 # Save the combined obs_nodding observation
                 file_name = os.path.join(self.noddingpath, 'Nodding_combined_{}_{}.fits'.format(pos, item_wlen))
-                su.wfits(file_name, combined, hdr, im_err=combined_err)
+                su.wfits(file_name, combined, hdr, ext_list=combined_err)
                 self.add_to_product("./obs_nodding/"+'Nodding_combined_{}_{}.fits'.format(pos, item_wlen), "NODDING_COMBINED")
 
     def extract1d_nodding(self, f_star=None, companion_sep=None, 
-                          aper_prim=20, aper_comp=10, debug=False):    
+                          aper_prim=20, aper_comp=20, debug=False):    
         
         # Create the obs_nodding directory if it does not exist yet
         self.noddingpath = os.path.join(self.outpath, "obs_nodding")
@@ -757,11 +755,11 @@ class Pipeline:
                     dt_err = hdu[1].data
                 pos = hdr[self.key_nodpos]
                 slitlen = hdr[self.key_slitlen]
-                if pos == 'A':
-                    nod = -1
-                else:
-                    nod = 1                    
-                nodthrow = hdr[self.key_nodthrow]
+                # if pos == 'A':
+                #     nod = -1
+                # else:
+                #     nod = 1                    
+                # nodthrow = hdr[self.key_nodthrow]
                 if f_star is None:
                     # determine the location of peak signal from data
                     f0 = su.peak_slit_fraction(dt[0], tw[0], debug=debug) 
@@ -770,37 +768,32 @@ class Pipeline:
                     # # Slit-fraction of centered for the nod-throw
                     # f = 0.5 + nod*nodthrow/2./slitlen
 
-                if companion_sep is None:
-                    # The slit is centered on the target
-                    print("Location of target on slit: ", f0)
-                    
-                    # Extract a 1D spectrum for the target
-                    flux_pri, err_pri = su.util_extract_spec(dt, dt_err, bpm, tw, slit, blaze,  
-                                                             gains=self.gain, f0=f0, 
-                                                             aper_half=aper_prim, debug=debug)
+                # The slit is centered on the target
+                print("Location of target on slit: ", f0)
+                
+                # # Extract a 1D spectrum for the target
+                flux_pri, err_pri = su.util_extract_spec(dt, dt_err, bpm, tw, slit, blaze,  
+                                                         gains=self.gain, f0=f0, 
+                                                         aper_half=aper_prim, debug=False)
 
-                    file_name = os.path.join(self.noddingpath, 'Extr1D_Nodding_combined_{}_{}_{}.fits'.format(pos, item_wlen, 'PRIMARY'))
-                    su.wfits(file_name, flux_pri, hdr, im_err=err_pri)
-                    self.add_to_product("./obs_nodding/"+'Extr1D_Nodding_combined_{}_{}_{}.fits'.format(pos, item_wlen, 'PRIMARY'), "Extr1D_PRIMARY")
-                else:
+                file_name = os.path.join(self.noddingpath, 'Extr1D_Nodding_combined_{}_{}_{}.fits'.format(pos, item_wlen, 'PRIMARY'))
+                su.wfits(file_name, flux_pri, hdr, ext_list=err_pri)
+                self.add_to_product("./obs_nodding/"+'Extr1D_Nodding_combined_{}_{}_{}.fits'.format(pos, item_wlen, 'PRIMARY'), "Extr1D_PRIMARY")
+                
+                if not companion_sep is None:
                     # The slit is centered on the star, not the companion
                     f1 = f0 - companion_sep/slitlen
                     print("Location of star and companion: {0:.3f}, {1:.3f}".format(f0, f1))
 
-                    # Extract a 1D spectrum for the primary and secondary targets
+                    # Extract a 1D spectrum for the secondary
                     flux_sec, err_sec = su.util_extract_spec(dt, dt_err, bpm, tw, slit, blaze, 
-                                                             gains=self.gain, f0=f1, 
-                                                             aper_half=aper_comp, debug=debug)
-                    flux_pri, err_pri = su.util_extract_spec(dt, dt_err, bpm, tw, slit, blaze, 
-                                                             gains=self.gain, f0=f0, 
-                                                             aper_half=aper_prim, debug=debug)
-
-                    file_name = os.path.join(self.noddingpath, 'Extr1D_Nodding_combined_{}_{}_{}.fits'.format(pos, item_wlen, 'PRIMARY'))
-                    su.wfits(file_name, flux_pri, hdr, im_err=err_pri)
-                    self.add_to_product("./obs_nodding/"+'Extr1D_Nodding_combined_{}_{}_{}.fits'.format(pos, item_wlen, 'PRIMARY'), "Extr1D_PRIMARY")
+                                                             gains=self.gain, f0=f0, f1=f1, 
+                                                             aper_half=aper_comp, bkg_subtract=True,
+                                                             f_star=flux_pri,
+                                                             debug=debug)
 
                     file_name = os.path.join(self.noddingpath, 'Extr1D_Nodding_combined_{}_{}_{}.fits'.format(pos, item_wlen, 'SECONDARY'))
-                    su.wfits(file_name, flux_sec, hdr, im_err=err_sec)
+                    su.wfits(file_name, flux_sec, hdr, ext_list=err_sec)
                     self.add_to_product("./obs_nodding/"+'Extr1D_Nodding_combined_{}_{}_{}.fits'.format(pos, item_wlen, 'SECONDARY'), "Extr1D_SECONDARY")
                 
 
@@ -846,7 +839,7 @@ class Pipeline:
             su.wfits(file_name, wlen_cal, hdr)
             self.add_to_product("./obs_nodding/"+'CAL_WLEN_{}.fits'.format(item_wlen), "CAL_WLEN")
 
-    def save_extracted_data(self, debug=True):
+    def save_extracted_data(self, debug=False):
         self.noddingpath = os.path.join(self.outpath, "obs_nodding")
 
         for target in ['PRIMARY', 'SECONDARY', 'STD']:
@@ -884,12 +877,15 @@ class Pipeline:
                     specs.append(master)
                     errs.append(master_err)
 
+                file_name = os.path.join(self.outpath, f'SPEC_{target}.fits')
+                su.wfits(file_name, specs, ext_list=[errs, wlens])
+
                 #unravel spectra in each order and detector to a 1D array.
-                w, f, f_err = su.util_unravel_spec(np.array(wlens), np.array(specs), np.array(errs), np.array(blazes), debug=debug)
+                w, f, f_err, w_even = su.util_unravel_spec(np.array(wlens), np.array(specs), np.array(errs), np.array(blazes), debug=debug)
 
                 file_name = os.path.join(self.outpath, f'SPEC_{target}.dat')
-                header = "Wlen(nm) Flux Flux_err"
-                np.savetxt(file_name, np.c_[w, f, f_err], header=header)
+                header = "Wlen(nm) Flux Flux_err Wlen_even"
+                np.savetxt(file_name, np.c_[w, f, f_err, w_even], header=header)
 
 
 
@@ -1014,6 +1010,49 @@ class Pipeline:
         # header = "Wavelength (nm) - Transmission"
         # np.savetxt(out_file, transm_spec, header=header)
 
-
         # stdout = subprocess.DEVNULL #None
         # subprocess.run(esorex, cwd=outpath, stdout=stdout, check=True)
+
+def CombineNights(workpath, night_list, collapse='weighted'):
+    from scipy.interpolate import interp1d
+
+    datapath = os.path.join(workpath, 'DATA')
+    if not os.path.exists(datapath):
+            os.makedirs(datapath)
+
+    
+    for target in ['SECONDARY', 'PRIMARY', 'STD']:
+        specs = [] #, [], [], []
+        for night in night_list:
+            filename = os.path.join(workpath, night, 'out', f'SPEC_{target}.dat')
+            if os.path.isfile(filename):
+                specs.append(np.genfromtxt(filename, skip_header=1))
+        if len(specs)<1:
+            continue
+        specs = np.array(specs)
+
+        # interpolate to the common wavelength grid
+        wlen_grid = specs[-1,:,3]
+        wlens = specs[:,:,0]
+        fluxes = specs[:,:,1]
+        errs = specs[:,:,2]
+        fluxes_grid = np.zeros_like(fluxes)
+        errs_grid = np.zeros_like(errs)
+        for i in range(specs.shape[0]):
+            mask = np.isnan(fluxes[i]) | np.isnan(errs[i])
+            fluxes_grid[i] = interp1d(wlens[i][~mask], fluxes[i][~mask], kind='cubic', 
+                                      bounds_error=False, fill_value=np.nan
+                                      )(wlen_grid)
+            errs_grid[i] = interp1d(wlens[i][~mask], errs[i][~mask], kind='cubic', 
+                                      bounds_error=False, fill_value=np.nan
+                                      )(wlen_grid)
+
+        # combine spectra
+        master, master_err = su.combine_frames(fluxes_grid, errs_grid, collapse=collapse)
+
+        file_name = os.path.join(datapath, f'SPEC_{target}.dat')
+        header = "Wlen(nm) Flux Flux_err"
+        np.savetxt(file_name, np.c_[wlen_grid, master, master_err], header=header)
+
+        file_name = os.path.join(datapath, f'SPEC_{target}')
+        pu.plot_spec1d(wlen_grid, master, master_err, file_name)
