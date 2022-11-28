@@ -76,25 +76,28 @@ def util_master_flat(dt, dark, collapse='median', badpix_clip=5):
     return master, badpix
 
 def combine_frames(dt, err, collapse='mean'):
-    if collapse == 'median':
-        master = np.nanmedian(dt, axis=0)
-        master_err = np.sqrt(np.nansum(np.square(err), axis=0))/np.sum(~np.isnan(dt), axis=0)
-    elif collapse == 'mean':
-        master = np.nanmean(dt, axis=0)
-        master_err = np.sqrt(np.nansum(np.square(err), axis=0))/np.sum(~np.isnan(dt), axis=0)
-    elif collapse == 'sum':
-        master = np.nansum(dt, axis=0)
-        master_err = np.sqrt(np.nansum(np.square(err), axis=0))
-    elif collapse == 'weighted':
-        N_frames = np.array(dt).shape
-        dt_flat = np.reshape(dt, (N_frames[0], -1))
-        err_flat = np.reshape(err, (N_frames[0], -1))
-        # weighted by average SNR squared
-        weights = np.square(np.nanmedian(dt_flat/err_flat, axis=1))
-        master = np.dot(weights, dt_flat)/np.sum(weights)
-        master_err = np.sqrt(np.dot(weights**2, err_flat**2))/np.sum(weights)
-        master = np.reshape(master, N_frames[1:])
-        master_err = np.reshape(master_err, N_frames[1:])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+
+        if collapse == 'median':
+            master = np.nanmedian(dt, axis=0)
+            master_err = np.sqrt(np.nansum(np.square(err), axis=0))/np.sum(~np.isnan(dt), axis=0)
+        elif collapse == 'mean':
+            master = np.nanmean(dt, axis=0)
+            master_err = np.sqrt(np.nansum(np.square(err), axis=0))/np.sum(~np.isnan(dt), axis=0)
+        elif collapse == 'sum':
+            master = np.nansum(dt, axis=0)
+            master_err = np.sqrt(np.nansum(np.square(err), axis=0))
+        elif collapse == 'weighted':
+            N_frames = np.array(dt).shape
+            dt_flat = np.reshape(dt, (N_frames[0], -1))
+            err_flat = np.reshape(err, (N_frames[0], -1))
+            # weighted by average SNR squared
+            weights = np.square(np.nanmedian(dt_flat/err_flat, axis=1))
+            master = np.dot(weights, dt_flat)/np.sum(weights)
+            master_err = np.sqrt(np.dot(weights**2, err_flat**2))/np.sum(weights)
+            master = np.reshape(master, N_frames[1:])
+            master_err = np.reshape(master_err, N_frames[1:])
 
     return master, master_err
 
@@ -115,6 +118,9 @@ def util_slit_curve(im, tw, wlen_mins, wlen_maxs, debug=False):
     # Loop over each detector
     slit_meta, wlens = [], [] # (detector, poly_meta2, order) 
     for d, (det, trace, wlen_min, wlen_max) in enumerate(zip(im, tw, wlen_mins, wlen_maxs)):
+        if d == 2:
+            # fix perculiar value of the specific detector/order 
+            wlen_min[-1] = 1949.093
         slit, wlen = slit_curve(det, trace, wlen_min, wlen_max, debug=debug)
         slit_meta.append(slit)
         wlens.append(wlen)
@@ -181,7 +187,7 @@ def util_extract_spec(im, im_err, bpm, tw, slit, blazes, gains, f0=0.5, f1=None,
             f_opt, f_err = extract_spec(det_rect, err_rect, badpix, trace, gain=gain, \
                                     f0=f0, f1=f1, aper_half=aper_half, \
                                     bkg_subtract=bkg_subtract, \
-                                    f_star=f_star[d], debug=debug)
+                                    f_star=f_star[d]/blaze, debug=debug)
         else:
             f_opt, f_err = extract_spec(det_rect, err_rect, badpix, trace, gain=gain, \
                                     f0=f0, f1=f1, aper_half=aper_half, \
@@ -443,10 +449,6 @@ def slit_curve(det, trace, wlen_min, wlen_max, poly_order=2, spacing=40, sub_fac
             if len(root)>0:
                 x_slit.append(root.mean())
                 poly_slit.append(poly)
-
-            # yy = np.arange(int(yy_lower.min()-5), int(yy_upper.max()+5))
-            # plt.plot(root.mean(), Poly.polyval(root.mean(), middle), 'ko')
-            # plt.plot(Poly.polyval(yy, poly), yy, 'r')
             # plt.scatter(xs, ys)
 
         # Fit a polynomial to the polynomial coefficients
@@ -462,11 +464,11 @@ def slit_curve(det, trace, wlen_min, wlen_max, poly_order=2, spacing=40, sub_fac
         if debug:
             xx_grid = x_slit
             yy = np.arange(int(yy_lower.min()-5), int(yy_upper.max()+5))
-            # xx_grid = np.arange(0, im.shape[1], 100)
             poly_full = np.array([Poly.polyval(xx_grid, poly_meta0), 
                                   Poly.polyval(xx_grid, poly_meta1),
                                   Poly.polyval(xx_grid, poly_meta2)]).T
             for x in range(len(xx_grid)):
+                plt.plot(xx_grid[x], Poly.polyval(xx_grid[x], middle), 'ko')
                 plt.plot(Poly.polyval(yy, poly_full[x]), yy, 'r--', zorder=10)
 
         # Determine the wavelength solution along the detectors/orders
@@ -477,14 +479,10 @@ def slit_curve(det, trace, wlen_min, wlen_max, poly_order=2, spacing=40, sub_fac
         grid_poly = Poly.polyfit([Poly.polyval(xx, poly)[0], Poly.polyval(xx, poly)[-1]], [w_min, w_max], 1)
         ww_cal = Poly.polyval(Poly.polyval(xx, poly), grid_poly)
         wlen.append(ww_cal)
-        # print(ww_cal[0], w_min, ww_cal[-1], w_max)
 
         # w_slit = Poly.polyval(Poly.polyval(x_slit, poly), grid_poly)
         # plt.plot(np.diff(w_slit))
         # plt.show()
-        # plt.plot(np.diff(ww_cal))
-        # plt.show()
-
 
     if debug:
         plt.imshow(im, vmin=100, vmax=2e4)
@@ -500,17 +498,6 @@ def spectral_rectify_interp(im, im_err, badpix, trace, slit_meta, debug=False):
     bpm = (badpix.astype(bool) | np.isnan(im))
     im_rect_spec = np.copy(im)
     err_rect_spec = np.copy(im_err)
-
-    # im_rect_spec[badpix.astype(bool)] = np.nan
-    # if debug:
-    #     plt.figure(figsize=(10,10))
-    #     plt.imshow(im[1095:1285, 1040:1230], vmin=-20, vmax=20)
-    #     plt.savefig('im.png')
-    #     plt.show()
-    #     plt.figure(figsize=(10,10))
-    #     plt.imshow(im_rect_spec[1095:1285, 1040:1230], vmin=-20, vmax=20)
-    #     plt.savefig('im_b.png')
-    #     plt.show()
 
     bpm_interp = np.zeros_like(bpm).astype(float)
     xx_grid = np.arange(0, im.shape[1])
@@ -541,7 +528,6 @@ def spectral_rectify_interp(im, im_err, badpix, trace, slit_meta, debug=False):
         for i, (x_isowlen, data_row, err_row, mask) in \
             enumerate(zip(isowlen_grid, im[yy_grid], im_err[yy_grid], bpm[yy_grid])):
 
-            # mask = np.isnan(data_row)
             if np.sum(mask)>0.5*len(mask):
                 continue
 
@@ -553,9 +539,6 @@ def spectral_rectify_interp(im, im_err, badpix, trace, slit_meta, debug=False):
             err_rect_spec[int(yy_grid[0]+i)] = interp1d(xx_grid[~mask], err_row[~mask], kind='cubic', 
                                                         bounds_error=False, fill_value=np.nan
                                                         )(x_isowlen)
-
-            # Correct for the slit tilt? ...
-            # ...
 
     #         bpm_interp[int(yy_grid[0]+i)] = interp1d(xx_grid, mask.astype(float), kind='cubic', bounds_error=False, fill_value=np.nan)(x_isowlen)
     # badpix_new = np.abs(bpm_interp)>1e-1
@@ -732,7 +715,7 @@ def extract_spec(im, im_err, bpm, trace, gain=2., f0=0.5, f1=None, aper_half=20,
 
         # remove starlight contamination
         if bkg_subtract and f1:
-            im_sub = remove_starlight(im_sub, f_star[o], slit_len*f0, slit_len*f1, debug=True)
+            im_sub, im_err_sub = remove_starlight(im_sub, im_err_sub**2, f_star[o], slit_len*f0, slit_len*f1, gain=gain, debug=debug)
 
         # Pixel-location of target
         obj_cen = slit_len*f0
@@ -748,7 +731,7 @@ def extract_spec(im, im_err, bpm, trace, gain=2., f0=0.5, f1=None, aper_half=20,
 
     return np.array(flux), np.array(err)
 
-def remove_starlight(D_full, f_star, cen0_p, cen1_p, aper0=50, aper1=10, aper2=6, sub_factor=32, debug=True):
+def remove_starlight(D_full, V_full, f_star, cen0_p, cen1_p, aper0=50, aper1=10, aper2=20, sub_factor=32, gain=2.0, NDIT=1., debug=False):
     # determine the location of peak signal from data
     spatial_x = np.arange(len(D_full))
     bkg = np.zeros_like(D_full)
@@ -759,32 +742,34 @@ def remove_starlight(D_full, f_star, cen0_p, cen1_p, aper0=50, aper1=10, aper2=6
     D = np.reshape(D_full, (D_full.shape[0], D_full.shape[-1]//sub_factor, sub_factor))
     D_sub = np.nanmedian(D, axis=2)
 
-    # center of mass of the PSF peak
+    # estimate center of the PSF peak
+    # aper2: the window (half width) to determine the line center;
+    #        better to be large but, not too large to avoid the companion
     profile = np.nanmedian(-D_sub, axis=1)
     p = np.argmax(profile)
-    cen0_n = np.sum(spatial_x[int(p-aper1):int(p+aper1)]*profile[int(p-aper1):int(p+aper1)]) / \
-                    np.sum(profile[int(p-aper1):int(p+aper1)]) 
+    cen0_n = np.sum(spatial_x[int(p-aper2):int(p+aper2)]*profile[int(p-aper2):int(p+aper2)]) / \
+                    np.sum(profile[int(p-aper2):int(p+aper2)]) 
     cen1_n = cen0_n - cen0_p + cen1_p
     profile = np.nanmedian(D_sub, axis=1)
     p = np.argmax(profile)
-    cen0_p = np.sum(spatial_x[int(p-aper1):int(p+aper1)]*profile[int(p-aper1):int(p+aper1)]) / \
-                    np.sum(profile[int(p-aper1):int(p+aper1)]) 
+    cen0_p = np.sum(spatial_x[int(p-aper2):int(p+aper2)]*profile[int(p-aper2):int(p+aper2)]) / \
+                    np.sum(profile[int(p-aper2):int(p+aper2)]) 
+
     # aper0: mask the negative primary trace
-    # aper1: mask the negative secondary trace 
-    #        and mask the primary line core
+    # aper1: mask the negative secondary trace and the primary line core
     mask =  ((spatial_x>cen1_n-aper1) & (spatial_x<cen1_n+aper1)) | \
             ((spatial_x>cen0_n-aper0) & (spatial_x<cen0_n+aper0))  
     
     # not sure the secondary is located at which side
     if cen1_p - cen0_p > 0: 
-        m = (~mask) & (spatial_x-cen0_p-aper2<0)
+        m = (~mask) & (spatial_x-cen0_p-aper1<0)
     else:
-        m = (~mask) & (spatial_x-cen0_p-aper2>0)
+        m = (~mask) & (spatial_x-cen0_p-aper1>0)
     
     # flip PSF to the oposite side
     xx = 2.*cen0_p - spatial_x[m]
     D_sub = D_sub[m]
-    # print(cen0_p, cen1_p, cen0_n, xx)
+    # print(cen0_p, cen1_p)
 
     for w in range(len(x_sub)):
         poly = Poly.polyfit(xx, D_sub[:,w], 5)
@@ -804,16 +789,27 @@ def remove_starlight(D_full, f_star, cen0_p, cen1_p, aper0=50, aper1=10, aper2=6
         # plt.plot(spatial_x,  bkg[:, w])
         # plt.plot(spatial_x,  D_full[:, w])
         # plt.show()
+    
+    # error propogation
+    V_full += bkg / gain / NDIT
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        Err_full = np.sqrt(V_full)
+
+    profile_model = np.median(bkg, axis=1)
 
     bkg = bkg * f_star / np.nanmedian(f_star)
 
     if debug:
+        plt.plot(profile)
+        plt.plot(profile_model)
+        plt.show()
         # plt.imshow(D_full, vmin=-10, vmax=20, aspect='auto')
         # plt.show()
         plt.imshow(D_full-bkg, vmin=-10, vmax=20, aspect='auto')
         plt.show()
 
-    return D_full-bkg
+    return D_full-bkg, Err_full
 
 
 
@@ -917,49 +913,34 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen, aper_half, \
 
 def wlen_solution(fluxes, w_init, blazes, transm_spec, minimum_strength=0.005, debug=False):
     wlens = []
-    # if debug:
-    #     fig, axes = plt.subplots(1, 7, figsize=(9, 3), sharex=True, sharey=True)
+
     for o in range(len(fluxes)):
         f, wlen_init, blaze = fluxes[o], w_init[o], blazes[o]
         f = f/blaze
         index_o = (transm_spec[:,0]>np.min(wlen_init)) & (transm_spec[:,0]<np.max(wlen_init))
-        if np.std(transm_spec[:,1][index_o]) > minimum_strength: # Check if there are enough telluric features in this wavelength range
+        
+        # Check if there are enough telluric features in this wavelength range
+        if np.std(transm_spec[:,1][index_o]) > minimum_strength: 
             # Calculate the cross-correlation between data and template
-            (opt_b, opt_a, opt_c) = xcor_wlen_solution(f, wlen_init, transm_spec)
-
-            # Plot correlation map
-            # if debug:
-                
-            #     plt.sca(axes[o])
-            #     plt.title(f"order {o}")
-            #     plt.imshow(
-            #         cross_corr,
-            #         extent=[-0.5, 0.5, 0.98, 1.02],
-            #         origin="lower",
-            #         aspect="auto",
-            #     )
-            #     plt.colorbar()
-            #     plt.axhline(opt_a, ls="--", color="white")
-            #     plt.axvline(opt_b, ls="--", color="white")
+            opt_poly = xcor_wlen_solution(f, wlen_init, transm_spec, mode='quad')
+            # opt_poly, cross_corr = xcor_wlen_solution(f, wlen_init, transm_spec, mode='quad', return_cross_corr=debug)
 
         else:
             warnings.warn(
-                    "Not enough telluric features to "
-                    "correct wavelength for "
-                    f"order {o}"
+                    "Not enough telluric features to correct wavelength "
+                    f"for order {o}"
                 )
-            opt_a = 1.0
-            opt_b = 0.0
+            opt_poly = [0., 1.0, 0.]
 
         if debug:
-            print(
-                        f"   - {o} -> lambda = {opt_b:.4f} "
-                        f"+ {opt_a:.4f} * lambda'"
-                        f"+ {opt_c:.6f} * lambda^2'"
-                        )
+            print(f"{o} -> lambda: {opt_poly}")
 
         mean_wavel = np.mean(wlen_init)
-        wlen_cal = opt_a * (wlen_init - mean_wavel) + mean_wavel + opt_b + opt_c * (wlen_init - mean_wavel)**2
+        if len(opt_poly) == 2:
+            wlen_cal = mean_wavel + opt_poly[0] + opt_poly[1] * (wlen_init - mean_wavel)
+        elif len(opt_poly) == 3:
+            wlen_cal = mean_wavel + opt_poly[0] + opt_poly[1] * (wlen_init - mean_wavel) \
+                                  + opt_poly[2] * (wlen_init - mean_wavel)**2
         wlens.append(wlen_cal)
         if debug:
             plt.plot(wlen_init, f/np.nanmedian(f), alpha=0.8, color='b')
@@ -971,10 +952,11 @@ def wlen_solution(fluxes, w_init, blazes, transm_spec, minimum_strength=0.005, d
     return wlens
 
 def xcor_wlen_solution(spec, wavel, transm_spec, 
-        accuracy: float = 0.03,
+        accuracy: float = 0.02,
+        offset_range: float = 0.4,
         slope_range: float = 0.01,
-        offset_range: float = 0.3,
-        c_range: float = 0.001,
+        c_range: float = 0.002,
+        mode = 'quad',
         continuum_smooth_length : int = 101,
         return_cross_corr: bool = False)-> tuple([np.ndarray, float, float]):
         # (see pycrires: https://pycrires.readthedocs.io)
@@ -1003,113 +985,77 @@ def xcor_wlen_solution(spec, wavel, transm_spec,
         used_wavel = wavel[~nans][10:-10]
 
         # Prepare cross-correlation grid
-        dlam = (wavel[-1]-np.mean(wavel))
-        da = accuracy/dlam
-        N_a = int(np.ceil(slope_range*4 / da) // 2 * 2 + 1)
-        N_b = int(np.ceil(1.0 / accuracy) // 2 * 2 + 1)
-        N_c = N_a
+        N_a = int(np.ceil(1.0 / accuracy) // 2 * 2 + 1)
+        N_b = int(N_a // 3 // 2 * 2 + 1)
+        N_c = N_b
 
 
-        a_grid = np.linspace(
-            1.-slope_range, 1.+slope_range, N_a)[np.newaxis, :, np.newaxis, np.newaxis]
-        b_grid = np.linspace(
-            -offset_range, offset_range, N_b)[np.newaxis, np.newaxis, :, np.newaxis]
-        c_grid = np.linspace(
-            -c_range, c_range, N_c)[:, np.newaxis, np.newaxis, np.newaxis]
+        if mode == 'quad':
+            a_grid = np.linspace(
+                -offset_range, offset_range, N_a)[np.newaxis, np.newaxis, :, np.newaxis]
+            b_grid = np.linspace(
+                1.-slope_range, 1.+slope_range, N_b)[np.newaxis, :, np.newaxis, np.newaxis]
+            c_grid = np.linspace(
+                -c_range, c_range, N_c)[:, np.newaxis, np.newaxis, np.newaxis]
 
-        mean_wavel = np.mean(wavel)
-        wl_matrix = a_grid * (used_wavel[np.newaxis, np.newaxis, np.newaxis, :] \
-                            - mean_wavel) + mean_wavel + b_grid + \
-                            c_grid *(used_wavel[np.newaxis, np.newaxis, np.newaxis, :] \
-                            - mean_wavel)**2
-        template = template_interp(wl_matrix) - 1.
+            mean_wavel = np.mean(wavel)
+            wl_matrix = b_grid * (used_wavel[np.newaxis, np.newaxis, np.newaxis, :] \
+                                - mean_wavel) + mean_wavel + a_grid + \
+                                c_grid *(used_wavel[np.newaxis, np.newaxis, np.newaxis, :] \
+                                - mean_wavel)**2
+            template = template_interp(wl_matrix) - 1.
 
-        # Calculate the cross-correlation
-        # between data and template
-        cross_corr = template.dot(spec_flat)
+            # Calculate the cross-correlation
+            # between data and template
+            cross_corr = template.dot(spec_flat)
 
-        # Find optimal wavelength solution
-        opt_idx = np.unravel_index(
-            np.argmax(cross_corr), cross_corr.shape)
-        opt_a = a_grid[0, opt_idx[1], 0, 0]
-        opt_b = b_grid[0, 0, opt_idx[2], 0]
-        opt_c = c_grid[opt_idx[0], 0, 0, 0]
+            # Find optimal wavelength solution
+            opt_idx = np.unravel_index(
+                np.argmax(cross_corr), cross_corr.shape)
+            opt_a = a_grid[0, 0, opt_idx[2], 0]
+            opt_b = b_grid[0, opt_idx[1], 0, 0]
+            opt_c = c_grid[opt_idx[0], 0, 0, 0]
 
-        if np.abs(1.-opt_a) >= slope_range or np.abs(opt_b) >= offset_range:
-            warnings.warn("Hit the edge of grid when optimizing the wavelength solution."
-                          f"Slope: {opt_a}({slope_range}), offset: {opt_b}({offset_range}).")
+            if np.abs(1.-opt_b) >= slope_range or np.abs(opt_a) >= offset_range or np.abs(opt_c) >= c_range:
+                warnings.warn("Hit the edge of grid when optimizing the wavelength solution."
+                            f"Slope: {opt_b}({slope_range}), offset: {opt_a}({offset_range}), c: {opt_c}({c_range}).")
 
-        if return_cross_corr:
-            return  cross_corr, (opt_b, opt_a, opt_c)
-        else:
-            return (opt_b, opt_a, opt_c)
-
-def xcor_wlen_solution_1(spec, wavel, transm_spec, 
-        accuracy: float = 0.002,
-        slope_range: float = 0.01,
-        offset_range: float = 0.3,
-        continuum_smooth_length : int = 101,
-        return_cross_corr: bool = False)-> tuple([np.ndarray, float, float]):
-        # (see pycrires: https://pycrires.readthedocs.io)
+            if return_cross_corr:
+                return  (opt_a, opt_b, opt_c), cross_corr
+            else:
+                return (opt_a, opt_b, opt_c)
         
-        template_interp = interp1d(
-            transm_spec[:,0], transm_spec[:,1], 
-            kind="linear", bounds_error=True
-        )
+        elif mode == 'linear':
+            b_grid = np.linspace(
+                1.-slope_range, 1.+slope_range, N_b)[:, np.newaxis, np.newaxis]
+            a_grid = np.linspace(
+                -offset_range, offset_range, N_a)[np.newaxis, :, np.newaxis]
 
-        # Remove continuum and nans of spectra.
-        # The continuum is estimated by smoothing the
-        # spectrum with a 2nd order Savitzky-Golay filter
-        spec = spec[10:-10]
-        wavel = wavel[10:-10]
-        nans = np.isnan(spec) + (spec<0.1*np.nanmedian(spec))
-        continuum = signal.savgol_filter(
-            spec[~nans], window_length=continuum_smooth_length,
-            polyorder=2, mode='interp')
-        
-        spec_flat = spec[~nans] - continuum
-        outliers = np.abs(spec_flat)>(5*np.nanstd(spec))
-        spec_flat[outliers]=0
+            mean_wavel = np.mean(wavel)
+            wl_matrix = b_grid * (used_wavel[np.newaxis, np.newaxis, :]
+                                - mean_wavel) + mean_wavel + a_grid
+            template = template_interp(wl_matrix) - 1.
 
-        # Don't use the edges as that sometimes gives problems
-        spec_flat = spec_flat[10:-10]
-        used_wavel = wavel[~nans][10:-10]
+            # Calculate the cross-correlation
+            # between data and template
+            cross_corr = template.dot(spec_flat)
 
-        # Prepare cross-correlation grid
-        dlam = (wavel[-1]-np.mean(wavel))/2
-        da = accuracy/dlam
-        N_a = int(np.ceil(slope_range*2 / da) // 2 * 2 + 1)
-        N_b = int(np.ceil(1.0 / accuracy) // 2 * 2 + 1)
+            # Find optimal wavelength solution
+            opt_idx = np.unravel_index(
+                np.argmax(cross_corr), cross_corr.shape)
+            opt_a = a_grid[0, opt_idx[1], 0]
+            opt_b = b_grid[opt_idx[0], 0, 0]
+
+            if np.abs(1.-opt_b) >= slope_range or np.abs(opt_a) >= offset_range:
+                warnings.warn("Hit the edge of grid when optimizing the wavelength solution."
+                            f"Slope: {opt_b}({slope_range}), offset: {opt_a}({offset_range}).")
+
+            if return_cross_corr:
+                return  (opt_a, opt_b), cross_corr
+            else:
+                return (opt_a, opt_b)
 
 
-        a_grid = np.linspace(
-            1.-slope_range, 1.+slope_range, N_a)[:, np.newaxis, np.newaxis]
-        b_grid = np.linspace(
-            -offset_range, offset_range, N_b)[np.newaxis, :, np.newaxis]
-
-        mean_wavel = np.mean(wavel)
-        wl_matrix = a_grid * (used_wavel[np.newaxis, np.newaxis, :]
-                            - mean_wavel) + mean_wavel + b_grid
-        template = template_interp(wl_matrix) - 1.
-
-        # Calculate the cross-correlation
-        # between data and template
-        cross_corr = template.dot(spec_flat)
-
-        # Find optimal wavelength solution
-        opt_idx = np.unravel_index(
-            np.argmax(cross_corr), cross_corr.shape)
-        opt_a = a_grid[opt_idx[0], 0, 0]
-        opt_b = b_grid[0, opt_idx[1], 0]
-
-        if np.abs(1.-opt_a) >= slope_range or np.abs(opt_b) >= offset_range:
-            warnings.warn("Hit the edge of grid when optimizing the wavelength solution."
-                          f"Slope: {opt_a}({slope_range}), offset: {opt_b}({offset_range}).")
-
-        if return_cross_corr:
-            return  cross_corr, (opt_b, opt_a)
-        else:
-            return (opt_b, opt_a)
 
 def SpecConvolve(in_wlen, in_flux, out_res, in_res=1e6, verbose=False):
     """

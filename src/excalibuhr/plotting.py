@@ -26,7 +26,7 @@ def set_style():
         "xtick.minor.visible": True,
         "ytick.minor.visible": True,
         # "xtick.major.pad": 7,
-        "lines.linewidth": 2,   
+        "lines.linewidth": 1,   
         'image.origin': 'lower',
         'image.cmap': 'viridis',
         "savefig.dpi": 200,   
@@ -46,7 +46,7 @@ def plot_spec1d(wlen, flux, err, savename):
                         1.2*np.median(np.sort(flux[indices][~mask])[-len(indices)//20:])))
         axes[i].set_xlabel('Wavelength (nm)')
         axes[i].set_ylabel('Flux')
-    plt.savefig(savename+'.png')
+    plt.savefig(savename+'.pdf')
     plt.close(fig)
 
     fig, axes = plt.subplots(nrows=Norder, ncols=1, figsize=(14,2*Norder), constrained_layout=True)
@@ -61,5 +61,5 @@ def plot_spec1d(wlen, flux, err, savename):
                         1.2*np.median(np.sort((flux/err)[indices][~mask])[-len(indices)//20:])))
         axes[i].set_xlabel('Wavelength (nm)')
         axes[i].set_ylabel('Flux')
-    plt.savefig(savename+'_SNR.png')
+    plt.savefig(savename+'_SNR.pdf')
     plt.close(fig)

@@ -14,15 +14,40 @@ import subprocess
 from astropy.io import fits
 from astroquery.eso import Eso
 import skycalc_ipy
-# from numpy.polynomial import polynomial as Poly
-# from scipy import ndimage
-# from scipy.interpolate import CubicSpline, interp1d
 import excalibuhr.utils as su
 import excalibuhr.plotting as pu
 
 class Pipeline:
 
-    def __init__(self, workpath, night, clear=False, **header_keys):
+    def __init__(self, workpath: str, night: str, clean_start: bool = False,
+                 **header_keys: dict) -> None:
+        """
+        Parameters
+        ----------
+        workpath : str
+            Path of the main reduction folder. 
+        night: str
+            The main folder will have subfolders named by dates of observations. 
+            In the folder of each night, there will be subfolders called 
+            ``raw``, ``cal``, and ``out``, where the raw data (both science and 
+            raw calibration), processed calibration files, and data products are 
+            stored respectively.
+        clean_start: bool
+            Set it to True to remove the infomation files when redoing the 
+            entire reduction.
+        header_keys: dict
+            The needed keyword names in the header of input ``.fits`` files.
+
+        Returns
+        -------
+        NoneType
+            None
+        """
+
+        self._print_section(
+            "Pipeline for VLT/CRIRES+", bound_char="=", extra_line=False
+        )
+        
         self.workpath = os.path.abspath(workpath)
         self.night = night
         self.key_caltype = 'CAL TYPE'
@@ -36,6 +61,7 @@ class Pipeline:
         self.gain=[2.15, 2.19, 2.0]
         self.pix_scale=0.059 #arcsec
         
+        print(f"Data reduction folder: {self.workpath}")
 
         # self.detlin_path = '/run/media/yzhang/disk/cr2res_cal_detlin_coeffs.fits'
 
@@ -52,15 +78,18 @@ class Pipeline:
         if not os.path.exists(self.rawpath):
             os.makedirs(self.rawpath)
 
-        # if clear:
-        #     os.remove(self.header_file)
-        #     os.remove(self.calib_file)
+        # in case redo the entire reduction 
+        if clean_start:
+            os.remove(self.header_file)
+            os.remove(self.calib_file)
+            os.remove(self.prodct_file)
 
         # If present, read the info files
         if os.path.isfile(self.header_file):
+            print("Reading header data from header_info.txt")
             self.header_info = pd.read_csv(self.header_file, sep=';')
-            print('\nHeader info:')
-            print(self.header_info)
+            # print('\nHeader info:')
+            # print(self.header_info)
         else:
             self.header_info = None 
 
@@ -68,46 +97,114 @@ class Pipeline:
             setattr(self, par, header_keys[par])
 
         if os.path.isfile(self.calib_file):
+            print("Reading calibration information from calib_info.txt")
             self.calib_info = pd.read_csv(self.calib_file, sep=';')
-            print('\nCalib info:')
-            print(self.calib_info)
+            # print('\nCalib info:')
+            # print(self.calib_info)
         else:
             self.calib_info = None
 
         if os.path.isfile(self.product_file):
+            print("Reading product information from product_info.txt")
             self.product_info = pd.read_csv(self.product_file, sep=';')
-            print('\nProduct info:')
-            print(self.product_info)
+            # print('\nProduct info:')
+            # print(self.product_info)
         else:
-            self.product_info = None        
+            self.product_info = None      
 
 
-    def download_rawdata_eso(self, login, facility='eso', instrument='crires', **filters):
+    def _print_section(self, sect_title: str, bound_char: str = "-", 
+                        extra_line: bool = True) -> None:
+        """
+        Internal method for printing a section title.
 
-        print("Downloading rawdata from {}/{}...\n".format(facility, instrument))
+        Parameters
+        ----------
+        sect_title : str
+            Section title.
+        bound_char : str
+            Boundary character for around the section title.
+        extra_line : bool
+            Extra new line at the beginning.
+
+        Returns
+        -------
+        NoneType
+            None
+        """
+
+        if extra_line:
+            print("\n" + len(sect_title) * bound_char)
+        else:
+            print(len(sect_title) * bound_char)
+
+        print(sect_title)
+        print(len(sect_title) * bound_char + "\n")
+
+
+    def download_rawdata_eso(self, login: str, facility: str = 'eso', 
+                instrument: str ='crires', **filters) -> None:
+        """
+        Method for downloading raw data from eso archive using astroquery
+
+        Parameters
+        ----------
+        login : str
+            username to login to the ESO User Portal Services
+        filters: 
+            optional parameters for data filtering, e.g. prog_id
+
+        Returns
+        -------
+        NoneType
+            None
+        """
+
+        self._print_section("Downloading rawdata from ESO arhive")
+
+        print('Night: '+ self.night)
         for key in filters.keys():
             print(key + ': '+ filters[key])
 
         if facility == 'eso':
             eso = Eso()
             eso.login(login)
-            table = eso.query_instrument(instrument, column_filters={'night': self.night, **filters}) 
-            data_files = eso.retrieve_data(table['DP.ID'], destination=self.rawpath, 
-                        continuation=False, with_calib='raw', request_all_objects=True, unzip=False)
+            table = eso.query_instrument(
+                instrument, column_filters={'night': self.night, **filters}
+                ) 
+            data_files = eso.retrieve_data(
+                table['DP.ID'], destination=self.rawpath, 
+                continuation=False, with_calib='raw', 
+                request_all_objects=True, unzip=False)
             os.chdir(self.rawpath)
             os.system("rm *.xml")
             os.system("rm *.txt")
-            os.system("uncompress *.Z")
+            try:
+                os.system("uncompress *.Z")
+            except:
+                raise OSError("uncompress not found. Please install gzip \
+                    or ncompress, finish uncompress manually, and proceed \
+                    to next steps.")
             os.chdir(self.workpath)
 
 
     def extract_header(self):
+        """
+        Method for extracting header information of raw data to a 
+        ``DataFrame`` and a text file.
 
+        Returns
+        -------
+        NoneType
+            None
+        """
         #if self.header_info is not None:
         #    # Header extraction was already performed
         #    return
 
-        print("Extracting FITS headers...\n")
+        self._print_section("Extracting Observation details")
+
+        print("Extracting header details to `header_info.txt`")
         keywords = self.header_keys.values() 
         
         raw_files = Path(self.rawpath).glob("*.fits")
@@ -120,9 +217,10 @@ class Pipeline:
         for file_item in raw_files:
             header = fits.getheader(file_item)
 
-            # Rename the file
+            # Rename files for better readability
             if self.key_filename in header:
-                shutil.move(file_item, os.path.join(self.rawpath, header[self.key_filename]))
+                shutil.move(file_item, 
+                    os.path.join(self.rawpath, header[self.key_filename]))
 
             # Add header value to the dictionary
             for key_item in keywords:
@@ -133,9 +231,10 @@ class Pipeline:
 
         # Save the dictionary as a csv-file
         self.header_info = pd.DataFrame(data=header_dict)
-        self.header_info.to_csv(os.path.join(self.calpath,'header_info.txt'), index=False, sep=';')
+        self.header_info.to_csv(
+            os.path.join(self.calpath,'header_info.txt'), index=False, sep=';')
 
-    def add_to_calib(self, file, cal_type):
+    def _add_to_calib(self, file, cal_type):
         keywords = self.header_keys.values()
         header = fits.getheader(os.path.join(self.calpath, file))
         calib_dict = {}
@@ -152,7 +251,7 @@ class Pipeline:
         
         self.calib_info.to_csv(os.path.join(self.calpath,'calib_info.txt'), index=False, sep=';')
 
-    def add_to_product(self, file, prod_type):
+    def _add_to_product(self, file, prod_type):
         keywords = self.header_keys.values()
         header = fits.getheader(os.path.join(self.outpath, file))
         calib_dict = {}
@@ -200,15 +299,15 @@ class Pipeline:
             # Save the master dark, read-out noise, and bad-pixel maps
             file_name = os.path.join(self.calpath, 'DARK_MASTER_DIT{}.fits'.format(item))
             su.wfits(file_name, master, hdr)
-            self.add_to_calib('DARK_MASTER_DIT{}.fits'.format(item), "DARK_MASTER")
+            self._add_to_calib('DARK_MASTER_DIT{}.fits'.format(item), "DARK_MASTER")
             
             file_name = os.path.join(self.calpath, 'DARK_RON_DIT{}.fits'.format(item))
             su.wfits(file_name, rons, hdr)
-            self.add_to_calib('DARK_RON_DIT{}.fits'.format(item), "DARK_RON")
+            self._add_to_calib('DARK_RON_DIT{}.fits'.format(item), "DARK_RON")
 
             file_name = os.path.join(self.calpath, 'DARK_BPM_DIT{}.fits'.format(item))
             su.wfits(file_name, badpix.astype(int), hdr)
-            self.add_to_calib('DARK_BPM_DIT{}.fits'.format(item), "DARK_BPM")
+            self._add_to_calib('DARK_BPM_DIT{}.fits'.format(item), "DARK_BPM")
 
             if verbose:
                 print(r"{0:.1f}% of pixels identified as bad.".format(np.sum(badpix)/badpix.size*100.))
@@ -250,11 +349,11 @@ class Pipeline:
         indices_bpm = (self.calib_info[self.key_caltype] == "DARK_BPM") & \
                       (self.calib_info[self.key_DIT] == dit)
         assert (indices_dark.sum())<2
-        # What's the use in a for-loop here?
-        for file in self.calib_info[indices_dark][self.key_filename]:
-            dark = fits.getdata(os.path.join(self.calpath, file))
-        for file in self.calib_info[indices_bpm][self.key_filename]:
-            badpix = fits.getdata(os.path.join(self.calpath, file))
+
+        file = self.calib_info[indices_dark][self.key_filename].iloc[0]
+        dark = fits.getdata(os.path.join(self.calpath, file))
+        file = self.calib_info[indices_bpm][self.key_filename].iloc[0]
+        badpix = fits.getdata(os.path.join(self.calpath, file))
 
         # Create a master flat for each unique WLEN setting
         for item_wlen in unique_wlen:
@@ -274,11 +373,11 @@ class Pipeline:
             # Save the master flat and bad-pixel map
             file_name = os.path.join(self.calpath, 'FLAT_MASTER_w{}.fits'.format(item_wlen))
             su.wfits(file_name, master, hdr)
-            self.add_to_calib('FLAT_MASTER_w{}.fits'.format(item_wlen), "FLAT_MASTER")
+            self._add_to_calib('FLAT_MASTER_w{}.fits'.format(item_wlen), "FLAT_MASTER")
 
             file_name = os.path.join(self.calpath, 'FLAT_BPM_DIT{}.fits'.format(item))
             su.wfits(file_name, badpix.astype(int), hdr)
-            self.add_to_calib('FLAT_BPM_DIT{}.fits'.format(item), "FLAT_BPM")
+            self._add_to_calib('FLAT_BPM_DIT{}.fits'.format(item), "FLAT_BPM")
 
             if verbose:
                 print(r"{0:.1f}% of pixels identified as bad.".format(np.sum(badpix)/badpix.size*100.))
@@ -303,10 +402,6 @@ class Pipeline:
             print("Unique WLEN settings: none")
         else:
             print(f"Unique WLEN settings: {unique_wlen}\n")
-
-        # indices_bpm = (self.calib_info[self.key_caltype] == "FLAT_BPM") & (self.calib_info[self.key_DIT] == dit)
-        # for file in self.calib_info[indices_bpm][self.key_filename]:
-        #     bpm = fits.getdata(os.path.join(self.calpath, file))
         
         # Identify the trace from the master flat of each WLEN setting
         for item_wlen in unique_wlen:
@@ -323,7 +418,7 @@ class Pipeline:
             # Save the polynomial coefficients
             file_name = os.path.join(self.calpath, 'TW_FLAT_w{}.fits'.format(item_wlen))
             su.wfits(file_name, trace, hdr)
-            self.add_to_calib('TW_FLAT_w{}.fits'.format(item_wlen), "TRACE_TW")
+            self._add_to_calib('TW_FLAT_w{}.fits'.format(item_wlen), "TRACE_TW")
             
 
     def cal_slit_curve(self, key_wave_min, key_wave_max, key_wave_cen, debug=False):
@@ -394,11 +489,11 @@ class Pipeline:
             # and wavelength solution
             file_name = os.path.join(self.calpath, 'SLIT_TILT_w{}.fits'.format(item_wlen))
             su.wfits(file_name, slit, hdr)
-            self.add_to_calib('SLIT_TILT_w{}.fits'.format(item_wlen), "SLIT_TILT")
+            self._add_to_calib('SLIT_TILT_w{}.fits'.format(item_wlen), "SLIT_TILT")
 
             file_name = os.path.join(self.calpath, 'INIT_WLEN_{}.fits'.format(item_wlen))
             su.wfits(file_name, wlens, hdr)
-            self.add_to_calib('INIT_WLEN_{}.fits'.format(item_wlen), "INIT_WLEN")
+            self._add_to_calib('INIT_WLEN_{}.fits'.format(item_wlen), "INIT_WLEN")
 
 
     
@@ -437,33 +532,29 @@ class Pipeline:
             assert (indices_bpm.sum())<2
             assert (indices_tw.sum())<2
             assert (indices_slit.sum())<2
+            assert (indices_flat.sum())<2
 
-            # Read in the trace-wave, bad-pixel, and slit-curvature files
+            # Read in the trace-wave, bad-pixel, slit-curvature, and master flat files
             file = self.calib_info[indices_tw][self.key_filename].iloc[0]
             tw = fits.getdata(os.path.join(self.calpath, file))
             file = self.calib_info[indices_slit][self.key_filename].iloc[0]
             slit = fits.getdata(os.path.join(self.calpath, file))
-            # What's the use in a for-loop here?
-            for file in self.calib_info[indices_bpm][self.key_filename]:
-                bpm = fits.getdata(os.path.join(self.calpath, file))
-
-            # Read in the master flat
-            # What's the use in a for-loop here?
-            assert (indices_flat.sum())<2
-            for file in self.calib_info[indices_flat][self.key_filename]:
-                flat = fits.getdata(os.path.join(self.calpath, file))
-                hdr = fits.getheader(os.path.join(self.calpath, file))
+            file = self.calib_info[indices_bpm][self.key_filename].iloc[0]
+            bpm = fits.getdata(os.path.join(self.calpath, file))
+            file = self.calib_info[indices_flat][self.key_filename].iloc[0]
+            flat = fits.getdata(os.path.join(self.calpath, file))
+            hdr = fits.getheader(os.path.join(self.calpath, file))
             
             # Normalize the master flat with the order-specific blaze functions
             flat_norm, blazes = su.util_master_flat_norm(flat, bpm, tw, slit, debug=debug)
 
             file_name = os.path.join(self.calpath, 'FLAT_NORM_w{}.fits'.format(item_wlen))
             su.wfits(file_name, flat_norm, hdr)
-            self.add_to_calib('FLAT_NORM_w{}.fits'.format(item_wlen), "FLAT_NORM")
+            self._add_to_calib('FLAT_NORM_w{}.fits'.format(item_wlen), "FLAT_NORM")
 
             file_name = os.path.join(self.calpath, 'BLAZE_w{}.fits'.format(item_wlen))
             su.wfits(file_name, blazes, hdr)
-            self.add_to_calib('BLAZE_w{}.fits'.format(item_wlen), "BLAZE")
+            self._add_to_calib('BLAZE_w{}.fits'.format(item_wlen), "BLAZE")
 
 
     def obs_nodding(self, debug=False):
@@ -622,7 +713,7 @@ class Pipeline:
 
                         file_name = os.path.join(self.noddingpath, 'Nodding_{}'.format(file))
                         su.wfits(file_name, frame_bkg_cor, hdr, ext_list=err_bkg_cor)
-                        self.add_to_product("./obs_nodding/"+'Nodding_{}'.format(file), "NODDING_FRAME")
+                        self._add_to_product("./obs_nodding/"+'Nodding_{}'.format(file), "NODDING_FRAME")
                         # plt.imshow((frame_bkg_cor/flat)[2], vmin=-20, vmax=20)
                         # plt.show()
                         if hdr[self.key_nodpos] == 'A':
@@ -694,10 +785,10 @@ class Pipeline:
                 # Save the combined obs_nodding observation
                 file_name = os.path.join(self.noddingpath, 'Nodding_combined_{}_{}.fits'.format(pos, item_wlen))
                 su.wfits(file_name, combined, hdr, ext_list=combined_err)
-                self.add_to_product("./obs_nodding/"+'Nodding_combined_{}_{}.fits'.format(pos, item_wlen), "NODDING_COMBINED")
+                self._add_to_product("./obs_nodding/"+'Nodding_combined_{}_{}.fits'.format(pos, item_wlen), "NODDING_COMBINED")
 
     def extract1d_nodding(self, f_star=None, companion_sep=None, 
-                          aper_prim=20, aper_comp=20, debug=False):    
+                          aper_prim=20, aper_comp=10, debug=False):    
         
         # Create the obs_nodding directory if it does not exist yet
         self.noddingpath = os.path.join(self.outpath, "obs_nodding")
@@ -778,7 +869,7 @@ class Pipeline:
 
                 file_name = os.path.join(self.noddingpath, 'Extr1D_Nodding_combined_{}_{}_{}.fits'.format(pos, item_wlen, 'PRIMARY'))
                 su.wfits(file_name, flux_pri, hdr, ext_list=err_pri)
-                self.add_to_product("./obs_nodding/"+'Extr1D_Nodding_combined_{}_{}_{}.fits'.format(pos, item_wlen, 'PRIMARY'), "Extr1D_PRIMARY")
+                self._add_to_product("./obs_nodding/"+'Extr1D_Nodding_combined_{}_{}_{}.fits'.format(pos, item_wlen, 'PRIMARY'), "Extr1D_PRIMARY")
                 
                 if not companion_sep is None:
                     # The slit is centered on the star, not the companion
@@ -794,7 +885,7 @@ class Pipeline:
 
                     file_name = os.path.join(self.noddingpath, 'Extr1D_Nodding_combined_{}_{}_{}.fits'.format(pos, item_wlen, 'SECONDARY'))
                     su.wfits(file_name, flux_sec, hdr, ext_list=err_sec)
-                    self.add_to_product("./obs_nodding/"+'Extr1D_Nodding_combined_{}_{}_{}.fits'.format(pos, item_wlen, 'SECONDARY'), "Extr1D_SECONDARY")
+                    self._add_to_product("./obs_nodding/"+'Extr1D_Nodding_combined_{}_{}_{}.fits'.format(pos, item_wlen, 'SECONDARY'), "Extr1D_SECONDARY")
                 
 
 
@@ -837,7 +928,7 @@ class Pipeline:
             
             file_name = os.path.join(self.noddingpath, 'CAL_WLEN_{}.fits'.format(item_wlen))
             su.wfits(file_name, wlen_cal, hdr)
-            self.add_to_product("./obs_nodding/"+'CAL_WLEN_{}.fits'.format(item_wlen), "CAL_WLEN")
+            self._add_to_product("./obs_nodding/"+'CAL_WLEN_{}.fits'.format(item_wlen), "CAL_WLEN")
 
     def save_extracted_data(self, debug=False):
         self.noddingpath = os.path.join(self.outpath, "obs_nodding")
@@ -1006,7 +1097,7 @@ class Pipeline:
         transm_spec = np.column_stack((1e3 * wave.value, trans))
         out_file= os.path.join(self.calpath, "TRANSM_SPEC.fits")
         su.wfits(out_file, transm_spec)
-        self.add_to_calib('TRANSM_SPEC.fits', "TELLU")
+        self._add_to_calib('TRANSM_SPEC.fits', "TELLU")
         # header = "Wavelength (nm) - Transmission"
         # np.savetxt(out_file, transm_spec, header=header)
 
