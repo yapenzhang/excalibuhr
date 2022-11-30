@@ -45,8 +45,7 @@ class Pipeline:
         """
 
         self._print_section(
-            "Pipeline for VLT/CRIRES+", bound_char="=", extra_line=False
-        )
+            f"Run pipeline for Night: {night}", bound_char="=")
         
         self.workpath = os.path.abspath(workpath)
         self.night = night
@@ -59,9 +58,10 @@ class Pipeline:
         self.header_file = os.path.join(self.calpath, "header_info.txt")
         self.product_file = os.path.join(self.outpath, "product_info.txt")
         self.gain=[2.15, 2.19, 2.0]
-        self.pix_scale=0.059 #arcsec
+        self.pix_scale=0.056 #arcsec
         
-        print(f"Data reduction folder: {self.workpath}")
+        print("Data reduction folder:"
+              f"{os.path.join(self.workpath, self.night)}")
 
         # self.detlin_path = '/run/media/yzhang/disk/cr2res_cal_detlin_coeffs.fits'
 
@@ -88,8 +88,6 @@ class Pipeline:
         if os.path.isfile(self.header_file):
             print("Reading header data from header_info.txt")
             self.header_info = pd.read_csv(self.header_file, sep=';')
-            # print('\nHeader info:')
-            # print(self.header_info)
         else:
             self.header_info = None 
 
@@ -99,16 +97,12 @@ class Pipeline:
         if os.path.isfile(self.calib_file):
             print("Reading calibration information from calib_info.txt")
             self.calib_info = pd.read_csv(self.calib_file, sep=';')
-            # print('\nCalib info:')
-            # print(self.calib_info)
         else:
             self.calib_info = None
 
         if os.path.isfile(self.product_file):
             print("Reading product information from product_info.txt")
             self.product_info = pd.read_csv(self.product_file, sep=';')
-            # print('\nProduct info:')
-            # print(self.product_info)
         else:
             self.product_info = None      
 
@@ -234,10 +228,28 @@ class Pipeline:
         self.header_info.to_csv(
             os.path.join(self.calpath,'header_info.txt'), index=False, sep=';')
 
-    def _add_to_calib(self, file, cal_type):
-        keywords = self.header_keys.values()
+    def _add_to_calib(self, file: str, cal_type: str) -> None:
+        """
+        Internal method for adding details of processed calibration files
+        to the DataFrame and text file.
+
+        Parameters
+        ----------
+        file : str
+            filename to be added to the table
+        cal_type: str 
+            type of the calibration file, e.g. `DARK_MASTER`, `FLAT_MASTER`
+
+        Returns
+        -------
+        NoneType
+            None
+        """
+        print(f"{cal_type}: cal/{file}")
         header = fits.getheader(os.path.join(self.calpath, file))
+
         calib_dict = {}
+        keywords = self.header_keys.values()
         for key_item in keywords:
             calib_dict[key_item] = [header.get(key_item)]
         calib_dict[self.key_caltype] = [cal_type]
@@ -247,14 +259,34 @@ class Pipeline:
         if self.calib_info is None:
             self.calib_info = calib_append
         else:
-            self.calib_info = pd.concat([self.calib_info, calib_append], ignore_index=True)
+            self.calib_info = pd.concat([self.calib_info, calib_append], 
+                                    ignore_index=True)
         
-        self.calib_info.to_csv(os.path.join(self.calpath,'calib_info.txt'), index=False, sep=';')
+        self.calib_info.to_csv(os.path.join(self.calpath,'calib_info.txt'), 
+                                    index=False, sep=';')
 
-    def _add_to_product(self, file, prod_type):
-        keywords = self.header_keys.values()
+    def _add_to_product(self, file: str, prod_type: str) -> None:
+        """
+        Internal method for adding details of data products
+        to the DataFrame and text file.
+
+        Parameters
+        ----------
+        file : str
+            filename to be added to the table
+        cal_type: str 
+            type of the data product, e.g. `NODDING_FRAME`, `Extr1D_PRIMARY`
+
+        Returns
+        -------
+        NoneType
+            None
+        """
+        print(f"{prod_type}: out/{file}")
         header = fits.getheader(os.path.join(self.outpath, file))
+
         calib_dict = {}
+        keywords = self.header_keys.values()
         for key_item in keywords:
             calib_dict[key_item] = [header.get(key_item)]
         calib_dict[self.key_caltype] = [prod_type]
@@ -264,11 +296,31 @@ class Pipeline:
         if self.product_info is None:
             self.product_info = calib_append
         else:
-            self.product_info = pd.concat([self.product_info, calib_append], ignore_index=True)
+            self.product_info = pd.concat([self.product_info, calib_append], 
+                                        ignore_index=True)
         
-        self.product_info.to_csv(os.path.join(self.outpath,'product_info.txt'), index=False, sep=';')
+        self.product_info.to_csv(os.path.join(self.outpath,'product_info.txt'), 
+                                        index=False, sep=';')
 
-    def cal_dark(self, verbose=True):
+    def cal_dark(self, clip: int = 5, collapse: str = 'median') -> None:
+        """
+        Method for combining dark frames according to DIT.
+
+        Parameters
+        ----------
+        clip : int
+            sigma of bad pixel clipping
+        collapse: str
+            the way of combining dark frames: `mean` or `median`
+
+        Returns
+        -------
+        NoneType
+            None
+        """
+
+        self._print_section("Create DARK_MASTER")
+        
         indices = (self.header_info[self.key_dtype] == "DARK")
 
         # Check unique DIT
@@ -277,61 +329,74 @@ class Pipeline:
             unique_dit.add(item)
 
         if len(unique_dit) == 0:
-            print("Unique DIT values: none")
+            raise RuntimeError("No DARK frames found in the raw folder")
         else:
-            print(f"Unique DIT values: {unique_dit}\n")
+            print(f"DIT values for DARK: {unique_dit}\n")
 
         # Create a master dark for each unique DIT
         for item in unique_dit:
             
-            indices_dit = (self.header_info[indices][self.key_DIT] == item)
+            indices_dit = indices & (self.header_info[self.key_DIT] == item)
             
             # Store each dark-observation in a list
             dt = []
-            for file in self.header_info[indices][indices_dit][self.key_filename]:
+            for file in self.header_info[indices_dit][self.key_filename]:
                 with fits.open(os.path.join(self.rawpath, file)) as hdu:
                     hdr = hdu[0].header
                     dt.append(np.array([hdu[i].data for i in range(1, len(hdu))]))
             
-            # Per detector, median-combine the darks and determine the bad pixels
-            master, rons, badpix = su.util_master_dark(dt, badpix_clip=5)
+            # Per detector, median-combine the darks
+            # determine the bad pixels and readout noise
+            master, rons, badpix = su.util_master_dark(dt, badpix_clip=clip,
+                                    collapse=collapse)
             
+            print("\n Output files:")
             # Save the master dark, read-out noise, and bad-pixel maps
-            file_name = os.path.join(self.calpath, 'DARK_MASTER_DIT{}.fits'.format(item))
+            file_name = os.path.join(self.calpath, 
+                            f'DARK_MASTER_DIT{item}.fits')
             su.wfits(file_name, master, hdr)
-            self._add_to_calib('DARK_MASTER_DIT{}.fits'.format(item), "DARK_MASTER")
+            self._add_to_calib(f'DARK_MASTER_DIT{item}.fits', 
+                            "DARK_MASTER")
+            pu.plot_det_image(master, file_name, 
+                            f"DARK_MASTER, DIT={item:.1f}")
             
-            file_name = os.path.join(self.calpath, 'DARK_RON_DIT{}.fits'.format(item))
+            file_name = os.path.join(self.calpath, 
+                            f'DARK_RON_DIT{item}.fits')
             su.wfits(file_name, rons, hdr)
-            self._add_to_calib('DARK_RON_DIT{}.fits'.format(item), "DARK_RON")
+            self._add_to_calib(f'DARK_RON_DIT{item}.fits', 
+                            "DARK_RON")
 
-            file_name = os.path.join(self.calpath, 'DARK_BPM_DIT{}.fits'.format(item))
+            file_name = os.path.join(self.calpath, 
+                            f'DARK_BPM_DIT{item}.fits')
             su.wfits(file_name, badpix.astype(int), hdr)
-            self._add_to_calib('DARK_BPM_DIT{}.fits'.format(item), "DARK_BPM")
+            self._add_to_calib(f'DARK_BPM_DIT{item}.fits', 
+                            "DARK_BPM")
 
-            if verbose:
-                print(r"{0:.1f}% of pixels identified as bad.".format(np.sum(badpix)/badpix.size*100.))
-            # TODO: plot product
-            # pu.plot_det_image()
+            print(f"DIT {item:.1f} s -> "
+                  f"{np.sum(badpix)/badpix.size*100.:.1f}"
+                  r"% of pixels identified as bad")
 
     
-    
-    def cal_flat_raw(self, verbose=True):
+    def cal_flat_raw(self, clip: int = 5, collapse: str = 'median') -> None:
+        """
+        Method for combining raw flat frames according to wavelngth setting.
+
+        Parameters
+        ----------
+        clip : int
+            sigma of bad pixel clipping
+        collapse: str
+            the way of combining multiple frames: `mean` or `median`
+
+        Returns
+        -------
+        NoneType
+            None
+        """
+
+        self._print_section("Create FLAT_MASTER")
+
         indices = self.header_info[self.key_dtype] == "FLAT"
-
-        # Use the longest DIT for the master flat
-        unique_dit = set()
-        for item in self.header_info[indices][self.key_DIT]:
-            unique_dit.add(item)
-        dit = max(unique_dit)
-
-        if len(unique_dit) > 1:
-            print(f"Unique DIT values: {unique_dit}\n")
-            print(f"Only utilize the flat with DIT of {dit}\n")
-        elif len(unique_dit) == 0:
-            print("Unique DIT values: none")
-        else:
-            print(f"Unique DIT values: {unique_dit}\n")
 
         # Check unique WLEN setting
         unique_wlen = set()
@@ -339,26 +404,39 @@ class Pipeline:
             unique_wlen.add(item)
 
         if len(unique_wlen) == 0:
-            print("Unique WLEN settings: none")
+            raise RuntimeError("No FLAT frames found in the raw folder")
         else:
-            print(f"Unique WLEN settings: {unique_wlen}\n")
-
-        # Select master dark and bad-pixel mask corresponding to DIT
-        indices_dark = (self.calib_info[self.key_caltype] == "DARK_MASTER") & \
-                       (self.calib_info[self.key_DIT] == dit)
-        indices_bpm = (self.calib_info[self.key_caltype] == "DARK_BPM") & \
-                      (self.calib_info[self.key_DIT] == dit)
-        assert (indices_dark.sum())<2
-
-        file = self.calib_info[indices_dark][self.key_filename].iloc[0]
-        dark = fits.getdata(os.path.join(self.calpath, file))
-        file = self.calib_info[indices_bpm][self.key_filename].iloc[0]
-        badpix = fits.getdata(os.path.join(self.calpath, file))
+            print(f"Wavelength settings for FLAT: {unique_wlen}\n")
 
         # Create a master flat for each unique WLEN setting
         for item_wlen in unique_wlen:
-            indices_dit = indices & ((self.header_info[self.key_DIT] == dit) & \
-                                     (self.header_info[self.key_wlen] == item_wlen))
+
+            indices_wlen = indices & \
+                        (self.header_info[self.key_wlen] == item_wlen)
+
+            # Use the longest DIT for the master flat
+            unique_dit = set()
+            for item in self.header_info[indices_wlen][self.key_DIT]:
+                unique_dit.add(item)
+            if len(unique_dit) == 0:
+                raise RuntimeError("No FLAT frames found in the raw folder")
+            dit = max(unique_dit)
+            
+            indices_dit = indices_wlen & (self.header_info[self.key_DIT] == dit) 
+
+            # Select master dark and bad-pixel mask corresponding to DIT
+            indices_dark = (self.calib_info[self.key_caltype] == "DARK_MASTER") \
+                         & (self.calib_info[self.key_DIT] == dit)
+            indices_bpm = (self.calib_info[self.key_caltype] == "DARK_BPM") \
+                        & (self.calib_info[self.key_DIT] == dit)
+            if np.sum(indices_dark) < 1:
+                raise RuntimeError(f"No MASTER DARK frame found with the \
+                        DIT value {dit}s corresponding to that of FLAT frames")
+
+            file = self.calib_info[indices_dark][self.key_filename].iloc[0]
+            dark = fits.getdata(os.path.join(self.calpath, file))
+            file = self.calib_info[indices_bpm][self.key_filename].iloc[0]
+            badpix = fits.getdata(os.path.join(self.calpath, file))
 
             # Store each flat-observation in a list
             dt = []
@@ -368,63 +446,97 @@ class Pipeline:
                     dt.append(np.array([hdu[i].data for i in range(1, len(hdu))]))
 
             # Per detector, median-combine the flats and determine the bad pixels
-            master, badpix = su.util_master_flat(dt, dark, collapse='median')
+            master, badpix = su.util_master_flat(dt, dark, 
+                            badpix_clip=clip, collapse=collapse)
+            
+            print(f"WLEN setting {item_wlen} -> " 
+                  f"{np.sum(badpix)/badpix.size*100.:.1f}"
+                  r"% of pixels identified as bad")
 
+            print("\n Output files:")
             # Save the master flat and bad-pixel map
-            file_name = os.path.join(self.calpath, 'FLAT_MASTER_w{}.fits'.format(item_wlen))
+            file_name = os.path.join(self.calpath, \
+                            f'FLAT_MASTER_{item_wlen}.fits')
             su.wfits(file_name, master, hdr)
-            self._add_to_calib('FLAT_MASTER_w{}.fits'.format(item_wlen), "FLAT_MASTER")
+            self._add_to_calib(f'FLAT_MASTER_{item_wlen}.fits', "FLAT_MASTER")
 
-            file_name = os.path.join(self.calpath, 'FLAT_BPM_DIT{}.fits'.format(item))
+            file_name = os.path.join(self.calpath, 
+                            f'FLAT_BPM_{item_wlen}.fits')
             su.wfits(file_name, badpix.astype(int), hdr)
-            self._add_to_calib('FLAT_BPM_DIT{}.fits'.format(item), "FLAT_BPM")
-
-            if verbose:
-                print(r"{0:.1f}% of pixels identified as bad.".format(np.sum(badpix)/badpix.size*100.))
+            self._add_to_calib(f'FLAT_BPM_{item_wlen}.fits', 
+                            "FLAT_BPM")
             
 
-    def cal_flat_trace(self, verbose=True, debug=False):
+    def cal_flat_trace(self, sub_factor: int = 64) -> None:
+        """
+        Method for identifying traces of spectral order in `MASTER FLAT`.
+
+        Parameters
+        ----------
+        sub_factor : int
+            binning factor along the dispersion axis.
+
+        Returns
+        -------
+        NoneType
+            None
+        """
+
+        self._print_section("Trace spectral orders")
+
         indices = self.calib_info[self.key_caltype] == "FLAT_MASTER"
 
-        # Check unique DIT
-        unique_dit = set()
-        for item in self.calib_info[indices][self.key_DIT]:
-            unique_dit.add(item)
-        dit = max(unique_dit)
-        print(f"Use DIT value: {dit}\n")
-        
         # Check unique WLEN setting
         unique_wlen = set()
         for item in self.calib_info[indices][self.key_wlen]:
             unique_wlen.add(item)
-
-        if len(unique_wlen) == 0:
-            print("Unique WLEN settings: none")
-        else:
-            print(f"Unique WLEN settings: {unique_wlen}\n")
         
         # Identify the trace from the master flat of each WLEN setting
         for item_wlen in unique_wlen:
-            indices_flat = indices & ((self.calib_info[self.key_DIT] == dit) & \
-                                      (self.calib_info[self.key_wlen] == item_wlen))
-            assert (indices_flat.sum())<2
-            for file in self.calib_info[indices_flat][self.key_filename]:
-                flat = fits.getdata(os.path.join(self.calpath, file))
-                hdr = fits.getheader(os.path.join(self.calpath, file))
+            indices_flat = indices & \
+                        (self.calib_info[self.key_wlen] == item_wlen)
+            indices_bpm = (self.calib_info[self.key_caltype] == "FLAT_BPM") & \
+                        (self.calib_info[self.key_wlen] == item_wlen)
+
+            file = self.calib_info[indices_flat][self.key_filename].iloc[0]
+            flat = fits.getdata(os.path.join(self.calpath, file))
+            hdr = fits.getheader(os.path.join(self.calpath, file))
+            file = self.calib_info[indices_bpm][self.key_filename].iloc[0]
+            bpm = fits.getdata(os.path.join(self.calpath, file))
+            
             
             # Fit polynomials to the trace edges
-            trace = su.util_order_trace(flat, debug=debug)
-
+            trace = su.util_order_trace(flat, bpm, 
+                    hdr[self.key_slitlen]/self.pix_scale, sub_factor=sub_factor)
+            
+            print("\n Output files:")
             # Save the polynomial coefficients
-            file_name = os.path.join(self.calpath, 'TW_FLAT_w{}.fits'.format(item_wlen))
+            file_name = os.path.join(self.calpath, f'TW_FLAT_{item_wlen}.fits')
             su.wfits(file_name, trace, hdr)
-            self._add_to_calib('TW_FLAT_w{}.fits'.format(item_wlen), "TRACE_TW")
+            self._add_to_calib(f'TW_FLAT_{item_wlen}.fits', "TRACE_TW")
+            
+            pu.plot_det_image(flat, file_name, f"FLAT_MASTER_{item_wlen}", 
+                            tw=trace)
             
 
-    def cal_slit_curve(self, key_wave_min, key_wave_max, key_wave_cen, debug=False):
-        self.key_wave_min = key_wave_min  #1-10
-        self.key_wave_max = key_wave_max  #1-10
-        self.key_wave_cen = key_wave_cen  #1-10
+    def cal_slit_curve(self, debug=False) -> None:
+        """
+        Method for tracing slit curvature in the `FPET` calibration frame.
+        Determine initial wavelength solution by mapping FPET lines to 
+        an evenly spaced wavelength grid.
+
+        Parameters
+        ----------
+        debug : bool
+            generate plots for debugging.
+
+        Returns
+        -------
+        NoneType
+            None
+        """
+
+        self._print_section("Trace slit curvature")
 
         # Select the Fabry-Perot etalon calibrations
         indices_fpet = self.header_info[self.key_dtype] == "WAVE,FPET"
@@ -435,25 +547,30 @@ class Pipeline:
             unique_wlen.add(item)
 
         if len(unique_wlen) == 0:
-            print("Unique WLEN settings: none")
-        else:
-            print(f"Unique WLEN settings: {unique_wlen}\n")
+            raise RuntimeError("No FPET frame found in the raw folder")
 
         # Identify the slit curvature for each WLEN setting
         for item_wlen in unique_wlen:
-            indices = (self.header_info[indices_fpet][self.key_wlen] == item_wlen)
-            dit = self.header_info[indices_fpet][indices][self.key_DIT].iloc[0]
-            file_fpet = self.header_info[indices_fpet][indices][self.key_filename].iloc[0]
+            indices = indices_fpet & \
+                    (self.header_info[self.key_wlen] == item_wlen)
+            file_fpet = self.header_info[indices][self.key_filename].iloc[0]
 
-            indices_dark = (self.calib_info[self.key_caltype] == "DARK_MASTER") & \
-                           (self.calib_info[self.key_DIT] == dit)
-            indices_bpm = (self.calib_info[self.key_caltype] == "FLAT_BPM")
+            dit = self.header_info[indices][self.key_DIT].iloc[0]
+            indices_dark = (self.calib_info[self.key_caltype] == "DARK_MASTER")\
+                         & (self.calib_info[self.key_DIT] == dit)
+            indices_bpm = (self.calib_info[self.key_caltype] == "DARK_BPM") \
+                         & (self.calib_info[self.key_DIT] == dit)
             indices_tw = (self.calib_info[self.key_caltype] == "TRACE_TW") & \
                          (self.calib_info[self.key_wlen] == item_wlen)
-            
-            assert (indices_dark.sum())<2
-            assert (indices_bpm.sum())<2
-            assert (indices_tw.sum())<2
+
+            if np.sum(indices_dark) < 1:
+                raise RuntimeError(f"No MASTER DARK frame found with the \
+                        DIT value {dit}s corresponding to that of FPET frame")             
+            if np.sum(indices_tw) < 1:
+                raise RuntimeError(f"No order trace (TRACE_TW) found with \
+                        the WLEN setting {item_wlen} corresponding to  \
+                        that of FPET frame") 
+
             # Read the trace-wave, master dark and bad-pixel mask
             file = self.calib_info[indices_tw][self.key_filename].iloc[0]
             tw = fits.getdata(os.path.join(self.calpath, file))
@@ -461,101 +578,117 @@ class Pipeline:
             file = self.calib_info[indices_dark][self.key_filename].iloc[0]
             dark = fits.getdata(os.path.join(self.calpath, file))
 
+            file = self.calib_info[indices_bpm][self.key_filename].iloc[0]
+            bpm = fits.getdata(os.path.join(self.calpath, file))
+
             wlen_mins, wlen_maxs = [], []
             with fits.open(os.path.join(self.rawpath, file_fpet)) as hdu:
                 # Dark-subtract the fpet observation
                 hdr = hdu[0].header
-                fpet = np.array([hdu[i].data for i in range(1, len(hdu))]) - dark
-
-                # Loop over the detectors
+                fpet = np.array([hdu[i].data for i in range(1, len(hdu))]) \
+                        - dark
+                
+                # Store the minimum and maximum wavelengths
+                # of each order {j} in each detector {i}.
                 for i in range(1, len(hdu)):
                     wlen_min, wlen_max = [], []
                     header = hdu[i].header
-
-                    # Loop over all orders of this WLEN setting
-                    for j in range(1,11):
+                    for j in range(1,11): # maximum 10 orders possible
                         if float(header[self.key_wave_cen+str(j)]) > 0:
-                            # Store the minimum and maximum wavelengths
-                            # on this detector and order
                             wlen_min.append(header[self.key_wave_min+str(j)])
                             wlen_max.append(header[self.key_wave_max+str(j)])
                     wlen_mins.append(wlen_min)
                     wlen_maxs.append(wlen_max)
 
             # Assess the slit curvature and wavelengths along the orders
-            slit, wlens = su.util_slit_curve(fpet, tw, wlen_mins, wlen_maxs, debug=debug)
+            slit, wlens = su.util_slit_curve(fpet, bpm, tw, 
+                            wlen_mins, wlen_maxs, debug=debug)
 
+            print("\n Output files:")
             # Save the polynomial coefficients describing the slit curvature 
-            # and wavelength solution
-            file_name = os.path.join(self.calpath, 'SLIT_TILT_w{}.fits'.format(item_wlen))
+            # and an initial wavelength solution
+            file_name = os.path.join(self.calpath, 
+                            f'SLIT_TILT_{item_wlen}.fits')
             su.wfits(file_name, slit, hdr)
-            self._add_to_calib('SLIT_TILT_w{}.fits'.format(item_wlen), "SLIT_TILT")
+            self._add_to_calib(f'SLIT_TILT_{item_wlen}.fits', "SLIT_TILT")
 
-            file_name = os.path.join(self.calpath, 'INIT_WLEN_{}.fits'.format(item_wlen))
+            pu.plot_det_image(fpet, file_name, f"FPET_{item_wlen}", 
+                            tw=tw, slit=slit)
+
+            file_name = os.path.join(self.calpath, 
+                            f'INIT_WLEN_{item_wlen}.fits')
             su.wfits(file_name, wlens, hdr)
-            self._add_to_calib('INIT_WLEN_{}.fits'.format(item_wlen), "INIT_WLEN")
-
-
-    
+            self._add_to_calib(f'INIT_WLEN_{item_wlen}.fits', "INIT_WLEN")
+            
 
     def cal_flat_norm(self, debug=True):
+        """
+        Method for creating normalized flat field and 
+        extracting blaze function
+
+        Parameters
+        ----------
+        debug : bool
+            generate plots for debugging.
+
+        Returns
+        -------
+        NoneType
+            None
+        """
+
+        self._print_section("Normalize flat; Extract blaze")
+
         indices = self.calib_info[self.key_caltype] == "FLAT_MASTER"
 
-        # Check unique DIT
-        unique_dit = set()
-        for item in self.calib_info[indices][self.key_DIT]:
-            unique_dit.add(item)
-        dit = max(unique_dit)
-        print(f"Use DIT value: {dit}\n")
-        
+        indices = self.calib_info[self.key_caltype] == "FLAT_MASTER"
+
         # Check unique WLEN setting
         unique_wlen = set()
         for item in self.calib_info[indices][self.key_wlen]:
             unique_wlen.add(item)
-
-        if len(unique_wlen) == 0:
-            print("Unique WLEN settings: none")
-        else:
-            print(f"Unique WLEN settings: {unique_wlen}\n")
-
-        # Normalize the master flat of each WLEN setting
+        
+        # Identify the trace from the master flat of each WLEN setting
         for item_wlen in unique_wlen:
-            indices_flat = indices & ((self.calib_info[self.key_DIT] == dit) & \
-                                      (self.calib_info[self.key_wlen] == item_wlen))
-
+            indices_flat = indices & \
+                        (self.calib_info[self.key_wlen] == item_wlen)
             indices_bpm = (self.calib_info[self.key_caltype] == "FLAT_BPM") & \
-                          (self.calib_info[self.key_DIT] == dit)
+                        (self.calib_info[self.key_wlen] == item_wlen)
             indices_tw = (self.calib_info[self.key_caltype] == "TRACE_TW") & \
                          (self.calib_info[self.key_wlen] == item_wlen)
-            indices_slit = (self.calib_info[self.key_caltype] == "SLIT_TILT") & \
-                           (self.calib_info[self.key_wlen] == item_wlen)
-            assert (indices_bpm.sum())<2
-            assert (indices_tw.sum())<2
-            assert (indices_slit.sum())<2
-            assert (indices_flat.sum())<2
+            indices_slit = (self.calib_info[self.key_caltype] == "SLIT_TILT") \
+                          & (self.calib_info[self.key_wlen] == item_wlen)
 
-            # Read in the trace-wave, bad-pixel, slit-curvature, and master flat files
-            file = self.calib_info[indices_tw][self.key_filename].iloc[0]
-            tw = fits.getdata(os.path.join(self.calpath, file))
-            file = self.calib_info[indices_slit][self.key_filename].iloc[0]
-            slit = fits.getdata(os.path.join(self.calpath, file))
-            file = self.calib_info[indices_bpm][self.key_filename].iloc[0]
-            bpm = fits.getdata(os.path.join(self.calpath, file))
+            # Read in the trace-wave, bad-pixel, slit-curvature, and flat files
             file = self.calib_info[indices_flat][self.key_filename].iloc[0]
             flat = fits.getdata(os.path.join(self.calpath, file))
             hdr = fits.getheader(os.path.join(self.calpath, file))
             
+            file = self.calib_info[indices_bpm][self.key_filename].iloc[0]
+            bpm = fits.getdata(os.path.join(self.calpath, file))
+            
+            file = self.calib_info[indices_tw][self.key_filename].iloc[0]
+            tw = fits.getdata(os.path.join(self.calpath, file))
+            
+            file = self.calib_info[indices_slit][self.key_filename].iloc[0]
+            slit = fits.getdata(os.path.join(self.calpath, file))
+            
             # Normalize the master flat with the order-specific blaze functions
-            flat_norm, blazes = su.util_master_flat_norm(flat, bpm, tw, slit, debug=debug)
+            flat_norm, blazes = su.util_master_flat_norm(flat, bpm, 
+                                    tw, slit, debug=debug)
 
-            file_name = os.path.join(self.calpath, 'FLAT_NORM_w{}.fits'.format(item_wlen))
+            print("\n Output files:")
+            file_name = os.path.join(self.calpath, 
+                                    f'FLAT_NORM_{item_wlen}.fits')
             su.wfits(file_name, flat_norm, hdr)
-            self._add_to_calib('FLAT_NORM_w{}.fits'.format(item_wlen), "FLAT_NORM")
+            self._add_to_calib(f'FLAT_NORM_{item_wlen}.fits', "FLAT_NORM")
 
-            file_name = os.path.join(self.calpath, 'BLAZE_w{}.fits'.format(item_wlen))
+            pu.plot_det_image(flat_norm, file_name, f"FLAT_NORM_{item_wlen}")
+
+            file_name = os.path.join(self.calpath, f'BLAZE_{item_wlen}.fits')
             su.wfits(file_name, blazes, hdr)
-            self._add_to_calib('BLAZE_w{}.fits'.format(item_wlen), "BLAZE")
-
+            self._add_to_calib(f'BLAZE_{item_wlen}.fits', "BLAZE")
+            
 
     def obs_nodding(self, debug=False):
 
@@ -889,7 +1022,30 @@ class Pipeline:
                 
 
 
-    def refine_wlen_solution(self, debug=False):    
+    def refine_wlen_solution(self,  mode='quad', debug=False):
+        """
+        Method for refining wavelength solution by maximizing 
+        cross-correlation functions between the spectrum and a
+        telluric transmission model on a order-by-order basis.
+
+        Parameters
+        ----------
+        mode: str
+            If mode is `linear`, then the wavelength solution is 
+            corrected with a linear function. If mode is `quad`,
+            the correction is a quadratic function.
+        debug : bool
+            generate plots for debugging.
+
+        Returns
+        -------
+        NoneType
+            None
+        """
+
+        self._print_section("Refine wavelength solution")
+
+
         self.noddingpath = os.path.join(self.outpath, "obs_nodding")
         if not os.path.exists(self.noddingpath):
             os.makedirs(self.noddingpath)
@@ -900,35 +1056,47 @@ class Pipeline:
         unique_wlen = set()
         for item in self.product_info[indices][self.key_wlen]:
             unique_wlen.add(item)
-        print(f"Unique WLEN settings: {unique_wlen}\n")
 
         indices_tellu = (self.calib_info[self.key_caltype] == "TELLU") 
+        if np.sum(indices_tellu) < 1:
+            raise RuntimeError("No Telluric transmission model found. \
+                        Please genrate it with `run_skycalc` first.") 
         file = self.calib_info[indices_tellu][self.key_filename].iloc[0]
         tellu = fits.getdata(os.path.join(self.calpath, file))
 
         for item_wlen in unique_wlen:
+            print(f"Calibrating WLEN setting {item_wlen}:")
             
-            indices_wlen = indices & (self.product_info[self.key_wlen] == item_wlen)
+            indices_wlen = indices & \
+                        (self.product_info[self.key_wlen] == item_wlen)
 
-            indices_wave = (self.calib_info[self.key_caltype] == "INIT_WLEN") & (self.calib_info[self.key_wlen] == item_wlen)
+            indices_wave = (self.calib_info[self.key_caltype] == "INIT_WLEN") \
+                         & (self.calib_info[self.key_wlen] == item_wlen)
             file = self.calib_info[indices_wave][self.key_filename].iloc[0]
             wlen_init = fits.getdata(os.path.join(self.calpath, file))
 
-            indices_blaze = (self.calib_info[self.key_caltype] == "BLAZE") & (self.calib_info[self.key_wlen] == item_wlen)
+            indices_blaze = (self.calib_info[self.key_caltype] == "BLAZE") \
+                          & (self.calib_info[self.key_wlen] == item_wlen)
             file = self.calib_info[indices_blaze][self.key_filename].iloc[0]
             blaze = fits.getdata(os.path.join(self.calpath, file))
 
             dt = []
+            # sum spectra at A and B nodding positions
             for file in self.product_info[indices_wlen][self.key_filename]:
                 with fits.open(os.path.join(self.outpath, file)) as hdu:
                     hdr = hdu[0].header
                     dt.append(hdu[0].data)
             dt = np.sum(dt, axis=0)
-            wlen_cal = su.util_wlen_solution(dt, wlen_init, blaze, tellu, debug=debug)
+
+            wlen_cal = su.util_wlen_solution(dt, wlen_init, blaze, tellu, 
+                            mode=mode, debug=debug)
             
-            file_name = os.path.join(self.noddingpath, 'CAL_WLEN_{}.fits'.format(item_wlen))
+            print("\n Output files:")
+            file_name = os.path.join(self.noddingpath,
+                                    f'CAL_WLEN_{item_wlen}.fits')
             su.wfits(file_name, wlen_cal, hdr)
-            self._add_to_product("./obs_nodding/"+'CAL_WLEN_{}.fits'.format(item_wlen), "CAL_WLEN")
+            self._add_to_product("./obs_nodding/"+f'CAL_WLEN_{item_wlen}.fits', 
+                                    "CAL_WLEN")
 
     def save_extracted_data(self, debug=False):
         self.noddingpath = os.path.join(self.outpath, "obs_nodding")
@@ -989,7 +1157,7 @@ class Pipeline:
         Parameters
         ----------
         pwv : float
-            Precipitable water vapor (default: 3.5) that is used for
+            Precipitable water vapor (default: 5) that is used for
             the telluric spectrum. 
 
         Returns
@@ -998,18 +1166,12 @@ class Pipeline:
             None
         """
 
-        # self._print_section("Run SkyCalc")
-
-        # Create output folder
-
-        # if not os.path.exists(output_dir):
-        #     os.makedirs(output_dir)
+        self._print_section("Run SkyCalc")
 
         # Indices with SCIENCE frames
         indices = self.header_info[self.key_catg] == "SCIENCE"
 
         # Setup SkyCalc object
-
         print("SkyCalc settings:")
 
         sky_calc = skycalc_ipy.SkyCalc()
