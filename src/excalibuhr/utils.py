@@ -144,11 +144,11 @@ def util_master_flat_norm(im, bpm, tw, slit, badpix_clip_count=1e2, debug=False)
 
         # Correct for the slit-curvature
         det_rect = spectral_rectify_interp(det, badpix, 
-                                trace, slit_meta, debug=debug)
+                                trace, slit_meta)
 
         # Retrieve the blaze function by mean-collapsing 
         # the master flat along the slit
-        blaze_orders = mean_collapse(det_rect, trace, debug=debug)
+        blaze_orders = mean_collapse(det_rect, trace)
         blazes.append(blaze_orders)
 
         flat_norm.append(blaze_norm(det, trace, slit_meta, 
@@ -180,7 +180,7 @@ def util_flat_fielding(im, im_err, flat, debug=False):
         plt.show()
     return im_corr, err_corr
 
-def util_extract_spec(im, im_err, bpm, tw, slit, blazes, gains, f0=0.5, f1=None, aper_half=20, bkg_subtract=False, f_star=None, debug=False):
+def util_extract_spec(im, im_err, bpm, tw, slit, blazes, gains, NDIT=1, f0=0.5, f1=None, aper_half=20, bkg_subtract=False, f_star=None, debug=False):
     
     # Loop over each detector
     flux, err  = [], []
@@ -195,14 +195,18 @@ def util_extract_spec(im, im_err, bpm, tw, slit, blazes, gains, f0=0.5, f1=None,
 
         # Extract a 1D spectrum
         if bkg_subtract:
-            f_opt, f_err = extract_spec(det_rect, err_rect, badpix, trace, gain=gain, \
-                                    f0=f0, f1=f1, aper_half=aper_half, \
-                                    bkg_subtract=bkg_subtract, \
-                                    f_star=f_star[d]/blaze, debug=debug)
+            f_opt, f_err = extract_spec(
+                    det_rect, err_rect, badpix, trace, 
+                    gain=gain, NDIT=NDIT,
+                    f0=f0, f1=f1, aper_half=aper_half,
+                    bkg_subtract=bkg_subtract,
+                    f_star=f_star[d]/blaze, debug=debug)
         else:
-            f_opt, f_err = extract_spec(det_rect, err_rect, badpix, trace, gain=gain, \
-                                    f0=f0, f1=f1, aper_half=aper_half, \
-                                    debug=debug)
+            f_opt, f_err = extract_spec(
+                    det_rect, err_rect, badpix, trace, 
+                    gain=gain, NDIT=NDIT,
+                    f0=f0, f1=f1, aper_half=aper_half, 
+                    debug=debug)
         flux.append(f_opt)
         err.append(f_err)
 
@@ -245,7 +249,7 @@ def align_jitter(dt, err, pix_shift, tw, debug=False):
         dt_shift[:, pix_shift:, :] = dt[:, :-pix_shift, :]
         err_shift[:, pix_shift:, :] = err[:, :-pix_shift, :]
     if debug:
-        #print peak signal location
+        # print peak signal location
         print(pix_shift, peak_slit_fraction(dt[0], tw[0]))
     return dt_shift, err_shift
 
@@ -390,7 +394,6 @@ def order_trace(det, badpix, slitlen : float, sub_factor=64):
     print(f"-> {len(poly_upper)} orders identified")
 
     return [poly_upper, poly_lower]
-
 
 
 def slit_curve(det, badpix, trace, wlen_min, wlen_max, sub_factor=4, debug=False):
@@ -690,6 +693,11 @@ def trace_rectify_interp(im_list, trace, debug=False):
         yy_mid = Poly.polyval(xx_grid, poly_mid)
         yy_upper = Poly.polyval(xx_grid, poly_upper)
         yy_lower = Poly.polyval(xx_grid, poly_lower)
+        if np.any(yy_upper > im_rect.shape[1]):
+            yy_upper = np.zeros_like(yy_upper) + im_rect.shape[1] - 4.
+        if np.any(yy_lower < 0):
+            yy_lower = np.zeros_like(yy_upper) + 4.
+
         shifts = yy_mid - yy_mid[len(xx_grid)//2] 
         yy_grid = np.arange(int(yy_lower.min()), int(yy_upper.max()+1))
 
@@ -867,7 +875,7 @@ def readout_artifact(det, det_err, badpix, trace, Nborder=10, debug=False):
         plt.show()
     return det-ron_col, np.sqrt(det_err**2+err_col**2)
 
-def extract_spec(im, im_err, bpm, trace, gain=2., f0=0.5, f1=None, aper_half=20, bkg_subtract=False, f_star=None, debug=False):
+def extract_spec(im, im_err, bpm, trace, gain=2., NDIT=1, f0=0.5, f1=None, aper_half=20, bkg_subtract=False, f_star=None, debug=False):
 
     im_copy = np.copy(im)
     bpm_copy = np.copy(bpm)
@@ -900,7 +908,7 @@ def extract_spec(im, im_err, bpm, trace, gain=2., f0=0.5, f1=None, aper_half=20,
         
         # Extract a 1D spectrum using the optimal extraction algorithm
         f_opt, f_err = optimal_extraction(im_sub.T, im_err_sub.T**2, bpm_sub.T, int(np.round(obj_cen)), 
-                                          aper_half, gain=gain, debug=debug) 
+                                          aper_half, gain=gain, NDIT=NDIT, debug=debug) 
         flux.append(f_opt)
         err.append(f_err)
 

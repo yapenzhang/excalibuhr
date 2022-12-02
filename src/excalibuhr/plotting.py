@@ -82,41 +82,42 @@ def plot_det_image(data, savename: str, title: str, tw = None, slit = None) -> N
 
     plt.suptitle(title, y=0.98)
     plt.savefig(savename[:-4]+'png')
-    # plt.show()
     plt.close(fig)
+
 
 
 def plot_spec1d(wlen, flux, err, savename):
     set_style()
     fig, axes = plt.subplots(nrows=Norder, ncols=1, 
-                            figsize=(14,2*Norder), constrained_layout=True)
+                    figsize=(14,2*Norder), constrained_layout=True)
     for i in range(Norder):
         indices = range(i*Ndet*Nx, (i+1)*Ndet*Nx)
         nans = np.isnan(flux[indices])
-        vmin, vmax = np.percentile(flux[indices][~nans], (5, 95))
+        vmin, vmax = np.percentile(flux[indices][~nans], (1, 99))
         for d in range(Ndet):
             indices_det = range(d*Nx, (d+1)*Nx)
-            axes[i].plot(wlen[indices][indices_det], flux[indices][indices_det], 'k')
+            axes[i].plot(wlen[indices][indices_det], 
+                         flux[indices][indices_det], 'k')
         axes[i].set_xlim((wlen[indices][0], wlen[indices][-1]))
-        axes[i].set_ylim((0.6*np.median(np.sort(flux[indices][~nans])[:len(indices)//20]), \
-                        1.2*np.median(np.sort(flux[indices][~nans])[-len(indices)//20:])))
+        axes[i].set_ylim((0.6*vmin, 1.2*vmax))
         axes[i].set_xlabel('Wavelength (nm)')
         axes[i].set_ylabel('Flux')
-    plt.savefig(savename+'.pdf')
+    plt.savefig(savename[:-4]+'.png')
     plt.close(fig)
 
     fig, axes = plt.subplots(nrows=Norder, ncols=1, 
-                            figsize=(14,2*Norder), constrained_layout=True)
+                    figsize=(14,2*Norder), constrained_layout=True)
     for i in range(Norder):
         indices = range(i*Ndet*Nx, (i+1)*Ndet*Nx)
-        mask = np.isnan(flux[indices])
+        nans = np.isnan(flux[indices])
+        vmin, vmax = np.percentile((flux/err)[indices][~nans], (1, 99))
         for d in range(Ndet):
             indices_det = range(d*Nx, (d+1)*Nx)
-            axes[i].plot(wlen[indices][indices_det], (flux/err)[indices][indices_det], 'k')
+            axes[i].plot(wlen[indices][indices_det], 
+                        (flux/err)[indices][indices_det], 'k')
         axes[i].set_xlim((wlen[indices][0], wlen[indices][-1]))
-        axes[i].set_ylim((0.6*np.median(np.sort((flux/err)[indices][~mask])[:len(indices)//20]), \
-                        1.2*np.median(np.sort((flux/err)[indices][~mask])[-len(indices)//20:])))
+        axes[i].set_ylim((0.6*vmin, 1.2*vmax))
         axes[i].set_xlabel('Wavelength (nm)')
         axes[i].set_ylabel('Flux')
-    plt.savefig(savename+'_SNR.pdf')
+    plt.savefig(savename[:-4]+'_SNR.png')
     plt.close(fig)

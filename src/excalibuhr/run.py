@@ -16,7 +16,7 @@ keywords = {
     'key_slitlen': 'ESO INS SLIT1 LEN',
     'key_slitwid': 'ESO INS SLIT1 NAME',
     'key_jitter': 'ESO SEQ JITTERVAL',
-    # 'key_nabcycle': 'ESO SEQ NABCYCLES',
+    'key_nabcycle': 'ESO SEQ NABCYCLES',
     # 'key_nodthrow': 'ESO SEQ NODTHROW',
     'key_wave_min': 'ESO INS WLEN BEGIN', 
     'key_wave_max': 'ESO INS WLEN END', 
@@ -24,24 +24,11 @@ keywords = {
 }
 
 workpath = './'
-night_list = ['2021-10-16']
-# night_list = ['2021-10-16','2021-11-09']
+night_list = ['2021-10-16','2021-11-09']
 
 for night in night_list:
     ppl = calib.Pipeline(workpath, night=night, **keywords)
     # ppl.download_rawdata_eso(login='yzhang', prog_id='108.222Y.001')
-    # ppl.extract_header()
-    # ppl.cal_dark()
-    # ppl.cal_flat_raw()
-    # ppl.cal_flat_trace()
-    # ppl.cal_slit_curve()
-    # ppl.cal_flat_norm()
-    # ppl.obs_nodding(debug=True)
-    # ppl.obs_nodding_combine()
-    # ppl.extract1d_nodding(# f_star={'A': 0.295, 'B': 0.795}, \
-    #                         companion_sep=1.8, debug=False)
-    # ppl.run_skycalc()
-    ppl.refine_wlen_solution(debug=True)
-    # ppl.save_extracted_data(debug=True)
+    ppl.run_recipes(companion_sep=1.8)
 
 # calib.CombineNights(workpath, night_list)
