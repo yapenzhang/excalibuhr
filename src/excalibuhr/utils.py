@@ -253,9 +253,27 @@ def align_jitter(dt, err, pix_shift, tw, debug=False):
         print(pix_shift, peak_slit_fraction(dt[0], tw[0]))
     return dt_shift, err_shift
 
-def util_unravel_spec(wlens, specs, errs, blazes=None, debug=False):
-    if blazes is None:
-        blazes = np.ones_like(specs)
+def util_unravel_spec(wlens, specs, errs):
+    wlens, specs, errs = np.array(wlens), np.array(specs), np.array(errs)
+    Nchip, Nx = wlens.shape
+
+    # generate a evenly spaced wavelength grid 
+    wlen_even = np.copy(wlens)
+    wmin = wlens[:,0] 
+    wmax = wlens[:,-1] 
+    for ind in range(Nchip):
+        wlen_even[ind] = np.linspace(wmin[ind], wmax[ind], Nx)
+
+    indices = np.argsort(wmin)
+    wlen = wlens[indices].flatten()
+    unraveled = []
+    for dt in [specs, errs, wlen_even]:
+        unraveled.append(dt[indices].flatten())
+    spec, err, w_even = unraveled
+
+    return wlen, spec, err, w_even
+
+def util_unravel_spec_higher(wlens, specs, errs):
     # shape: (wlen_settings, detectors, orders, -1)
     N_set, N_det, N_ord, Nx = wlens.shape
 
@@ -271,15 +289,13 @@ def util_unravel_spec(wlens, specs, errs, blazes=None, debug=False):
     indices = np.argsort(wlen_flatten[:,0])
     wlen = wlen_flatten[indices].flatten()
     unraveled = []
-    for dt in [specs, errs, blazes, wlen_even]:
+    for dt in [specs, errs, wlen_even]:
         dt_flatten = np.reshape(dt, (N_set*N_det*N_ord, Nx))
         unraveled.append(dt_flatten[indices].flatten())
-    spec, err, norm, w_even = unraveled
-    if debug:
-        plt.plot(wlen, spec/norm)
-        plt.show()
+    spec, err, w_even = unraveled
 
-    return wlen, spec/norm, err/norm, w_even
+    return wlen, spec, err, w_even
+
 
 def order_trace(det, badpix, slitlen : float, sub_factor=64):
     """

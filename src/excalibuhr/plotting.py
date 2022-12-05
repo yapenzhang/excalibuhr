@@ -93,13 +93,13 @@ def plot_spec1d(wlen, flux, err, savename):
     for i in range(Norder):
         indices = range(i*Ndet*Nx, (i+1)*Ndet*Nx)
         nans = np.isnan(flux[indices])
-        vmin, vmax = np.percentile(flux[indices][~nans], (1, 99))
+        vmin, vmax = np.percentile(flux[indices][~nans], (10, 90))
         for d in range(Ndet):
             indices_det = range(d*Nx, (d+1)*Nx)
             axes[i].plot(wlen[indices][indices_det], 
                          flux[indices][indices_det], 'k')
         axes[i].set_xlim((wlen[indices][0], wlen[indices][-1]))
-        axes[i].set_ylim((0.6*vmin, 1.2*vmax))
+        axes[i].set_ylim((0.4*vmin, 1.4*vmax))
         axes[i].set_xlabel('Wavelength (nm)')
         axes[i].set_ylabel('Flux')
     plt.savefig(savename[:-4]+'.png')
@@ -110,13 +110,13 @@ def plot_spec1d(wlen, flux, err, savename):
     for i in range(Norder):
         indices = range(i*Ndet*Nx, (i+1)*Ndet*Nx)
         nans = np.isnan(flux[indices])
-        vmin, vmax = np.percentile((flux/err)[indices][~nans], (1, 99))
+        vmin, vmax = np.percentile((flux/err)[indices][~nans], (10, 90))
         for d in range(Ndet):
             indices_det = range(d*Nx, (d+1)*Nx)
             axes[i].plot(wlen[indices][indices_det], 
                         (flux/err)[indices][indices_det], 'k')
         axes[i].set_xlim((wlen[indices][0], wlen[indices][-1]))
-        axes[i].set_ylim((0.6*vmin, 1.2*vmax))
+        axes[i].set_ylim((0.4*vmin, 1.4*vmax))
         axes[i].set_xlabel('Wavelength (nm)')
         axes[i].set_ylabel('Flux')
     plt.savefig(savename[:-4]+'_SNR.png')

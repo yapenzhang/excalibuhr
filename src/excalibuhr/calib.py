@@ -1144,7 +1144,7 @@ class Pipeline:
         if not os.path.exists(self.corrpath):
             os.makedirs(self.corrpath)
 
-        indices_tellu = (self.calib_info[self.key_caltype] == "TELLU") 
+        indices_tellu = (self.calib_info[self.key_caltype] == "TELLU_SKYCALC") 
         if np.sum(indices_tellu) < 1:
             raise RuntimeError("No Telluric transmission model found. \
                         Please set `run_skycalc` to `True`.") 
@@ -1194,23 +1194,14 @@ class Pipeline:
                         "CAL_WLEN")
 
 
-    def save_extracted_data(self, 
-                data_type = None, 
-                debug=False):
+    def save_extracted_data(self):
         """
-        Method for saving extracted spectra to a flattened array 
-        and writting to `.dat` files, including 4 columns: 
+        Method for saving extracted spectra and calibrated wavelength.
+        to the folder `obs_calibrated`. And save the flattened array to
+        `.dat` files, including 4 columns: 
         Wlen(nm), Flux, Flux_err, Wlen_even. `Wlen_even` is an 
         evenly spaced wavelength grid, for the covenience of later
         interpolation and combination of different nights.
-
-        Parameters
-        ----------
-        data_type: str
-            a list of data types to save spectra.
-            The default value is `Extr1D_PRIMARY`, 'Extr1D_SECONDARY'.
-        debug : bool
-            generate plots for debugging.
 
         Returns
         -------
@@ -1222,8 +1213,7 @@ class Pipeline:
         
         self.corrpath = os.path.join(self.outpath, "obs_calibrated")
 
-        if data_type is None:
-            data_type = ['Extr1D_PRIMARY', 'Extr1D_SECONDARY']
+        data_type = ['Extr1D_PRIMARY', 'Extr1D_SECONDARY']
 
         for label in data_type:
             indices = (self.product_info[self.key_caltype] == label)
@@ -1282,11 +1272,26 @@ class Pipeline:
                     specs.append(master)
                     errs.append(master_err)
 
+                # reshape spectra in 2D shape: (N_chips, N_pixel)
+                specs = np.reshape(specs, (-1, np.array(wlens).shape[-1]))
+                errs = np.reshape(errs, (-1, np.array(wlens).shape[-1]))
+                blazes = np.reshape(blazes, (-1, np.array(wlens).shape[-1]))
+                wlens = np.reshape(wlens, (-1, np.array(wlens).shape[-1]))
+                specs /= blazes
+                errs /= blazes
+                file_name = os.path.join(self.corrpath, 
+                            object.replace(" ", "") +\
+                            f'_{l}_CRIRES_SPEC2D.fits')
+                su.wfits(file_name, specs, hdr=hdr, 
+                            ext_list=[errs, wlens])
+                self._add_to_product("./obs_calibrated/" +\
+                                    object.replace(" ", "") +\
+                                    f'_{l}_CRIRES_SPEC2D.fits', 
+                                     f"SPEC_{l}")
+
                 #unravel spectra in each order and detector to a 1D array.
                 w, f, f_err, w_even = su.util_unravel_spec(
-                            np.array(wlens), np.array(specs), 
-                            np.array(errs), np.array(blazes), 
-                            debug=debug)
+                                    wlens, specs, errs)
 
                 l = label.split('_')[-1]
                 file_name = os.path.join(self.corrpath, 
@@ -1297,17 +1302,6 @@ class Pipeline:
 
                 pu.plot_spec1d(w, f, f_err, file_name)
 
-                specs = np.reshape(specs, (-1, np.array(wlens).shape[-1]))
-                errs = np.reshape(errs, (-1, np.array(wlens).shape[-1]))
-                wlens = np.reshape(wlens, (-1, np.array(wlens).shape[-1]))
-                file_name = os.path.join(self.corrpath, 
-                            object.replace(" ", "") +\
-                            f'_{l}_CRIRES_SPEC2D.fits')
-                su.wfits(file_name, specs, hdr=hdr, ext_list=[errs, wlens])
-                self._add_to_product("./obs_calibrated/" +\
-                                    object.replace(" ", "") +\
-                                    f'_{l}_CRIRES_SPEC2D.fits', 
-                                     f"SPEC_{l}")
 
 
     def run_skycalc(self, pwv: float = 5) -> None:
@@ -1421,7 +1415,7 @@ class Pipeline:
         transm_spec = np.column_stack((1e3 * wave.value, trans))
         out_file= os.path.join(self.calpath, "TRANSM_SPEC.fits")
         su.wfits(out_file, transm_spec)
-        self._add_to_calib('TRANSM_SPEC.fits', "TELLU")
+        self._add_to_calib('TRANSM_SPEC.fits', "TELLU_SKYCALC")
 
 
     def _create_config(
@@ -1437,8 +1431,8 @@ class Pipeline:
         ----------
         eso_recipe : str
             Name of the `EsoRex` recipe.
-        pipeline_method : str
-            Name of the ``Pipeline`` method.
+        outpath : str
+            Path to save the config files.
         verbose : bool
             Print output produced by ``esorex``.
 
@@ -1458,6 +1452,7 @@ class Pipeline:
             )
 
         if not os.path.exists(config_file):
+        # if True:
             print()
 
             esorex = ["esorex", f"--create-config={config_file}", eso_recipe]
@@ -1520,39 +1515,34 @@ class Pipeline:
                 )
 
                 config_text = config_text.replace(
-                    "WLG_TO_MICRON=1.0",
-                    "WLG_TO_MICRON=0.001",
+                    "FTOL=1e-10",
+                    "FTOL=1e-8",
                 )
 
-                # config_text = config_text.replace(
-                #     "FTOL=1e-10",
-                #     "FTOL=1e-2",
-                # )
-
-                # config_text = config_text.replace(
-                #     "XTOL=1e-10",
-                #     "XTOL=1e-2",
-                # )
+                config_text = config_text.replace(
+                    "XTOL=1e-10",
+                    "XTOL=1e-8",
+                )
 
                 config_text = config_text.replace(
                     "CHIP_EXTENSIONS=FALSE",
                     "CHIP_EXTENSIONS=TRUE",
                 )
 
-                # config_text = config_text.replace(
-                #     "FIT_WLC=0",
-                #     "FIT_WLC=1",
-                # )
+                config_text = config_text.replace(
+                    "FIT_WLC=0",
+                    "FIT_WLC=1",
+                )
 
-                # config_text = config_text.replace(
-                #     "WLC_N=1",
-                #     "WLC_N=1",
-                # )
+                config_text = config_text.replace(
+                    "WLC_N=1",
+                    "WLC_N=1",
+                )
 
-                # config_text = config_text.replace(
-                #     "WLC_CONST=-0.05",
-                #     "WLC_CONST=0.0",
-                # )
+                config_text = config_text.replace(
+                    "WLC_CONST=-0.05",
+                    "WLC_CONST=0.0",
+                )
 
                 # config_text = config_text.replace(
                 #     "FIT_RES_LORENTZ=TRUE",
@@ -1598,16 +1588,24 @@ class Pipeline:
                 print(" [DONE]")
 
     def run_molecfit(self, data_type=None, object=None,
-                        wmin=None, wmax=None, verbose=True) -> None:
+                        wmin=None, wmax=None, verbose=False) -> None:
         """
         Method for running ESO's tool for telluric correction 
         `Molecfit`. 
 
         Parameters
         ----------
+        data_type: str
+            Label of the file type to fit for telluric absorption.
+            The default value is `SPEC_PRIMARY`, i.e. the primary spectrum.
+        object: str
+            The name of the standard star whose spectra is used for
+            the telluric fitting. 
         wmin, wmax: list
             list of lower and upper limit for wavelength ranges (in um)
             for molecfit fitting
+        verbose : bool
+            Print output produced by ``esorex``.
         
         Returns
         -------
@@ -1618,7 +1616,6 @@ class Pipeline:
         _print_section("Run Molecfit")
 
         # Create the molecfit directory if it does not exist yet
-        # self.corrpath = os.path.join(self.outpath, "obs_calibrated")
         self.molpath = os.path.join(self.outpath, "molecfit")
         input_path = os.path.join(self.molpath, "input")
         if not os.path.exists(self.molpath):
@@ -1639,7 +1636,7 @@ class Pipeline:
             hdr = hdu[0].header
             dt = hdu[0].data
             dt_err = hdu[1].data
-            wlen = hdu[2].data
+            wlen = hdu[2].data * 1e-3
 
         primary_hdu = fits.PrimaryHDU(header=hdr)
 
@@ -1647,8 +1644,6 @@ class Pipeline:
 
         w0 = wlen[:,0]
         w1 = wlen[:,-1]
-        # w0 = np.reshape(wlen, (-1, wlen.shape[-1]))[:,0]
-        # w1 = np.reshape(wlen, (-1, wlen.shape[-1]))[:,-1]
         if wmin is None or wmax is None:
             map_chip = range(1, dt.shape[0]+1)
             wmin, wmax = w0, w1
@@ -1657,26 +1652,34 @@ class Pipeline:
             map_chip = np.zeros(len(wmin))
             for i, (a, b) in enumerate(zip(wmin, wmax)):
                 for j, (x0, x1) in enumerate(zip(w0, w1)):
-                    if a*1e3>x0 and b*1e3<x1:
+                    if a>x0 and b<x1:
                         map_chip[i] = j+1
             mask = (map_chip==0)
             wmin, wmax = wmin[~mask], wmax[~mask]
             map_chip = map_chip[~mask]
 
+
         map_ext = range(0, dt.shape[0]+1)
-        wlc_fit = np.ones(dt.shape[0], dtype=int)
-        
+        wlc_fit = np.ones_like(map_chip, dtype=int)
+
+        import matplotlib.pyplot as plt 
         # Loop over chips
         for i_det in range(len(dt)):
             wave = wlen[i_det]
-            flux = np.nan_to_num(dt[i_det])
-            flux_err = np.nan_to_num(dt_err[i_det])
+            flux = dt[i_det]/np.nanmedian(dt[i_det])
+            flux_err = dt_err[i_det]/np.nanmedian(dt[i_det])
+            plt.plot(wave, flux/np.nanmedian(flux), color='k', alpha=0.7)
+            mask = np.isnan(flux) | np.isnan(flux_err)
             col1 = fits.Column(name='WAVE', format='D', array=wave)
             col2 = fits.Column(name='FLUX', format='D', array=flux)
             col3 = fits.Column(name='FLUX_ERR', format='D', array=flux_err)
+            # col4 = fits.Column(name='MASK', format='D', array=mask)
             table_hdu = fits.BinTableHDU.from_columns([col1, col2, col3])
             hdul_out.append(table_hdu)
-                
+        if verbose:        
+            for a,b in zip(wmin, wmax): 
+                plt.axvspan(a, b, alpha=0.3, color='r')
+            plt.show()
         # Create FITS file with SCIENCE
         file_science = os.path.join(input_path, science_file.split('/')[-1])
         hdul_out.writeto(file_science, overwrite=True)
@@ -1802,18 +1805,87 @@ class Pipeline:
             stdout = subprocess.DEVNULL
             print("Running EsoRex...", end="", flush=True)
 
-        subprocess.run(esorex, cwd=self.molpath, stdout=stdout, check=True)
+        subprocess.run(esorex, cwd=input_path, stdout=stdout, check=True)
 
         if not verbose:
             print(" [DONE]")
         
-        # add output files to product info
-        self._add_to_product(
-            "./molecfit/input/BEST_FIT_PARAMETERS.fits", "MOLECFIT_PARAM")
-        self._add_to_product(
-            "./molecfit/input/TELLURIC_CORR.fits", "MOLECFIT_TELLU")
-        self._add_to_product(
-            "./molecfit/?.fits", "MOLECFIT_TAC")
+        
+        best_params = fits.getdata(file_best_par, 1)
+        best_params.tolist()
+        np.savetxt(self.molpath+'BEST_FIT_PARAMETERS.txt', 
+                    dt.tolist()[:-2], fmt='%s')
+
+        # reformat molecfit output, add output files to product info
+        wlens, specs, errs = [], [], []
+        file_tac = "SCIENCE_TELLURIC_CORR_{}".format(science_file.split('/')[-1])
+        with fits.open(os.path.join(input_path, file_tac)) as hdu:
+            hdr = hdu[0].header
+            for i in range(1, len(hdu)):
+                wlens.append(hdu[i].data['WAVE'])
+                specs.append(hdu[i].data['FLUX'])
+                errs.append(hdu[i].data['FLUX_ERR'])
+
+        Nx = len(wlens[0])
+        with fits.open(os.path.join(input_path, "TELLURIC_DATA.fits")) as hdu:
+            dt = hdu[1].data
+            mwlen = np.reshape(dt['mlambda'], (-1, Nx))*1e3
+            mtrans = np.reshape(dt['mtrans'], (-1, Nx))
+        su.wfits(os.path.join(self.molpath, "TELLURIC_MODEL.fits"), 
+                    [mwlen, mtrans])
+        self._add_to_product("./molecfit/TELLURIC_MODEL.fits", f"TELLU")
+
+
+    def apply_telluric_correction(self):
+        """
+        Method for apply telluric correction to other science frames
+        using the output from `Molecfit`. 
+
+        Parameters
+        ----------
+        
+            
+        
+        Returns
+        -------
+        NoneType
+            None
+        """
+
+        _print_section("Apply telluric correction")
+
+        self.molpath = os.path.join(self.outpath, "molecfit")
+        self.corrpath = os.path.join(self.outpath, "obs_calibrated")
+
+        indices_tellu = (self.product_info[self.key_caltype] == 'TELLU')
+        if sum(indices_tellu) < 1:
+            raise RuntimeError("No telluric model found")
+
+        tellu = fits.getdata(os.path.join(self.outpath, 
+            self.product_info[indices_tellu][self.key_filename].iloc[0]))
+        mwlen, mtrans = tellu
+
+        indices = np.zeros_like(indices_tellu, dtype=bool)
+        for data_type in ['SPEC_PRIMARY', 'SPEC_SECONDARY']:
+            indices = indices | (self.product_info[self.key_caltype] == data_type)
+        
+        for file in self.product_info[indices][self.key_filename]:
+            with fits.open(os.path.join(self.outpath, file)) as hdu:
+                specs = hdu[0].data
+                errs = hdu[1].data
+            specs /= mtrans
+            errs /= mtrans
+
+            #unravel spectra to a 1D array
+            w, f, f_err, w_even = su.util_unravel_spec(mwlen, specs, errs)
+
+            file_name = os.path.join(self.corrpath, 
+                    file.split('/')[-1][:-7] + "1D_TELLURIC_CORR.dat")
+            header = "Wlen(nm) Flux Flux_err Wlen_even"
+            np.savetxt(file_name, np.c_[w, f, f_err, w_even], header=header)
+
+            print(f"Telluric corrected spectra saved to {self.corrpath}")
+            pu.plot_spec1d(w, f, f_err, file_name)
 
 
     def run_recipes(self, companion_sep=None, run_molecfit=True) -> None:
@@ -1832,19 +1904,25 @@ class Pipeline:
         NoneType
             None
         """
-        # self.extract_header()
-        # self.cal_dark()
-        # self.cal_flat_raw()
-        # self.cal_flat_trace()
-        # self.cal_slit_curve()
-        # self.cal_flat_norm()
-        # self.obs_nodding()
-        # self.obs_nodding_combine()
-        # self.obs_extract(companion_sep=companion_sep)
-        # self.refine_wlen_solution()
-        # self.save_extracted_data()
+        self.extract_header()
+        self.cal_dark()
+        self.cal_flat_raw()
+        self.cal_flat_trace()
+        self.cal_slit_curve()
+        self.cal_flat_norm()
+        self.obs_nodding()
+        self.obs_nodding_combine()
+        self.obs_extract(companion_sep=companion_sep)
+        self.refine_wlen_solution()
+        self.save_extracted_data()
         if run_molecfit:
+            # x0 = np.array([2.2315, 2.2470, 2.2501, 2.2535, 2.2553, 2.2610, 2.2633, 
+            #   2.26815, 2.3217, 2.3253, 2.3338, 2.3397, 2.3462, 2.3556, 2.3636])
+            # x1 = np.array([2.2326, 2.2474, 2.2507, 2.2546, 2.2573, 2.2626, 2.2652, 
+            #   2.26915, 2.3234, 2.3258, 2.3364, 2.3423, 2.3537, 2.3592, 2.3694])
+            # self.run_molecfit(wmin=x0, wmax=x1)
             self.run_molecfit()
+            self.apply_telluric_correction()
 
 
 def _print_section(sect_title: str, bound_char: str = "-", 
