@@ -1,7 +1,0 @@
-LICENSE
-README.md
-setup.py
-src/excalibuhr.egg-info/PKG-INFO
-src/excalibuhr.egg-info/SOURCES.txt
-src/excalibuhr.egg-info/dependency_links.txt
-src/excalibuhr.egg-info/top_level.txt
