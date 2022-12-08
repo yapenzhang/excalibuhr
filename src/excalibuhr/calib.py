@@ -1,17 +1,15 @@
 # File: src/excalibuhr/calib.py
-__all__ = []
+__all__ = ['Pipeline', 'CombineNights']
 
 
 import os
-import sys
-import json
 import glob
 import shutil
 from pathlib import Path
-import warnings
 import numpy as np
 import pandas as pd
 import subprocess
+from multiprocessing import Pool
 from astropy.io import fits
 from astroquery.eso import Eso
 import skycalc_ipy
@@ -21,6 +19,7 @@ import excalibuhr.plotting as pu
 class Pipeline:
 
     def __init__(self, workpath: str, night: str, clean_start: bool = False,
+                 num_processes: int = 8,
                  **header_keys: dict) -> None:
         """
         Parameters
@@ -36,6 +35,8 @@ class Pipeline:
         clean_start: bool
             Set it to True to remove the infomation files when redoing the 
             entire reduction.
+        num_processes: int
+            number of parallel processes for processing nodding and extraction
         header_keys: dict
             The needed keyword names in the header of input ``.fits`` files.
 
@@ -61,6 +62,7 @@ class Pipeline:
         self.product_file = os.path.join(self.nightpath, "product_info.txt")
         self.gain=[2.15, 2.19, 2.0]
         self.pix_scale=0.056 #arcsec
+        self.num_processes = num_processes
         
         print(f"Data reduction folder: {self.nightpath}")
 
@@ -93,6 +95,7 @@ class Pipeline:
             print("Reading header data from header_info.txt")
             self.header_info = pd.read_csv(self.header_file, sep=';')
         else:
+
             self.header_info = None 
 
         for par in header_keys.keys():
@@ -108,7 +111,14 @@ class Pipeline:
             print("Reading product information from product_info.txt")
             self.product_info = pd.read_csv(self.product_file, sep=';')
         else:
-            self.product_info = None      
+            self.product_info = None
+            prod_dict = {}
+            keywords = self.header_keys.values()
+            for key_item in keywords:
+                prod_dict[key_item] = []
+            prod_dict[self.key_caltype] = []
+            df_prod = pd.DataFrame(data=prod_dict)
+            df_prod.to_csv(self.product_file, index=False, sep=';')
 
 
     def download_rawdata_eso(self, login: str, facility: str = 'eso', 
@@ -267,14 +277,8 @@ class Pipeline:
         calib_dict[self.key_caltype] = [prod_type]
         calib_dict[self.key_filename] = [file]
         calib_append = pd.DataFrame(data=calib_dict)
+        calib_append.to_csv(self.product_file, index=False, mode='a', header=False, sep=';')
         
-        if self.product_info is None:
-            self.product_info = calib_append
-        else:
-            self.product_info = pd.concat([self.product_info, calib_append], 
-                                        ignore_index=True)
-        
-        self.product_info.to_csv(self.product_file, index=False, sep=';')
 
     def cal_dark(self, clip: int = 5, collapse: str = 'median') -> None:
         """
@@ -664,16 +668,13 @@ class Pipeline:
             self._add_to_calib(f'BLAZE_{item_wlen}.fits', "BLAZE")
             
 
-    def obs_nodding(self, extract=False, debug=False):
+    def obs_nodding(self, debug=False):
         """
         Method for processing nodding frames. Apply AB pair subtraction,
         readout artifacts correction, and flat fielding.
 
         Parameters
         ----------
-        extract : bool
-            If True, it will extarct spectra from each exposure.
-            Otherwise, only 2D image processing will be done.
         debug : bool
             generate plots for debugging.
 
@@ -689,6 +690,10 @@ class Pipeline:
         self.noddingpath = os.path.join(self.outpath, "obs_nodding")
         if not os.path.exists(self.noddingpath):
             os.makedirs(self.noddingpath)
+
+        # initialize a Pool for parallel
+        pool = Pool(processes=self.num_processes)
+        pool_jobs = []
 
         # Select the science observations
         indices = self.header_info[self.key_catg] == "SCIENCE"
@@ -777,106 +782,114 @@ class Pipeline:
                     print(f"Number of AB pairs: {nod_a_count}")
 
                     try:
-                        Nexp_per_nod = int(self.header_info[indices_nod_A]\
+                        self.Nexp_per_nod = int(self.header_info[indices_nod_A]\
                                       [self.key_nexp_per_nod].iloc[0])
                     except:
-                        Nexp_per_nod = int(nod_a_count//\
+                        self.Nexp_per_nod = int(nod_a_count//\
                             self.header_info[indices_nod_A]\
                             [self.key_nabcycle].iloc[0])
 
+
                     for i, row in enumerate(
-                            range(0, df_nods.shape[0], Nexp_per_nod)):
-                        
-                        # make sure we do not subtract the frames 
-                        # at the same nod position
-                        pos_bkg = set()
-                        for p in df_nods[self.key_nodpos].iloc[
-                                        row:row+Nexp_per_nod]:
-                            pos_bkg.add(p)
-                        pos = set()
-                        for p in df_nods[self.key_nodpos].iloc[
-                                row+(-1)**(i%2)*Nexp_per_nod: \
-                                row+(-1)**(i%2)*Nexp_per_nod+Nexp_per_nod]:
-                            pos.add(p)
-                        
-                        if pos == pos_bkg:
-                            raise RuntimeError("Subtracting frames at the \
-                            same nodding position. Check if there are missing \
-                            AB cycle files.")
-                        
-                        # Select the following background measurement 
-                        file_list = [os.path.join(self.rawpath, item) \
-                                    for item in df_nods[self.key_filename]\
-                                                .iloc[row:row+Nexp_per_nod]
-                                    ]
-                        dt_list, err_list = [], []
-                        # Loop over the frames and use it as the bkg image
-                        for file in file_list:
-                            frame, frame_err = [], []
-                            with fits.open(file) as hdu:
-                                ndit = hdu[0].header[self.key_NDIT]
-                                # Loop over the detectors
-                                for j, d in enumerate(range(1, len(hdu))):
-                                    frame.append(hdu[d].data)
-                                    # Calculate the shot-noise for this detector
-                                    frame_err.append(su.detector_shotnoise(
-                                            hdu[d].data, ron[j], 
-                                            GAIN=self.gain[j], NDIT=ndit))
-                                    
-                            dt_list.append(frame)
-                            err_list.append(frame_err)
-                            
-                        # Mean-combine the images if there are multiple 
-                        # exposures per nod (`Nexp_per_nod`>1).
-                        dt_bkg, err_bkg = su.combine_frames(dt_list, 
-                                            err_list, collapse='mean')
-                        
-                        # Select the nod position science image
-                        # Loop over the observations of the current nod position
-                        for file in df_nods[self.key_filename].iloc[
-                                row+(-1)**(i%2)*Nexp_per_nod: \
-                                row+(-1)**(i%2)*Nexp_per_nod+Nexp_per_nod]:
-                            print(f"\nProcessing file {file} at nod position {pos}")
-                            frame, frame_err = [], []
-                            with fits.open(os.path.join(self.rawpath, file)) as hdu:
-                                hdr = hdu[0].header
-                                ndit = hdr[self.key_NDIT]
-                                # Loop over the detectors
-                                for j, d in enumerate(range(1, len(hdu))):
-                                    frame.append(hdu[d].data)
-                                    # Calculate the shot-noise for this detector
-                                    # For now only consider noise from bkg image
-                                    # the shot noise from target is not added.
-                                    frame_err.append(np.zeros_like(hdu[d].data))
+                            range(0, df_nods.shape[0], self.Nexp_per_nod)):
+                        job = pool.apply_async(self.process_nodding_pair, 
+                                            args=(df_nods, i, row, flat, bpm, 
+                                                  tw, ron, object, item_wlen))
+                        pool_jobs.append(job)
+        
+        for job in pool_jobs:
+            job.get() 
 
-                            # Subtract the nod-pair from each other
-                            frame_bkg_cor, err_bkg_cor = su.combine_frames(
-                                                [frame, -dt_bkg], 
-                                                [frame_err, err_bkg], 
-                                                collapse='sum')
-                            # correct vertical strips due to readout artifacts
-                            frame_bkg_cor, err_bkg_cor = su.util_correct_readout_artifact(
-                                                frame_bkg_cor, err_bkg_cor, 
-                                                bpm, tw, debug=False)
-                            # Apply the flat-fielding
-                            frame_bkg_cor, err_bkg_cor = su.util_flat_fielding(
-                                                frame_bkg_cor, err_bkg_cor, 
-                                                flat, debug=debug)
 
-                            file_name = os.path.join(self.noddingpath, 
-                                    "Nodding_"+ object.replace(" ", "") + \
-                                    f"_{item_wlen}_{file}")
-                            su.wfits(file_name, frame_bkg_cor, hdr, 
-                                    ext_list=err_bkg_cor)
-                            self._add_to_product(
-                                    "./obs_nodding/Nodding_" + \
-                                    object.replace(" ", "") + \
-                                    f"_{item_wlen}_{file}", 
-                                    "NODDING_FRAME")
+    def process_nodding_pair(self, df_nods, i, row, flat, bpm, 
+                             tw, ron, object, item_wlen):
+        # make sure we do not subtract the frames 
+        # at the same nod position
+        pos_bkg = set()
+        for p in df_nods[self.key_nodpos].iloc[
+                        row:row+self.Nexp_per_nod]:
+            pos_bkg.add(p)
+        pos = set()
+        for p in df_nods[self.key_nodpos].iloc[
+                row+(-1)**(i%2)*self.Nexp_per_nod: \
+                row+(-1)**(i%2)*self.Nexp_per_nod+self.Nexp_per_nod]:
+            pos.add(p)
+                        
+        if pos == pos_bkg:
+            raise RuntimeError("Subtracting frames at the \
+            same nodding position. Check if there are missing \
+            AB cycle files.")
+                        
+
+        # Select the following background measurement 
+        file_list = [os.path.join(self.rawpath, item) \
+                    for item in df_nods[self.key_filename]\
+                                .iloc[row:row+self.Nexp_per_nod]
+                    ]
+        dt_list, err_list = [], []
+        
+        # Loop over the frames and use it as the bkg image
+        for file in file_list:
+            frame, frame_err = [], []
+            with fits.open(file) as hdu:
+                ndit = hdu[0].header[self.key_NDIT]
+                # Loop over the detectors
+                for j, d in enumerate(range(1, len(hdu))):
+                    frame.append(hdu[d].data)
+                    # Calculate the shot-noise for this detector
+                    frame_err.append(su.detector_shotnoise(hdu[d].data,  
+                                    ron[j], GAIN=self.gain[j], NDIT=ndit))
+            dt_list.append(frame)
+            err_list.append(frame_err)
                             
-                            pu.plot_det_image(frame_bkg_cor, file_name, 
-                                f"{object}_NODDING_FRAME_{item_wlen}")
+        # Mean-combine the images if there are multiple 
+        # exposures per nod (`Nexp_per_nod`>1).
+        dt_bkg, err_bkg = su.combine_frames(dt_list, 
+                            err_list, collapse='mean')
+                        
+        # Select the nod position science image
+        # Loop over the observations of the current nod position
+        for file in df_nods[self.key_filename].iloc[
+                row+(-1)**(i%2)*self.Nexp_per_nod: \
+                row+(-1)**(i%2)*self.Nexp_per_nod+self.Nexp_per_nod]:
+            frame, frame_err = [], []
+            with fits.open(os.path.join(self.rawpath, file)) as hdu:
+                hdr = hdu[0].header
+                ndit = hdr[self.key_NDIT]
+                # Loop over the detectors
+                for j, d in enumerate(range(1, len(hdu))):
+                    frame.append(hdu[d].data)
+                    # Calculate the shot-noise for this detector
+                    # For now only consider noise from bkg image
+                    # the shot noise from target is not added.
+                    frame_err.append(np.zeros_like(hdu[d].data))
+
+            # Subtract the nod-pair from each other
+            frame_bkg_cor, err_bkg_cor = su.combine_frames(
+                                [frame, -dt_bkg], [frame_err, err_bkg], 
+                                collapse='sum')
+            # correct vertical strips due to readout artifacts
+            frame_bkg_cor, err_bkg_cor = su.util_correct_readout_artifact(
+                                frame_bkg_cor, err_bkg_cor, bpm, tw)
+            # Apply the flat-fielding
+            frame_bkg_cor, err_bkg_cor = su.util_flat_fielding(
+                                frame_bkg_cor, err_bkg_cor, flat)
+
+            file_name = os.path.join(self.noddingpath, 
+                            "Nodding_"+ object.replace(" ", "") + \
+                            f"_{item_wlen}_{file}")
+            su.wfits(file_name, frame_bkg_cor, hdr, ext_list=err_bkg_cor)
+
+            print(f"\nProcessed file {file} at nod position {pos}")
+            self._add_to_product("./obs_nodding/Nodding_" + \
+                                object.replace(" ", "") + \
+                                f"_{item_wlen}_{file}", 
+                                "NODDING_FRAME")
+            
+            pu.plot_det_image(frame_bkg_cor, file_name, 
+                            f"{object}_NODDING_FRAME_{item_wlen}")
     
+
     def obs_nodding_combine(self):
         """
         Method for combining multiple nodding exposures to single 
@@ -892,6 +905,9 @@ class Pipeline:
 
         self.noddingpath = os.path.join(self.outpath, "obs_nodding")
         
+        # get updated product info
+        self.product_info = pd.read_csv(self.product_file, sep=';')
+
         # Select the obs_nodding observations
         indices = (self.product_info[self.key_caltype] == 'NODDING_FRAME')
 
@@ -998,6 +1014,13 @@ class Pipeline:
 
         _print_section("Extract spectra")
 
+        # get updated product info
+        self.product_info = pd.read_csv(self.product_file, sep=';')
+
+        # initialize a Pool for parallel
+        pool = Pool(processes=self.num_processes)
+        pool_jobs = []
+
         # Select the type of observations we want to work with
         indices = (self.product_info[self.key_caltype] == caltype)
 
@@ -1052,56 +1075,69 @@ class Pipeline:
                 
                 # Loop over each observation
                 for file in self.product_info[indices_wlen][self.key_filename]:
+                    job = pool.apply_async(self.process_extraction, 
+                                        args=(file, bpm, tw, slit, blaze, 
+                                            f_star, aper_prim, aper_comp, 
+                                            companion_sep,bkg_subtract, debug))
+                    pool_jobs.append(job)
+        
+        for job in pool_jobs:
+            job.get() 
 
-                    with fits.open(os.path.join(self.outpath, file)) as hdu:
-                        hdr = hdu[0].header
-                        dt = hdu[0].data
-                        dt_err = hdu[1].data
-                    pos = hdr[self.key_nodpos]
-                    slitlen = hdr[self.key_slitlen]
-                    ndit = hdr[self.key_NDIT]              
-                    # nodthrow = hdr[self.key_nodthrow]
-                    if f_star is None:
-                        # estimate the location of peak signal from data
-                        f0 = su.peak_slit_fraction(dt[0], tw[0], debug=debug) 
-                    else:
-                        f0 = f_star[pos]
-                        # # Slit-fraction of centered for the nod-throw
-                        # f = 0.5 + nod*nodthrow/2./slitlen
+    def process_extraction(self, file, bpm, tw, slit, blaze, 
+                            f_star, aper_prim, aper_comp, 
+                            companion_sep,bkg_subtract, debug):
+        with fits.open(os.path.join(self.outpath, file)) as hdu:
+            hdr = hdu[0].header
+            dt = hdu[0].data
+            dt_err = hdu[1].data
+        pos = hdr[self.key_nodpos]
+        slitlen = hdr[self.key_slitlen]
+        ndit = hdr[self.key_NDIT]              
+        # nodthrow = hdr[self.key_nodthrow]
+        if f_star is None:
+            # estimate the location of peak signal from data
+            f0 = su.peak_slit_fraction(dt[0], tw[0], debug=debug) 
+        else:
+            f0 = f_star[pos]
+            # # Slit-fraction of centered for the nod-throw
+            # f = 0.5 + nod*nodthrow/2./slitlen
 
-                    # The slit is centered on the target
-                    print(f"\nLocation of the primary on slit: {f0:.3f} ({pos})")
-                    
-                    # Extract 1D spectrum of the target
-                    flux_pri, err_pri = su.util_extract_spec(
-                            dt, dt_err, bpm, tw, slit, blaze,  
-                            f0=f0, gains=self.gain, NDIT=ndit,
-                            aper_half=aper_prim, debug=False)
+        
+        # Extract 1D spectrum of the target
+        flux_pri, err_pri = su.util_extract_spec(
+                dt, dt_err, bpm, tw, slit, blaze,  
+                f0=f0, gains=self.gain, NDIT=ndit,
+                aper_half=aper_prim, debug=False)
 
-                    paths = file.split('/')
-                    paths[-1] = 'Extr1D_PRIMARY_' + paths[-1]
-                    file_name = os.path.join(self.outpath, '/'.join(paths))
-                    su.wfits(file_name, flux_pri, hdr, ext_list=err_pri)
-                    self._add_to_product('/'.join(paths), "Extr1D_PRIMARY")
-                    
-                    if not companion_sep is None:
-                        f1 = f0 - companion_sep/slitlen
-                        print(f"\nLocation of the companion on slit: "
-                              f"{f1:.3f} ({pos})")
+        paths = file.split('/')
+        paths[-1] = 'Extr1D_PRIMARY_' + paths[-1]
+        file_name = os.path.join(self.outpath, '/'.join(paths))
+        su.wfits(file_name, flux_pri, hdr, ext_list=err_pri)
 
-                        # Extract a 1D spectrum for the secondary
-                        flux_sec, err_sec = su.util_extract_spec(
-                                dt, dt_err, bpm, tw, slit, blaze, 
-                                f0=f0, f1=f1, NDIT=ndit, gains=self.gain, 
-                                aper_half=aper_comp, 
-                                bkg_subtract=bkg_subtract,
-                                f_star=flux_pri, debug=debug)
+        print(f"\nLocation of the primary on slit: {f0:.3f} ({pos})")
+        self._add_to_product('/'.join(paths), "Extr1D_PRIMARY")
+        
+        if not companion_sep is None:
+            f1 = f0 - companion_sep/slitlen
 
-                        paths = file.split('/')
-                        paths[-1] = 'Extr1D_SECONDARY_' + paths[-1]
-                        file_name = os.path.join(self.outpath, '/'.join(paths))
-                        su.wfits(file_name, flux_sec, hdr, ext_list=err_sec)
-                        self._add_to_product('/'.join(paths), "Extr1D_SECONDARY")
+            # Extract a 1D spectrum for the secondary
+            flux_sec, err_sec = su.util_extract_spec(
+                    dt, dt_err, bpm, tw, slit, blaze, 
+                    f0=f0, f1=f1, NDIT=ndit, gains=self.gain, 
+                    aper_half=aper_comp, 
+                    bkg_subtract=bkg_subtract,
+                    f_star=flux_pri, debug=debug)
+
+            paths = file.split('/')
+            paths[-1] = 'Extr1D_SECONDARY_' + paths[-1]
+            file_name = os.path.join(self.outpath, '/'.join(paths))
+            su.wfits(file_name, flux_sec, hdr, ext_list=err_sec)
+
+            print(f"\nLocation of the companion on slit: "
+                    f"{f1:.3f} ({pos})")
+            self._add_to_product('/'.join(paths), "Extr1D_SECONDARY")
+
 
 
     def refine_wlen_solution(self, run_skycalc=True, 
@@ -1145,6 +1181,9 @@ class Pipeline:
         self.corrpath = os.path.join(self.outpath, "obs_calibrated")
         if not os.path.exists(self.corrpath):
             os.makedirs(self.corrpath)
+
+        # get updated product info
+        self.product_info = pd.read_csv(self.product_file, sep=';')
 
         indices_tellu = (self.calib_info[self.key_caltype] == "TELLU_SKYCALC") 
         if np.sum(indices_tellu) < 1:
@@ -1194,6 +1233,8 @@ class Pipeline:
             su.wfits(file_name, wlen_cal, hdr)
             self._add_to_product(f'./obs_calibrated/WLEN_{item_wlen}.fits', 
                         "CAL_WLEN")
+        
+        
 
 
     def save_extracted_data(self):
@@ -1214,6 +1255,9 @@ class Pipeline:
         _print_section("Save extracted spectra")
         
         self.corrpath = os.path.join(self.outpath, "obs_calibrated")
+
+        # get updated product info
+        self.product_info = pd.read_csv(self.product_file, sep=';')
 
         data_type = ['Extr1D_PRIMARY', 'Extr1D_SECONDARY']
 
@@ -1305,6 +1349,7 @@ class Pipeline:
 
                 pu.plot_spec1d(w, f, f_err, file_name)
 
+        
 
 
     def run_skycalc(self, pwv: float = 5) -> None:
@@ -1626,6 +1671,9 @@ class Pipeline:
         if not os.path.exists(input_path):
             os.makedirs(input_path)
 
+        # get updated product info
+        self.product_info = pd.read_csv(self.product_file, sep=';')
+
         if data_type is None:
             data_type = 'SPEC_PRIMARY'
         indices = (self.product_info[self.key_caltype] == data_type)
@@ -1838,6 +1886,7 @@ class Pipeline:
         self._add_to_product("./molecfit/TELLURIC_MODEL.fits", f"TELLU")
 
 
+
     def apply_telluric_correction(self):
         """
         Method for apply telluric correction to other science frames
@@ -1858,6 +1907,9 @@ class Pipeline:
 
         self.molpath = os.path.join(self.outpath, "molecfit")
         self.corrpath = os.path.join(self.outpath, "obs_calibrated")
+
+        # get updated product info
+        self.product_info = pd.read_csv(self.product_file, sep=';')
 
         indices_tellu = (self.product_info[self.key_caltype] == 'TELLU')
         if sum(indices_tellu) < 1:

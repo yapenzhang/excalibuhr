@@ -1,5 +1,13 @@
 # File: src/excalibuhr/utils.py
-__all__ = []
+__all__ = [
+    "combine_frames",
+    "detector_shotnoise", 
+    "peak_slit_fraction", "align_jitter", "util_unravel_spec",
+    "order_trace", "slit_curve", "spectral_rectify_interp",
+    "trace_rectify_interp", "mean_collapse", "blaze_norm",
+    "readout_artifact", "extract_spec", "remove_starlight",
+    "optimal_extraction", "wlen_solution", "xcor_wlen_solution",
+    ]
 
 import numpy as np
 from astropy.io import fits
@@ -312,28 +320,28 @@ def util_unravel_spec(wlens, specs, errs):
 
     return wlen, spec, err, w_even
 
-def util_unravel_spec_higher(wlens, specs, errs):
-    # shape: (wlen_settings, detectors, orders, -1)
-    N_set, N_det, N_ord, Nx = wlens.shape
+# def util_unravel_spec_higher(wlens, specs, errs):
+#     # shape: (wlen_settings, detectors, orders, -1)
+#     N_set, N_det, N_ord, Nx = wlens.shape
 
-    # generate a evenly spaced wavelength grid 
-    wlen_even = np.copy(wlens)
-    wmin = wlens[:,:,:,0] 
-    wmax = wlens[:,:,:,-1] 
-    for i in range(N_set*N_det*N_ord):
-        ind = np.unravel_index(i, (N_set, N_det, N_ord))
-        wlen_even[ind] = np.linspace(wmin[ind], wmax[ind], Nx)
+#     # generate a evenly spaced wavelength grid 
+#     wlen_even = np.copy(wlens)
+#     wmin = wlens[:,:,:,0] 
+#     wmax = wlens[:,:,:,-1] 
+#     for i in range(N_set*N_det*N_ord):
+#         ind = np.unravel_index(i, (N_set, N_det, N_ord))
+#         wlen_even[ind] = np.linspace(wmin[ind], wmax[ind], Nx)
 
-    wlen_flatten = np.reshape(wlens, (N_set*N_det*N_ord, Nx))
-    indices = np.argsort(wlen_flatten[:,0])
-    wlen = wlen_flatten[indices].flatten()
-    unraveled = []
-    for dt in [specs, errs, wlen_even]:
-        dt_flatten = np.reshape(dt, (N_set*N_det*N_ord, Nx))
-        unraveled.append(dt_flatten[indices].flatten())
-    spec, err, w_even = unraveled
+#     wlen_flatten = np.reshape(wlens, (N_set*N_det*N_ord, Nx))
+#     indices = np.argsort(wlen_flatten[:,0])
+#     wlen = wlen_flatten[indices].flatten()
+#     unraveled = []
+#     for dt in [specs, errs, wlen_even]:
+#         dt_flatten = np.reshape(dt, (N_set*N_det*N_ord, Nx))
+#         unraveled.append(dt_flatten[indices].flatten())
+#     spec, err, w_even = unraveled
 
-    return wlen, spec, err, w_even
+#     return wlen, spec, err, w_even
 
 
 def order_trace(det, badpix, slitlen : float, sub_factor=64):
@@ -1118,7 +1126,6 @@ def remove_starlight(D_full, V_full, f_star, cen0_p, cen1_p, aper0=50, aper1=10,
 def optimal_extraction(D_full, V_full, bpm_full, obj_cen, aper_half, \
                        return_profile=False, badpix_clip=3, max_iter=10, \
                        gain=2., NDIT=1., etol=1e-6, debug=False):
-    # TODO: NDIT from header.
 
     D = D_full[:,obj_cen-aper_half:obj_cen+aper_half+1] # Observation
     V = V_full[:,obj_cen-aper_half:obj_cen+aper_half+1] # Variance
@@ -1384,19 +1391,28 @@ def xcor_wlen_solution(spec, wavel, transm_spec,
 def SpecConvolve(in_wlen, in_flux, out_res, in_res=1e6, verbose=False):
     """
     Convolve the input spectrum to a lower resolution.
-    ----------
+    
     Parameters
     ----------
-    in_wlen : Wavelength array 
-    in_flux : spectrum at high resolution
-    in_res : input resolution (high) R~w/dw
-    out_res : output resolution (low)
-    verbose : if True, print out the sigma of Gaussian filter used
-    ----------
+
+    in_wlen: array 
+        input wavelength array 
+    in_flux: array
+        input flux at high resolution
+    out_res: int
+        output resolution (low)
+    in_res: int 
+        input resolution (high) R~w/dw
+    verbose: bool
+        if True, print out the sigma of Gaussian filter used
+    
     Returns
     ----------
-    Convolved spectrum
+
+    flux_LSF: array
+        Convolved spectrum
     """
+    
     # delta lambda of resolution element is FWHM of the LSF's standard deviation:
     sigma_LSF = np.sqrt(1./out_res**2-1./in_res**2)/(2.*np.sqrt(2.*np.log(2.)))
 
@@ -1419,19 +1435,30 @@ def PolyfitClip(x, y, dg, m=None, w=None, clip=4., max_iter=10, \
     """
     Perform weighted least-square polynomial fit,
     iterratively cliping pixels above a certain sigma threshold
-    ----------
+    
     Parameters
     ----------
-    dg : degree of polynomial 
-    ww : if provided, it includes the weights of each pixel.
-    clip : sigma clip threshold
-    max_iter : max number of iteration in sigma clip
-    plotting : if True, plot fitting and thresholds
-    reject : if True, also return the xx array after sigma clip
-    ----------
+
+    dg: int
+        degree of polynomial 
+    m: array
+        if provided, it provides the mask.
+    w: array 
+        if provided, it provides the weights of each pixel.
+    clip: int 
+        sigma clip threshold
+    max_iter: int 
+        max number of iteration in sigma clip
+    plotting: bool 
+        if True, plot fitting and thresholds for debugging
+    
     Returns
     ----------
-    Polynomial fit params
+
+    y_model: array
+        polynomial fitted results
+    poly: array
+        Polynomial coefficience
     """
     if m is None:
         m = np.ones_like(x, dtype=bool)

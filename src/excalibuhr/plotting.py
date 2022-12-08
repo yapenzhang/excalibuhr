@@ -1,5 +1,8 @@
 # File: src/excalibuhr/plotting.py
-__all__ = []
+__all__ = [
+    "plot_det_image", 
+    "plot_spec1d",
+    ]
 
 # import os
 # import sys
