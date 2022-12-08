@@ -857,7 +857,7 @@ class Pipeline:
                             # correct vertical strips due to readout artifacts
                             frame_bkg_cor, err_bkg_cor = su.util_correct_readout_artifact(
                                                 frame_bkg_cor, err_bkg_cor, 
-                                                bpm, tw, debug=debug)
+                                                bpm, tw, debug=False)
                             # Apply the flat-fielding
                             frame_bkg_cor, err_bkg_cor = su.util_flat_fielding(
                                                 frame_bkg_cor, err_bkg_cor, 
@@ -973,6 +973,7 @@ class Pipeline:
 
     def obs_extract(self, caltype='NODDING_COMBINED',
                           f_star=None, companion_sep=None, 
+                          bkg_subtract=False, 
                           aper_prim=20, aper_comp=10, debug=False):    
         """
         Method for extracting. Apply AB pair subtraction,
@@ -1092,7 +1093,8 @@ class Pipeline:
                         flux_sec, err_sec = su.util_extract_spec(
                                 dt, dt_err, bpm, tw, slit, blaze, 
                                 f0=f0, f1=f1, NDIT=ndit, gains=self.gain, 
-                                aper_half=aper_comp, bkg_subtract=True,
+                                aper_half=aper_comp, 
+                                bkg_subtract=bkg_subtract,
                                 f_star=flux_pri, debug=debug)
 
                         paths = file.split('/')
@@ -1279,6 +1281,8 @@ class Pipeline:
                 wlens = np.reshape(wlens, (-1, np.array(wlens).shape[-1]))
                 specs /= blazes
                 errs /= blazes
+
+                l = label.split('_')[-1]
                 file_name = os.path.join(self.corrpath, 
                             object.replace(" ", "") +\
                             f'_{l}_CRIRES_SPEC2D.fits')
@@ -1293,7 +1297,6 @@ class Pipeline:
                 w, f, f_err, w_even = su.util_unravel_spec(
                                     wlens, specs, errs)
 
-                l = label.split('_')[-1]
                 file_name = os.path.join(self.corrpath, 
                             object.replace(" ", "") +\
                             f'_{l}_CRIRES_SPEC1D.dat')
@@ -1655,9 +1658,8 @@ class Pipeline:
                     if a>x0 and b<x1:
                         map_chip[i] = j+1
             mask = (map_chip==0)
-            wmin, wmax = wmin[~mask], wmax[~mask]
+            wmin, wmax = np.array(wmin)[~mask], np.array(wmax)[~mask]
             map_chip = map_chip[~mask]
-
 
         map_ext = range(0, dt.shape[0]+1)
         wlc_fit = np.ones_like(map_chip, dtype=int)
@@ -1888,7 +1890,8 @@ class Pipeline:
             pu.plot_spec1d(w, f, f_err, file_name)
 
 
-    def run_recipes(self, companion_sep=None, run_molecfit=True) -> None:
+    def run_recipes(self, companion_sep=None, bkg_subtract=False, 
+                    run_molecfit=False, wmin=None, wmax=None) -> None:
         """
         Method for running the full chain of recipes.
 
@@ -1912,18 +1915,47 @@ class Pipeline:
         self.cal_flat_norm()
         self.obs_nodding()
         self.obs_nodding_combine()
-        self.obs_extract(companion_sep=companion_sep)
+        self.obs_extract(companion_sep=companion_sep, 
+                         bkg_subtract=bkg_subtract)
         self.refine_wlen_solution()
         self.save_extracted_data()
         if run_molecfit:
-            # x0 = np.array([2.2315, 2.2470, 2.2501, 2.2535, 2.2553, 2.2610, 2.2633, 
-            #   2.26815, 2.3217, 2.3253, 2.3338, 2.3397, 2.3462, 2.3556, 2.3636])
-            # x1 = np.array([2.2326, 2.2474, 2.2507, 2.2546, 2.2573, 2.2626, 2.2652, 
-            #   2.26915, 2.3234, 2.3258, 2.3364, 2.3423, 2.3537, 2.3592, 2.3694])
-            # self.run_molecfit(wmin=x0, wmax=x1)
-            self.run_molecfit()
+            self.run_molecfit(wmin=wmin, wmax=wmax)
             self.apply_telluric_correction()
 
+    def test_run_recipes(self, companion_sep=None, bkg_subtract=False, 
+                    run_molecfit=False, wmin=None, wmax=None) -> None:
+        """
+        Method for running the full chain of recipes.
+
+        Parameters
+        ----------
+        companion_sep: float
+            To extract spectra of the spatially resolved companion, 
+            provide the separation of the companion from the primary 
+            in arcsec.
+            
+        Returns
+        -------
+        NoneType
+            None
+        """
+        self.extract_header()
+        self.cal_dark()
+        self.cal_flat_raw()
+        self.cal_flat_trace()
+        self.cal_slit_curve()
+        self.cal_flat_norm()
+        self.obs_nodding()
+        self.obs_nodding_combine()
+        self.obs_extract(companion_sep=companion_sep, 
+                         bkg_subtract=bkg_subtract)
+        self.refine_wlen_solution()
+        self.save_extracted_data()
+        if run_molecfit:
+            self.run_molecfit(wmin=wmin, wmax=wmax)
+            self.apply_telluric_correction()
+            
 
 def _print_section(sect_title: str, bound_char: str = "-", 
                         extra_line: bool = True) -> None:
@@ -1954,7 +1986,7 @@ def _print_section(sect_title: str, bound_char: str = "-",
         print(len(sect_title) * bound_char + "\n")
 
 
-def CombineNights(workpath, night_list, object=None, collapse='weighted'):
+def CombineNights(workpath, night_list, object=None, tellu_corrected=False, collapse='weighted'):
     """
     Method for combining 1D spectra from different nights of
     observations and writting to `.dat` files.
@@ -1984,17 +2016,24 @@ def CombineNights(workpath, night_list, object=None, collapse='weighted'):
 
     datapath = os.path.join(workpath, 'DATA')
     if not os.path.exists(datapath):
-            os.makedirs(datapath)
+        os.makedirs(datapath)
 
     
+    if tellu_corrected:
+        app = "_TELLURIC_CORR.dat"
+    else:
+        app = ".dat"
+
     for target in ['SECONDARY', 'PRIMARY']:
         specs = []
         for night in night_list:
             if object is None:
-                names = f"*{target}*.dat"
+                names = f"*{target}*{app}"
             else:
-                names = f"{object}*{target}*.dat"
-            file_list = glob.glob(os.path.join(workpath, night, 'out', names))
+                names = f"{object}*{target}*{app}"
+
+            corrpath = os.path.join(workpath, night, 'out', "obs_calibrated")
+            file_list = glob.glob(os.path.join(corrpath, names))
             for filename in file_list:
                 specs.append(np.genfromtxt(filename, skip_header=1))
         if len(specs)<1:

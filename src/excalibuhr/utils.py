@@ -1,18 +1,13 @@
 # File: src/excalibuhr/utils.py
 __all__ = []
 
-import os
-import json
-import pathlib
 import numpy as np
-import pandas as pd
-from astroquery.eso import Eso
 from astropy.io import fits
 from astropy import stats
-from astropy.modeling import models, fitting
+# from astropy.modeling import models, fitting
 from numpy.polynomial import polynomial as Poly
 from scipy import ndimage, signal
-from scipy.interpolate import CubicSpline, interp1d
+from scipy.interpolate import interp1d
 import matplotlib.pyplot as plt 
 import matplotlib as mpl
 mpl.rc('image', interpolation='nearest', origin='lower')
@@ -180,8 +175,52 @@ def util_flat_fielding(im, im_err, flat, debug=False):
         plt.show()
     return im_corr, err_corr
 
-def util_extract_spec(im, im_err, bpm, tw, slit, blazes, gains, NDIT=1, f0=0.5, f1=None, aper_half=20, bkg_subtract=False, f_star=None, debug=False):
-    
+def util_extract_spec(im, im_err, bpm, tw, slit, blazes, gains, NDIT=1, 
+                    f0=0.5, f1=None, aper_half=20, 
+                    bkg_subtract=False, f_star=None, debug=False):
+    """
+    Extract 1D spectra from detector images
+
+    Parameters
+    ----------
+    im: array
+        input science image that has been calibrated
+    im_err: array
+        readout+background noise associated with the input science image
+    badpix: array
+        bad pixel map corresponding to the input image
+    tw: array
+        polynomials that delineate the edge of the specific order 
+    slit: array
+        polynomials that describing the slit curvature 
+        as a function of the dispersion axis
+    blazes: array
+        1D blaze function of each order
+    gain: float
+        detector gain
+    NDIT: int
+        number of DIT exposure coadded
+    f0: float
+        location of the star on slit in fraction between [0,1]
+    f1: float
+        location of the companion on slit in fraction between [0,1]
+    aper_half: int
+        half of extraction aperture in pixels
+    bkg_subtract: bool
+        in case of sub-stellar companion extraction, whether remove the 
+        starlight contamination.
+    f_star: array
+        in case of sub-stellar companion extraction and `bkg_subtract=True`,
+        provide the extracted stellar spectra. This will be scaled according  
+        to the PSF and then removed from the science image before extracting
+        the companion spectra.
+
+    Returns
+    -------
+    flux, err: array
+        the extracted fluxes and their uncertainties
+    """
+
     # Loop over each detector
     flux, err  = [], []
     for d, (det, det_err, badpix, trace, slit_meta, blaze, gain) in \
@@ -419,7 +458,7 @@ def slit_curve(det, badpix, trace, wlen_min, wlen_max, sub_factor=4, debug=False
     Parameters
     ----------
     det: array
-        input flat image
+        input fpet image
     badpix: array
         bad pixel map corresponding to the `det` image
     wlen_min, wlen_max: array
@@ -618,7 +657,7 @@ def spectral_rectify_interp(im_list, badpix, trace, slit_meta, debug=False):
     elif np.array(im_list).ndim == 2:
         im_rect_spec = np.array(im_list)[np.newaxis, :]
     else:
-        raise RuntimeError("Invalid data dimension")
+        raise TypeError("Invalid data dimension")
 
     bpm = (badpix.astype(bool) | np.isnan(im_rect_spec[0]))
 
@@ -679,6 +718,7 @@ def spectral_rectify_interp(im_list, badpix, trace, slit_meta, debug=False):
 def trace_rectify_interp(im_list, trace, debug=False):
     """
     Correct for the curvature of traces by interpolating to a pixel-grid
+    pivoting on the middle of the detector
 
     Parameters
     ----------
@@ -698,7 +738,7 @@ def trace_rectify_interp(im_list, trace, debug=False):
     elif np.array(im_list).ndim == 2:
         im_rect = np.array(im_list)[np.newaxis, :]
     else:
-        raise RuntimeError("Invalid data dimension")
+        raise TypeError("Invalid data dimension")
 
     xx_grid = np.arange(0, im_rect.shape[-1])
     trace_upper, trace_lower = trace
@@ -861,37 +901,100 @@ def blaze_norm(im, trace, slit_meta, blaze_orders, debug=False):
     return im_norm
 
 def readout_artifact(det, det_err, badpix, trace, Nborder=10, debug=False):
-    badpix = (badpix | np.isnan(det))
-    im = np.copy(det)
-    im_err = np.copy(det_err)
-    im[badpix] = np.nan
-    im_err[badpix] = np.nan
+    """
+    Correct for readout noise artifacts that appear like vertical strips 
+    by subtracting the inter-order average value in each column on detector.
 
-    xx = np.arange(im.shape[1])
-    ron_col, err_col = np.zeros(im.shape[1]), np.zeros(im.shape[1])
+    Parameters
+    ----------
+    det: array
+        input science image
+    det_err: array
+        errors associated with the input science image
+    badpix: array
+        bad pixel map corresponding to the `det` image
+    trace: array
+        polynomials that delineate the edge of the specific order 
+    Nborder: int
+        number of pixels to skip at the border of orders
+
+    Returns
+    -------
+    det, det_err: array
+        det and det_err corrected for the detector artifact
+    """
+
+    badpix = (badpix | np.isnan(det))
+    det[badpix] = np.nan
+    det_err[badpix] = np.nan
+
+    xx = np.arange(det.shape[1])
+    ron_col, err_col = np.zeros(det.shape[1]), np.zeros(det.shape[1])
     trace_upper, trace_lower = trace
-    uppers, lowers = [], [] # (order, xx) 
+    uppers, lowers = [], [] 
     for o, (upper, lower) in enumerate(zip(trace_upper, trace_lower)):
         yy_upper = Poly.polyval(xx, upper)
         yy_lower = Poly.polyval(xx, lower)
-        uppers.append(yy_upper)
-        lowers.append(yy_lower)
-        if debug:
-            plt.plot(xx, yy_upper+Nborder, 'r')
-            plt.plot(xx, yy_lower-Nborder, 'r')
-    uppers = np.array(uppers[:-1])
-    lowers = np.array(lowers[1:])
-    for col in range(len(xx)):
-        row = [j for i in range(len(uppers)) for j in range(int(uppers[i,col])+Nborder, int(lowers[i,col])-Nborder+1)]
-        ron_col[col] = np.nanmedian(im[row,col])
-        m, _, _ = stats.sigma_clipped_stats(im_err[row,col]**2)
-        err_col[col] = np.sqrt(m/len(row))
+        uppers.append(yy_upper.max())
+        lowers.append(yy_lower.min())
+    uppers = uppers[:-1]
+    lowers = lowers[1:]
+
+    indices_row = []
+    for up, low in zip(uppers, lowers):
+        indices_row += list(range(int(up+Nborder), int(low-Nborder+1)))
+
+    im = stats.sigma_clip(det[indices_row], sigma=3)
+    im_err = np.ma.masked_array(det_err[indices_row], mask=im.mask)
+    ron_col = np.ma.mean(im, axis=0)
+    err_col = np.sqrt(np.ma.sum(im_err**2, axis=0)) / np.sum(~im.mask, axis=0)
+    
+    det -= ron_col
+    det_err = np.sqrt(det_err**2+err_col**2)
+
     if debug:
-        plt.imshow(det-ron_col, vmin=-20, vmax=20)
+        plt.imshow(det, vmin=-20, vmax=20)
         plt.show()
-    return det-ron_col, np.sqrt(det_err**2+err_col**2)
+    return det, det_err
 
 def extract_spec(im, im_err, bpm, trace, gain=2., NDIT=1, f0=0.5, f1=None, aper_half=20, bkg_subtract=False, f_star=None, debug=False):
+    """
+    Extract 1D spectra from detector images
+
+    Parameters
+    ----------
+    im: array
+        input science image that has been calibrated
+    im_err: array
+        readout+background noise associated with the input science image
+    badpix: array
+        bad pixel map corresponding to the input image
+    trace: array
+        polynomials that delineate the edge of the specific order 
+    gain: float
+        detector gain
+    NDIT: int
+        number of DIT exposure coadded
+    f0: float
+        location of the star on slit in fraction between [0,1]
+    f1: float
+        location of the companion on slit in fraction between [0,1]
+    aper_half: int
+        half of extraction aperture in pixels
+    bkg_subtract: bool
+        in case of sub-stellar companion extraction, whether remove the 
+        starlight contamination.
+    f_star: array
+        in case of sub-stellar companion extraction and `bkg_subtract=True`,
+        provide the extracted stellar spectra. This will be scaled according  
+        to the PSF and then removed from the science image before extracting
+        the companion spectra.
+
+    Returns
+    -------
+    flux, err: array
+        the extracted fluxes and their uncertainties
+    """
 
     im_copy = np.copy(im)
     bpm_copy = np.copy(bpm)
@@ -1310,25 +1413,6 @@ def SpecConvolve(in_wlen, in_flux, out_res, in_res=1e6, verbose=False):
         print("Guassian filter sigma = {} pix".format(sigma_LSF_gauss_filter))
     return flux_LSF
 
-#-------------------------------------------------------------------------
-
-def write2table(wave, flux, flux_err, snr, hdr, outfile):
-    primary_hdu = fits.PrimaryHDU(header=hdr)
-    hdul = fits.HDUList([primary_hdu])
-    col1 = fits.Column(name='WAVE', format='D', array=wave)
-    col2 = fits.Column(name='FLUX', format='D', array=flux)
-    col3 = fits.Column(name='FLUX_ERR', format='D', array=flux_err)
-    col4 = fits.Column(name='SNR', format='D', array=snr)
-    cols = fits.ColDefs([col1, col2, col3, col4])
-    hdul.append(fits.BinTableHDU.from_columns(cols))
-    hdul.writeto(outfile, overwrite=True, output_verify='ignore')
-
-def write4waveinclude(w0, w1, outfile):
-    col1 = fits.Column(name='LOWER_LIMIT', format='D', array=w0)
-    col2 = fits.Column(name='UPPER_LIMIT', format='D', array=w1)
-    cols = fits.ColDefs([col1, col2])
-    t = fits.BinTableHDU.from_columns(cols)
-    t.writeto(outfile, overwrite=True, output_verify='ignore')
 
 def PolyfitClip(x, y, dg, m=None, w=None, clip=4., max_iter=10, \
                 plotting=False):
@@ -1360,7 +1444,7 @@ def PolyfitClip(x, y, dg, m=None, w=None, clip=4., max_iter=10, \
         ww = np.ones_like(xx)
     else:
         ww = np.copy(w)
-    # mask = (np.isnan(xx)) | (np.isnan(yy)) | (np.isinf(xx)) | (np.isinf(yy))
+
     ite=0
     while ite < max_iter:
         poly = Poly.polyfit(xx[mask], yy[mask], dg, w=ww[mask])

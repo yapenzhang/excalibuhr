@@ -42,7 +42,7 @@ def plot_det_image(data, savename: str, title: str, tw = None, slit = None) -> N
         Ndet = 1
         data = data[np.newaxis,:]
     else:
-        raise RuntimeError("Invalid data dimension") 
+        raise TypeError("Invalid data dimension") 
 
     xx = np.arange(data.shape[-1])
 
@@ -99,7 +99,7 @@ def plot_spec1d(wlen, flux, err, savename):
             axes[i].plot(wlen[indices][indices_det], 
                          flux[indices][indices_det], 'k')
         axes[i].set_xlim((wlen[indices][0], wlen[indices][-1]))
-        axes[i].set_ylim((0.4*vmin, 1.4*vmax))
+        axes[i].set_ylim((0.4*vmin, 1.3*vmax))
         axes[i].set_xlabel('Wavelength (nm)')
         axes[i].set_ylabel('Flux')
     plt.savefig(savename[:-4]+'.png')
@@ -116,8 +116,8 @@ def plot_spec1d(wlen, flux, err, savename):
             axes[i].plot(wlen[indices][indices_det], 
                         (flux/err)[indices][indices_det], 'k')
         axes[i].set_xlim((wlen[indices][0], wlen[indices][-1]))
-        axes[i].set_ylim((0.4*vmin, 1.4*vmax))
+        axes[i].set_ylim((0.4*vmin, 1.3*vmax))
         axes[i].set_xlabel('Wavelength (nm)')
-        axes[i].set_ylabel('Flux')
+        axes[i].set_ylabel('S/N')
     plt.savefig(savename[:-4]+'_SNR.png')
     plt.close(fig)
