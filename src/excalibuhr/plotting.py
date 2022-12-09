@@ -2,6 +2,7 @@
 __all__ = [
     "plot_det_image", 
     "plot_spec1d",
+    "plot_extr_model",
     ]
 
 # import os
@@ -36,7 +37,7 @@ def set_style():
         "savefig.dpi": 300,   
     })
 
-def plot_det_image(data, savename: str, title: str, tw = None, slit = None) -> None:
+def plot_det_image(data, savename: str, title: str, tw = None, slit = None, x_fpets = None) -> None:
     # check data dimension
     data = np.array(data)
     if data.ndim == 3:
@@ -74,19 +75,41 @@ def plot_det_image(data, savename: str, title: str, tw = None, slit = None) -> N
             for o, (poly_upper, poly_lower,  \
                 poly_meta0, poly_meta1, poly_meta2) in enumerate(\
                 zip(trace_upper,trace_lower, meta0, meta1, meta2)):
-                yy_upper = Poly.polyval(xx, poly_upper)
-                yy_lower = Poly.polyval(xx, poly_lower)
-                poly_full = np.array([Poly.polyval(xx, poly_meta0), 
-                                  Poly.polyval(xx, poly_meta1),
-                                  Poly.polyval(xx, poly_meta2)]).T
+
+                xx_lines = x_fpets[i][o]
+                yy_upper = Poly.polyval(xx_lines, poly_upper)
+                yy_lower = Poly.polyval(xx_lines, poly_lower)
+                poly_full = np.array([Poly.polyval(xx_lines, poly_meta0), 
+                                  Poly.polyval(xx_lines, poly_meta1),
+                                  Poly.polyval(xx_lines, poly_meta2)]).T
                 yy = np.arange(int(yy_lower.min()-1), int(yy_upper.max()+1))
-                for x in np.arange(0, len(xx), 100)[1:-1]:
-                    ax.plot(Poly.polyval(yy, poly_full[x]), yy, ':r')
+                for x in range(len(xx_lines)):
+                    ax.plot(Poly.polyval(yy, poly_full[x]), yy, ':r', zorder=10)
 
     plt.suptitle(title, y=0.98)
     plt.savefig(savename[:-4]+'png')
     plt.close(fig)
 
+def plot_extr_model(D, chi2, savename):
+    set_style()
+    # check data dimension
+    D = np.array(D)
+    Ndet, Norder = D.shape[0], D.shape[1]
+    fig, axes = plt.subplots(nrows=Norder*2, ncols=Ndet, 
+                    figsize=(2*Norder, 14), sharex=True, sharey=True,  
+                    constrained_layout=True)
+    for i in range(Ndet):
+        for o in range(0, 2*Norder, 2):
+            ax_d, ax_m = axes[Norder*2-o-2, i], axes[Norder*2-o-1, i] 
+            data, model = D[i, o//2, 0], D[i, o//2, 1]
+            nans = np.isnan(data)
+            vmin, vmax = np.percentile(data[~nans], (5, 95))
+            ax_d.imshow(data, vmin=vmin, vmax=vmax, aspect='auto')
+            ax_m.imshow(model, vmin=0, vmax=np.max(model), aspect='auto')
+            ax_m.set_title(r"Order {0}, $\chi_r^2$: {1:.2f}".format(o//2, chi2[i, o//2]))
+        ax_d.set_title(f"Detector {i}")
+    plt.savefig(savename[:-4]+'png')
+    plt.close(fig)
 
 
 def plot_spec1d(wlen, flux, err, savename):

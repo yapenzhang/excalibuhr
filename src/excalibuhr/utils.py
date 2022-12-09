@@ -121,18 +121,19 @@ def util_order_trace(im, bpm, slitlen : float, sub_factor: int = 32):
 def util_slit_curve(im, bpm, tw, wlen_mins, wlen_maxs, debug=False):
 
     # Loop over each detector
-    slit_meta, wlens = [], [] # (detector, poly_meta2, order) 
+    slit_meta, wlens, x_fpets = [], [], []
     for d, (det, badpix, trace, wlen_min, wlen_max) in \
             enumerate(zip(im, bpm, tw, wlen_mins, wlen_maxs)):
         print(f"Processing Detector {d}")
         if d == 2:
             # fix perculiar value of the specific detector/order 
             wlen_min[-1] = 1949.093
-        slit, wlen = slit_curve(det, badpix, trace, 
+        slit, wlen, x_fpet = slit_curve(det, badpix, trace, 
                             wlen_min, wlen_max, debug=debug)
         slit_meta.append(slit)
         wlens.append(wlen)
-    return slit_meta, wlens
+        x_fpets.append(x_fpet)
+    return slit_meta, wlens, x_fpets
 
 def util_master_flat_norm(im, bpm, tw, slit, badpix_clip_count=1e2, debug=False):
     
@@ -230,7 +231,7 @@ def util_extract_spec(im, im_err, bpm, tw, slit, blazes, gains, NDIT=1,
     """
 
     # Loop over each detector
-    flux, err  = [], []
+    flux, err, D_full, chi2  = [], [], [], []
     for d, (det, det_err, badpix, trace, slit_meta, blaze, gain) in \
         enumerate(zip(im, im_err,  bpm, tw, slit, blazes, gains)):
         
@@ -242,22 +243,24 @@ def util_extract_spec(im, im_err, bpm, tw, slit, blazes, gains, NDIT=1,
 
         # Extract a 1D spectrum
         if bkg_subtract:
-            f_opt, f_err = extract_spec(
+            f_opt, f_err, D, chi2_r = extract_spec(
                     det_rect, err_rect, badpix, trace, 
                     gain=gain, NDIT=NDIT,
                     f0=f0, f1=f1, aper_half=aper_half,
                     bkg_subtract=bkg_subtract,
                     f_star=f_star[d]/blaze, debug=debug)
         else:
-            f_opt, f_err = extract_spec(
+            f_opt, f_err, D, chi2_r = extract_spec(
                     det_rect, err_rect, badpix, trace, 
                     gain=gain, NDIT=NDIT,
                     f0=f0, f1=f1, aper_half=aper_half, 
                     debug=debug)
         flux.append(f_opt)
         err.append(f_err)
+        D_full.append(D)
+        chi2.append(chi2_r)
 
-    return np.array(flux), np.array(err)
+    return np.array(flux), np.array(err), np.array(D_full), np.array(chi2)
 
 def util_wlen_solution(dt, wlen_init, blazes, tellu, mode='quad', debug=False):
     wlen_cal  = []
@@ -492,7 +495,7 @@ def slit_curve(det, badpix, trace, wlen_min, wlen_max, sub_factor=4, debug=False
 
     xx = np.arange(im.shape[1])
     trace_upper, trace_lower = trace
-    meta0, meta1, meta2, wlen = [], [], [], [] # (order, poly_meta) 
+    meta0, meta1, meta2, wlen, x_fpet = [], [], [], [], []
     
     # Loop over each order
     for o, (upper, lower, w_min, w_max) in \
@@ -602,6 +605,7 @@ def slit_curve(det, badpix, trace, wlen_min, wlen_max, sub_factor=4, debug=False
         meta0.append(poly_meta0)
         meta1.append(poly_meta1)
         meta2.append(poly_meta2)
+        x_fpet.append(x_slit)
         
         if debug:
             xx_grid = x_slit
@@ -637,7 +641,7 @@ def slit_curve(det, badpix, trace, wlen_min, wlen_max, sub_factor=4, debug=False
     # check rectified image
     # if debug:
     #     spectral_rectify_interp(im, trace, [meta0, meta1, meta2], debug=debug)
-    return [meta0, meta1, meta2], wlen
+    return [meta0, meta1, meta2], wlen, x_fpet
 
 def spectral_rectify_interp(im_list, badpix, trace, slit_meta, debug=False):
     """
@@ -1008,7 +1012,7 @@ def extract_spec(im, im_err, bpm, trace, gain=2., NDIT=1, f0=0.5, f1=None, aper_
     bpm_copy = np.copy(bpm)
     err_copy = np.copy(im_err)
     xx_grid = np.arange(0, im.shape[1])
-    flux, err = [],[]
+    flux, err, D, chi2 = [],[],[],[]
     trace_upper, trace_lower = trace
 
     for o, (poly_upper, poly_lower) in enumerate(zip(trace_upper, trace_lower)):
@@ -1034,12 +1038,14 @@ def extract_spec(im, im_err, bpm, trace, gain=2., NDIT=1, f0=0.5, f1=None, aper_
         # print(slit_len, f0, obj_cen)
         
         # Extract a 1D spectrum using the optimal extraction algorithm
-        f_opt, f_err = optimal_extraction(im_sub.T, im_err_sub.T**2, bpm_sub.T, int(np.round(obj_cen)), 
+        f_opt, f_err, D_sub, chi2_r = optimal_extraction(im_sub.T, im_err_sub.T**2, bpm_sub.T, int(np.round(obj_cen)), 
                                           aper_half, gain=gain, NDIT=NDIT, debug=debug) 
         flux.append(f_opt)
         err.append(f_err)
+        D.append(D_sub)
+        chi2.append(chi2_r)
 
-    return np.array(flux), np.array(err)
+    return np.array(flux), np.array(err), np.array(D), np.array(chi2)
 
 def remove_starlight(D_full, V_full, f_star, cen0_p, cen1_p, aper0=50, aper1=10, aper2=20, sub_factor=32, gain=2.0, NDIT=1., debug=False):
     # determine the location of peak signal from data
@@ -1124,7 +1130,7 @@ def remove_starlight(D_full, V_full, f_star, cen0_p, cen1_p, aper0=50, aper1=10,
 
 
 def optimal_extraction(D_full, V_full, bpm_full, obj_cen, aper_half, \
-                       return_profile=False, badpix_clip=3, max_iter=10, \
+                       badpix_clip=3, max_iter=10, \
                        gain=2., NDIT=1., etol=1e-6, debug=False):
 
     D = D_full[:,obj_cen-aper_half:obj_cen+aper_half+1] # Observation
@@ -1191,32 +1197,11 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen, aper_half, \
     badchannel = (np.sum(M_bp, axis=1) < len(spatial_x)*0.5)
     f_opt[badchannel] = np.nan
     # Rescale the variance by the chi2
-    var = 1. / (np.sum(M_bp*P*P/V_new, axis=1)+etol) * np.sum(Res)/(np.sum(M_bp)-len(f_opt))
-
-    if debug:
-        # print("Number of iterations: ", ite)
-        print("Reduced chi2: ", np.sum(Res)/(np.sum(M_bp)-len(f_opt)))
-        # '''
-        plt.plot(f_opt)
-        plt.show()
-        # plt.plot(f_opt/np.sqrt(var))
-        # plt.show()
-        # '''
-
-        D[M_bp == 0] = np.nan
-        fig, ax = plt.subplots(nrows=2, sharex=True)
-        ax[0].imshow(D.T, aspect='auto', vmin=np.nanmin(P*np.tile(f_opt, (P.shape[1],1)).T),
-                    vmax=np.nanmax(P*np.tile(f_opt, (P.shape[1],1)).T))
-        ax[1].imshow((P*np.tile(f_opt, (P.shape[1],1)).T).T, aspect='auto',
-                    vmin=np.nanmin(P*np.tile(f_opt, (P.shape[1],1)).T),
-                    vmax=np.nanmax(P*np.tile(f_opt, (P.shape[1],1)).T))
-        plt.show()
+    chi2_r = np.sum(Res)/(np.sum(M_bp)-len(f_opt))
+    var = 1. / (np.sum(M_bp*P*P/V_new, axis=1)+etol) * chi2_r
 
 
-    if return_profile:
-        return f_opt, np.sqrt(var), P, M_bp
-    else:
-        return f_opt, np.sqrt(var)
+    return f_opt, np.sqrt(var), [D.T, P.T], chi2_r
 
 
 

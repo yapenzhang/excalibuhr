@@ -1,3 +1,3 @@
-# HiSpec
+# excalibuhr
 
-A package for quick extraction and calibration of high-resolution direct-imaging spectroscopy of exoplanets and brown dwarfs.
+A Python package for data reduction of high-resolution spectroscopy of exoplanets and brown dwarfs. It is designed for VLT/CRIRES, but will be extended to other similar instruments such as Keck/NIRSPEC.

@@ -156,8 +156,10 @@ class Pipeline:
                 continuation=False, with_calib='raw', 
                 request_all_objects=True, unzip=False)
             os.chdir(self.rawpath)
-            os.system("rm *.xml")
-            os.system("rm *.txt")
+            for filename in glob.glob("*.xml"):
+                os.remove(filename)
+            for filename in glob.glob("*.txt"):
+                os.remove(filename)
             try:
                 os.system("uncompress *.Z")
             except:
@@ -408,8 +410,8 @@ class Pipeline:
             indices_bpm = (self.calib_info[self.key_caltype] == "DARK_BPM") \
                         & (self.calib_info[self.key_DIT] == dit)
             if np.sum(indices_dark) < 1:
-                raise RuntimeError(f"No MASTER DARK frame found with the \
-                        DIT value {dit}s corresponding to that of FLAT frames")
+                raise RuntimeError("No MASTER DARK frame found with the " +\
+                        f"DIT value {dit}s corresponding to that of FLAT frames \n")
 
             file = self.calib_info[indices_dark][self.key_filename].iloc[0]
             dark = fits.getdata(os.path.join(self.calpath, file))
@@ -433,7 +435,7 @@ class Pipeline:
 
             print("\n Output files:")
             # Save the master flat and bad-pixel map
-            file_name = os.path.join(self.calpath, \
+            file_name = os.path.join(self.calpath, 
                             f'FLAT_MASTER_{item_wlen}.fits')
             su.wfits(file_name, master, hdr)
             self._add_to_calib(f'FLAT_MASTER_{item_wlen}.fits', "FLAT_MASTER")
@@ -579,7 +581,7 @@ class Pipeline:
                     wlen_maxs.append(wlen_max)
 
             # Assess the slit curvature and wavelengths along the orders
-            slit, wlens = su.util_slit_curve(fpet, bpm, tw, 
+            slit, wlens, x_fpets = su.util_slit_curve(fpet, bpm, tw, 
                             wlen_mins, wlen_maxs, debug=debug)
 
             print("\n Output files:")
@@ -591,7 +593,7 @@ class Pipeline:
             self._add_to_calib(f'SLIT_TILT_{item_wlen}.fits', "SLIT_TILT")
 
             pu.plot_det_image(fpet, file_name, f"FPET_{item_wlen}", 
-                            tw=tw, slit=slit)
+                            tw=tw, slit=slit, x_fpets=x_fpets)
 
             file_name = os.path.join(self.calpath, 
                             f'INIT_WLEN_{item_wlen}.fits')
@@ -707,6 +709,12 @@ class Pipeline:
         else:
             print(f"Targets: {unique_target}")
 
+        # Open the read-out noise file
+        indices_ron = (self.calib_info[self.key_caltype] == "DARK_RON") 
+        file_ron = os.path.join(self.calpath, 
+                self.calib_info[indices_ron][self.key_filename].iloc[0])
+        ron = fits.getdata(os.path.join(self.calpath, file_ron))
+
         # Loop over each target
         for object in unique_target:
             print(f"Processing target: {object}")
@@ -758,12 +766,6 @@ class Pipeline:
                     print(f"Wavelength setting: {item_wlen}, "
                           f"DIT value: {item_dit} s.")
 
-                    # Open the read-out noise file
-                    indices_ron = (self.calib_info[self.key_caltype] == "DARK_RON") \
-                                & (self.calib_info[self.key_DIT] == item_dit)
-                    file_ron = os.path.join(self.calpath, 
-                            self.calib_info[indices_ron][self.key_filename].iloc[0])
-                    ron = fits.getdata(os.path.join(self.calpath, file_ron))
 
                     indices_nod_A = indices_wlen & \
                             (self.header_info[self.key_DIT] == item_dit) & \
@@ -1105,15 +1107,16 @@ class Pipeline:
 
         
         # Extract 1D spectrum of the target
-        flux_pri, err_pri = su.util_extract_spec(
+        flux_pri, err_pri, D, chi2_r = su.util_extract_spec(
                 dt, dt_err, bpm, tw, slit, blaze,  
                 f0=f0, gains=self.gain, NDIT=ndit,
-                aper_half=aper_prim, debug=False)
-
+                aper_half=aper_prim, debug=debug)
         paths = file.split('/')
         paths[-1] = 'Extr1D_PRIMARY_' + paths[-1]
         file_name = os.path.join(self.outpath, '/'.join(paths))
         su.wfits(file_name, flux_pri, hdr, ext_list=err_pri)
+
+        pu.plot_extr_model(D, chi2_r, file_name)
 
         print(f"\nLocation of the primary on slit: {f0:.3f} ({pos})")
         self._add_to_product('/'.join(paths), "Extr1D_PRIMARY")
@@ -1122,7 +1125,7 @@ class Pipeline:
             f1 = f0 - companion_sep/slitlen
 
             # Extract a 1D spectrum for the secondary
-            flux_sec, err_sec = su.util_extract_spec(
+            flux_sec, err_sec, D, chi2_r = su.util_extract_spec(
                     dt, dt_err, bpm, tw, slit, blaze, 
                     f0=f0, f1=f1, NDIT=ndit, gains=self.gain, 
                     aper_half=aper_comp, 
@@ -1134,6 +1137,8 @@ class Pipeline:
             file_name = os.path.join(self.outpath, '/'.join(paths))
             su.wfits(file_name, flux_sec, hdr, ext_list=err_sec)
 
+            pu.plot_extr_model(D, chi2_r, file_name)
+
             print(f"\nLocation of the companion on slit: "
                     f"{f1:.3f} ({pos})")
             self._add_to_product('/'.join(paths), "Extr1D_SECONDARY")
@@ -1141,8 +1146,8 @@ class Pipeline:
 
 
     def refine_wlen_solution(self, run_skycalc=True, 
-                data_type = 'Extr1D_PRIMARY', 
                 object = None,
+                data_type = 'Extr1D_PRIMARY', 
                 mode='quad', debug=False):
         """
         Method for refining wavelength solution by maximizing 
@@ -1159,7 +1164,9 @@ class Pipeline:
             The default value is `Extr1D_PRIMARY`.
         object: str
             The name of the standard star whose spectra is used for
-            the wavelength solution optmization.
+            the wavelength solution optmization. If the target has
+            low S/N (<10) and there is no available standard star, 
+            set it to `None` and the refinement will not be performed. 
         mode: str
             If mode is `linear`, then the wavelength solution is 
             corrected with a linear function. If mode is `quad`,
@@ -1205,27 +1212,29 @@ class Pipeline:
                          & (self.calib_info[self.key_wlen] == item_wlen)
             file = self.calib_info[indices_wave][self.key_filename].iloc[0]
             wlen_init = fits.getdata(os.path.join(self.calpath, file))
+            hdr = fits.getheader(os.path.join(self.calpath, file))
 
             indices_blaze = (self.calib_info[self.key_caltype] == "BLAZE") \
                           & (self.calib_info[self.key_wlen] == item_wlen)
             file = self.calib_info[indices_blaze][self.key_filename].iloc[0]
             blaze = fits.getdata(os.path.join(self.calpath, file))
             
-            indices_wlen = indices & \
-                            (self.product_info[self.key_wlen] == item_wlen)
-            if not object is None:
-                indices_wlen = indices_wlen & \
-                    (self.product_info[self.key_target_name] == object)
+            if object is None:
+                print("Use initial wavelength solutions since no standard "
+                      "object is specified.\n")
+                wlen_cal = wlen_init
+            else:
+                indices_wlen = indices & \
+                          (self.product_info[self.key_wlen] == item_wlen) \
+                        & (self.product_info[self.key_target_name] == object)
+                dt = []
+                # sum available spectra 
+                for file in self.product_info[indices_wlen][self.key_filename]:
+                    with fits.open(os.path.join(self.outpath, file)) as hdu:
+                        dt.append(hdu[0].data)
+                dt = np.sum(dt, axis=0)
 
-            dt = []
-            # sum available spectra 
-            for file in self.product_info[indices_wlen][self.key_filename]:
-                with fits.open(os.path.join(self.outpath, file)) as hdu:
-                    hdr = hdu[0].header
-                    dt.append(hdu[0].data)
-            dt = np.sum(dt, axis=0)
-
-            wlen_cal = su.util_wlen_solution(dt, wlen_init, blaze, tellu, 
+                wlen_cal = su.util_wlen_solution(dt, wlen_init, blaze, tellu, 
                             mode=mode, debug=debug)
             
             print("\n Output files:")
@@ -1943,6 +1952,7 @@ class Pipeline:
 
 
     def run_recipes(self, companion_sep=None, bkg_subtract=False, 
+                    aper_prim=10, aper_comp=10,
                     run_molecfit=False, wmin=None, wmax=None) -> None:
         """
         Method for running the full chain of recipes.
@@ -1967,8 +1977,12 @@ class Pipeline:
         self.cal_flat_norm()
         self.obs_nodding()
         self.obs_nodding_combine()
-        self.obs_extract(companion_sep=companion_sep, 
-                         bkg_subtract=bkg_subtract)
+        self.obs_extract(
+                         aper_prim=aper_prim,
+                         aper_comp=aper_comp,
+                         companion_sep=companion_sep, 
+                         bkg_subtract=bkg_subtract
+                         )
         self.refine_wlen_solution()
         self.save_extracted_data()
         if run_molecfit:
@@ -1976,6 +1990,7 @@ class Pipeline:
             self.apply_telluric_correction()
 
     def test_run_recipes(self, companion_sep=None, bkg_subtract=False, 
+                    aper_prim=10, aper_comp=10,
                     run_molecfit=False, wmin=None, wmax=None) -> None:
         """
         Method for running the full chain of recipes.
@@ -1992,18 +2007,18 @@ class Pipeline:
         NoneType
             None
         """
-        self.extract_header()
-        self.cal_dark()
-        self.cal_flat_raw()
-        self.cal_flat_trace()
+        # self.extract_header()
+        # self.cal_dark()
+        # self.cal_flat_raw()
+        # self.cal_flat_trace()
         self.cal_slit_curve()
-        self.cal_flat_norm()
-        self.obs_nodding()
-        self.obs_nodding_combine()
-        self.obs_extract(companion_sep=companion_sep, 
-                         bkg_subtract=bkg_subtract)
-        self.refine_wlen_solution()
-        self.save_extracted_data()
+        # self.cal_flat_norm()
+        # self.obs_nodding()
+        # self.obs_nodding_combine()
+        # self.obs_extract(companion_sep=companion_sep, aper_prim=aper_prim,
+        #                  bkg_subtract=bkg_subtract)
+        # self.refine_wlen_solution()
+        # self.save_extracted_data()
         if run_molecfit:
             self.run_molecfit(wmin=wmin, wmax=wmax)
             self.apply_telluric_correction()
