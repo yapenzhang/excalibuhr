@@ -14,9 +14,11 @@ from astropy.io import fits
 from astroquery.eso import Eso
 import skycalc_ipy
 import excalibuhr.utils as su
-import excalibuhr.plotting as pu
+from excalibuhr.data import SPEC2D
 
-class Pipeline:
+import matplotlib.pyplot as plt 
+
+class CriresPipeline:
 
     def __init__(self, workpath: str, night: str, clean_start: bool = False,
                  num_processes: int = 8,
@@ -46,7 +48,7 @@ class Pipeline:
             None
         """
 
-        _print_section(
+        self._print_section(
             f"Run pipeline for Night: {night}", bound_char="=")
         
         self.workpath = os.path.abspath(workpath)
@@ -66,7 +68,7 @@ class Pipeline:
         
         print(f"Data reduction folder: {self.nightpath}")
 
-        # self.detlin_path = '/run/media/yzhang/disk/cr2res_cal_detlin_coeffs.fits'
+        # self.detlin_path = 'cr2res_cal_detlin_coeffs.fits'
 
         # Create the directories if they do not exist
         if not os.path.exists(os.path.join(self.workpath, self.night)):
@@ -139,7 +141,7 @@ class Pipeline:
             None
         """
 
-        _print_section("Downloading rawdata from ESO arhive")
+        self._print_section("Downloading rawdata from ESO arhive")
 
         print('Night: '+ self.night)
         for key in filters.keys():
@@ -179,11 +181,8 @@ class Pipeline:
         NoneType
             None
         """
-        #if self.header_info is not None:
-        #    # Header extraction was already performed
-        #    return
 
-        _print_section("Extracting Observation details")
+        self._print_section("Extracting Observation details")
 
         print("Extracting header details to `header_info.txt`")
         keywords = self.header_keys.values() 
@@ -213,6 +212,7 @@ class Pipeline:
         # Save the dictionary as a csv-file
         self.header_info = pd.DataFrame(data=header_dict)
         self.header_info.to_csv(self.header_file, index=False, sep=';')
+
 
     def _add_to_calib(self, file: str, cal_type: str) -> None:
         """
@@ -250,6 +250,7 @@ class Pipeline:
         
         self.calib_info.to_csv(self.calib_file, index=False, sep=';')
 
+
     def _add_to_product(self, file: str, prod_type: str) -> None:
         """
         Internal method for adding details of data products
@@ -282,6 +283,181 @@ class Pipeline:
         calib_append.to_csv(self.product_file, index=False, mode='a', header=False, sep=';')
         
 
+    def _print_section(self, sect_title: str, bound_char: str = "-", 
+                        extra_line: bool = True) -> None:
+        """
+        Internal method for printing a section title.
+
+        Parameters
+        ----------
+        sect_title : str
+            Section title.
+        bound_char : str
+            Boundary character for around the section title.
+        extra_line : bool
+            Extra new line at the beginning.
+
+        Returns
+        -------
+        NoneType
+            None
+        """
+
+        if extra_line:
+            print("\n" + len(sect_title) * bound_char)
+        else:
+            print(len(sect_title) * bound_char)
+
+        print(sect_title)
+        print(len(sect_title) * bound_char + "\n")
+
+
+    def _set_plot_style(self):
+        plt.rcParams.update({
+            'font.size': 12,
+            "xtick.labelsize": 12,   
+            "ytick.labelsize": 12,   
+            "xtick.direction": 'in', 
+            "ytick.direction": 'in', 
+            'ytick.right': True,
+            'xtick.top': True,
+            "xtick.minor.visible": True,
+            "ytick.minor.visible": True,
+            # "xtick.major.size": 5,
+            # "xtick.minor.size": 2.5,
+            # "xtick.major.pad": 7,
+            "lines.linewidth": 0.5,   
+            'image.origin': 'lower',
+            'image.cmap': 'cividis',
+            "savefig.dpi": 300,   
+            })
+
+
+    def _plot_det_image(self, savename, title, data, tw = None, slit = None, x_fpet= None) -> None:
+        from numpy.polynomial import polynomial as Poly
+        # check data dimension
+        data = np.array(data)
+        if data.ndim == 3:
+            Ndet = data.shape[0]
+        elif data.ndim == 2:
+            Ndet = 1
+            data = data[np.newaxis,:]
+        else:
+            raise TypeError("Invalid data dimension") 
+
+        xx = np.arange(data.shape[-1])
+
+        self._set_plot_style()
+        fig, axes = plt.subplots(nrows=1, ncols=Ndet, 
+                                figsize=(Ndet*4,4), constrained_layout=True)
+        for i in range(Ndet):
+            ax, im = axes[i], data[i]
+            nans = np.isnan(im)
+            vmin, vmax = np.percentile(im[~nans], (1, 99))
+            ax.imshow(im, vmin=vmin, vmax=vmax)
+            if not tw is None:
+                trace = tw[i]
+                yy_trace = su.trace_polyval(xx, trace)
+                trace_lower, trace_upper = yy_trace
+                for (yy_upper, yy_lower) in \
+                        zip(trace_upper, trace_lower):
+                    ax.plot(xx, yy_upper, 'white')
+                    ax.plot(xx, yy_lower, 'white')
+            if not slit is None:
+                trace = tw[i]
+                yy_trace = su.trace_polyval(xx, trace)
+                trace_lower, trace_upper = yy_trace
+                slit_meta, x_fpets = slit[i], x_fpet[i]
+                slit_poly = su.slit_polyval(x_fpets, slit_meta)
+                for (yy_upper, yy_lower, polys) in \
+                            zip(trace_upper, trace_lower, slit_poly):                    
+                    yy = np.arange(int(yy_lower.min()), int(yy_upper.max()+1))
+                    for x in range(len(polys)):
+                        ax.plot(Poly.polyval(yy, polys[x]), yy, ':r', zorder=9)
+            ax.set_title(f"Detector {i}", size='large', fontweight='bold')
+
+        plt.suptitle(title)
+        plt.savefig(savename[:-4]+'png')
+        plt.close(fig)
+
+
+    def _plot_spec_by_order(self, savename, flux, wlen=None, transm_spec=None):
+        flux = np.array(flux)
+        Ndet, Norder, Nx = flux.shape
+        self._set_plot_style()
+        fig, axes = plt.subplots(nrows=Norder, ncols=Ndet, 
+                        figsize=(6*Ndet,1.5*Norder), constrained_layout=True)
+        for d in range(Ndet):
+            for i in range(Norder):
+                ax = axes[Norder-1-i, d]
+                y = flux[d, i]
+                nans = np.isnan(y)
+                vmin, vmax = np.percentile(y[~nans], (5, 95))
+                if wlen is None:
+                    ax.plot(y, 'k')
+                    ax.set_xlim((0, Nx))
+                else:
+                    xx = np.array(wlen)[d, i]
+                    ax.plot(xx, y, 'k', label='CRIRES obs.')
+                    ax.set_xlim((xx[0], xx[-1]))
+                    if transm_spec is not None:
+                        indices = (transm_spec[:,0]>xx[0]) & \
+                                  (transm_spec[:,0]<xx[-1])
+                        ax.plot(transm_spec[:,0][indices], 
+                                transm_spec[:,1][indices]*vmax, 
+                                color='orange', alpha=0.8,
+                                label='Telluric template')
+                    
+                ax.set_ylim((0.7*vmin, 1.1*vmax))
+            axes[0,d].set_title(f"Detector {d}", size='large', fontweight='bold')
+        
+        for i in range(Norder):
+            ax = axes[Norder-1-i,-1]
+            ax.annotate(f"Order {i}", xy=(1.1,0.5),
+                    xycoords='axes fraction',
+                    xytext=(0,0), 
+                    textcoords='offset points',
+                    fontweight='bold',
+                    size='large', ha='right', va='center',
+                    rotation=90)
+        if wlen is None:
+            axes[-1,1].set_xlabel('Pixel')
+        else:
+            axes[-1,1].set_xlabel('Wavelength (nm)')
+        axes[-1,0].set_ylabel('Flux')
+        if transm_spec is not None:
+            axes[-1,-1].legend()
+        plt.savefig(savename[:-4]+'png')
+        # plt.show()
+        plt.close(fig)
+
+
+    def _plot_extr_model(self, savename, D, chi2):
+        self._set_plot_style()
+        # check data dimension
+        D, chi2 = np.array(D), np.array(chi2)
+        Ndet, Norder = D.shape[0], D.shape[1]
+        fig, axes = plt.subplots(nrows=Norder*2, ncols=Ndet, 
+                        figsize=(2*Norder, 14), sharex=True, sharey=True,  
+                        constrained_layout=True)
+        for i in range(Ndet):
+            for o in range(0, 2*Norder, 2):
+                ax_d, ax_m = axes[Norder*2-o-2, i], axes[Norder*2-o-1, i] 
+                data, model = D[i, o//2, 0], D[i, o//2, 1]
+                nans = np.isnan(data)
+                vmin, vmax = np.percentile(data[~nans], (5, 95))
+                ax_d.imshow(data, vmin=vmin, vmax=vmax, aspect='auto')
+                ax_m.imshow(model, vmin=0, vmax=np.max(model), aspect='auto')
+                ax_d.set_title(r"Order {0}, $\chi_r^2$: {1:.2f}".format(
+                                        o//2, chi2[i, o//2]))
+            axes[-1,i].set_xlabel(f"Detector {i}", size='large', fontweight='bold')
+        paths = savename.split('/')
+        paths[-1] = 'Model_' + paths[-1][:-4] 
+        savename = os.path.join(self.outpath, '/'.join(paths))
+        plt.savefig(savename+'png')
+        plt.close(fig)
+
+
     def cal_dark(self, clip: int = 5, collapse: str = 'median') -> None:
         """
         Method for combining dark frames according to DIT.
@@ -299,7 +475,7 @@ class Pipeline:
             None
         """
 
-        _print_section("Create DARK_MASTER")
+        self._print_section("Create DARK_MASTER")
         
         indices = (self.header_info[self.key_dtype] == "DARK")
 
@@ -337,8 +513,8 @@ class Pipeline:
             su.wfits(file_name, master, hdr)
             self._add_to_calib(f'DARK_MASTER_DIT{item}.fits', 
                             "DARK_MASTER")
-            pu.plot_det_image(master, file_name, 
-                            f"DARK_MASTER, DIT={item:.1f}")
+            self._plot_det_image(file_name, f"DARK_MASTER, DIT={item:.1f}",
+                                 master)
             
             file_name = os.path.join(self.calpath, 
                             f'DARK_RON_DIT{item}.fits')
@@ -374,7 +550,7 @@ class Pipeline:
             None
         """
 
-        _print_section("Create FLAT_MASTER")
+        self._print_section("Create FLAT_MASTER")
 
         indices = self.header_info[self.key_dtype] == "FLAT"
 
@@ -446,6 +622,43 @@ class Pipeline:
             self._add_to_calib(f'FLAT_BPM_{item_wlen}.fits', 
                             "FLAT_BPM")
             
+    def _loop_over_detector(self, util_func, verbose, *dt_list, **kwargs):
+        """
+        Method for looping over detectors.
+
+        Parameters
+        ----------
+        util_func: function
+            the util function to run
+        verbose: bool
+            print the progress over detctors
+        *dt_list: 
+            input data for the function
+        **kwargs: dict
+            additional parameters for the function 
+
+        Returns
+        -------
+        results: list
+            output of the util function
+        """
+
+        results, results_swap = [], []
+        for d in range(len(dt_list[0])):
+            if verbose:
+                print(f"Processing Detector {d}")
+            result = util_func(*[dt[d] for dt in dt_list], **kwargs)
+            results.append(result)
+        
+        # swap axes of the resulting list
+        if isinstance(results[0], tuple):
+            for n in range(len(results[0])):
+                results_swap.append([r[n] for r in results])
+            return results_swap
+        else:
+            return results
+
+
 
     def cal_flat_trace(self, sub_factor: int = 64) -> None:
         """
@@ -462,7 +675,7 @@ class Pipeline:
             None
         """
 
-        _print_section("Trace spectral orders")
+        self._print_section("Trace spectral orders")
 
         indices = self.calib_info[self.key_caltype] == "FLAT_MASTER"
 
@@ -484,22 +697,23 @@ class Pipeline:
             file = self.calib_info[indices_bpm][self.key_filename].iloc[0]
             bpm = fits.getdata(os.path.join(self.calpath, file))
             
-            
             # Fit polynomials to the trace edges
-            trace = su.util_order_trace(flat, bpm, 
-                    hdr[self.key_slitlen]/self.pix_scale, sub_factor=sub_factor)
-            
+            trace = self._loop_over_detector(
+                            su.order_trace, True, flat, bpm, 
+                            slitlen=hdr[self.key_slitlen]/self.pix_scale,
+                            sub_factor=sub_factor)
+
             print("\n Output files:")
             # Save the polynomial coefficients
             file_name = os.path.join(self.calpath, f'TW_FLAT_{item_wlen}.fits')
             su.wfits(file_name, trace, hdr)
             self._add_to_calib(f'TW_FLAT_{item_wlen}.fits', "TRACE_TW")
             
-            pu.plot_det_image(flat, file_name, f"FLAT_MASTER_{item_wlen}", 
-                            tw=trace)
+            self._plot_det_image(file_name, f"FLAT_MASTER_{item_wlen}", 
+                            flat, tw=trace)
             
 
-    def cal_slit_curve(self, debug=False) -> None:
+    def cal_slit_curve(self, sub_factor=4, debug=False) -> None:
         """
         Method for tracing slit curvature in the `FPET` calibration frame.
         Determine initial wavelength solution by mapping FPET lines to 
@@ -516,7 +730,7 @@ class Pipeline:
             None
         """
 
-        _print_section("Trace slit curvature")
+        self._print_section("Trace slit curvature")
 
         # Select the Fabry-Perot etalon calibrations
         indices_fpet = self.header_info[self.key_dtype] == "WAVE,FPET"
@@ -563,10 +777,9 @@ class Pipeline:
 
             wlen_mins, wlen_maxs = [], []
             with fits.open(os.path.join(self.rawpath, file_fpet)) as hdu:
-                # Dark-subtract the fpet observation
                 hdr = hdu[0].header
-                fpet = np.array([hdu[i].data for i in range(1, len(hdu))]) \
-                        - dark
+                # Dark-subtract the fpet observation
+                fpet = np.array([hdu[i].data for i in range(1, len(hdu))]) - dark
                 
                 # Store the minimum and maximum wavelengths
                 # of each order {j} in each detector {i}.
@@ -577,27 +790,34 @@ class Pipeline:
                         if float(header[self.key_wave_cen+str(j)]) > 0:
                             wlen_min.append(header[self.key_wave_min+str(j)])
                             wlen_max.append(header[self.key_wave_max+str(j)])
+                    
+                    # # HACK: fix perculiar value of the specific detector/order
+                    # if item_wlen == 'K2166' and i == 3:
+                    #     wlen_min[-1] = 1949.093
+
                     wlen_mins.append(wlen_min)
                     wlen_maxs.append(wlen_max)
 
             # Assess the slit curvature and wavelengths along the orders
-            slit, wlens, x_fpets = su.util_slit_curve(fpet, bpm, tw, 
-                            wlen_mins, wlen_maxs, debug=debug)
+            slit = self._loop_over_detector(su.slit_curve, True,
+                            fpet, bpm, tw, wlen_mins, wlen_maxs,
+                            sub_factor=sub_factor, debug=debug)
+            meta, x_fpet, wlen = slit
 
             print("\n Output files:")
             # Save the polynomial coefficients describing the slit curvature 
             # and an initial wavelength solution
             file_name = os.path.join(self.calpath, 
                             f'SLIT_TILT_{item_wlen}.fits')
-            su.wfits(file_name, slit, hdr)
+            su.wfits(file_name, meta, hdr)
             self._add_to_calib(f'SLIT_TILT_{item_wlen}.fits', "SLIT_TILT")
 
-            pu.plot_det_image(fpet, file_name, f"FPET_{item_wlen}", 
-                            tw=tw, slit=slit, x_fpets=x_fpets)
+            self._plot_det_image(file_name, f"FPET_{item_wlen}", 
+                            fpet, tw=tw, slit=meta, x_fpet=x_fpet)
 
             file_name = os.path.join(self.calpath, 
                             f'INIT_WLEN_{item_wlen}.fits')
-            su.wfits(file_name, wlens, hdr)
+            su.wfits(file_name, wlen, hdr)
             self._add_to_calib(f'INIT_WLEN_{item_wlen}.fits', "INIT_WLEN")
             
 
@@ -617,7 +837,7 @@ class Pipeline:
             None
         """
 
-        _print_section("Normalize flat; Extract blaze")
+        self._print_section("Normalize flat; Extract blaze")
 
         indices = self.calib_info[self.key_caltype] == "FLAT_MASTER"
 
@@ -654,23 +874,31 @@ class Pipeline:
             slit = fits.getdata(os.path.join(self.calpath, file))
             
             # Normalize the master flat with the order-specific blaze functions
-            flat_norm, blazes = su.util_master_flat_norm(flat, bpm, 
-                                    tw, slit, debug=debug)
+            result = self._loop_over_detector(su.master_flat_norm, True,
+                            flat, bpm, tw, slit, 
+                            slitlen=hdr[self.key_slitlen]/self.pix_scale,
+                            debug=debug)
+            flat_norm, blazes, trace_update = result
 
             print("\n Output files:")
             file_name = os.path.join(self.calpath, 
                                     f'FLAT_NORM_{item_wlen}.fits')
             su.wfits(file_name, flat_norm, hdr)
             self._add_to_calib(f'FLAT_NORM_{item_wlen}.fits', "FLAT_NORM")
-
-            pu.plot_det_image(flat_norm, file_name, f"FLAT_NORM_{item_wlen}")
+            self._plot_det_image(file_name, f"FLAT_NORM_{item_wlen}", 
+                            flat_norm, tw=trace_update)
 
             file_name = os.path.join(self.calpath, f'BLAZE_{item_wlen}.fits')
             su.wfits(file_name, blazes, hdr)
             self._add_to_calib(f'BLAZE_{item_wlen}.fits', "BLAZE")
+            self._plot_spec_by_order(file_name, blazes) 
+
+            file_name = os.path.join(self.calpath, f'TW_FLAT_{item_wlen}.fits')
+            su.wfits(file_name, trace_update, hdr)
+        
             
 
-    def obs_nodding(self, debug=False):
+    def obs_nodding(self):
         """
         Method for processing nodding frames. Apply AB pair subtraction,
         readout artifacts correction, and flat fielding.
@@ -686,7 +914,7 @@ class Pipeline:
             None
         """
 
-        _print_section("Process nodding frames")
+        self._print_section("Process nodding frames")
 
         # Create the obs_nodding directory if it does not exist yet
         self.noddingpath = os.path.join(self.outpath, "obs_nodding")
@@ -794,7 +1022,7 @@ class Pipeline:
 
                     for i, row in enumerate(
                             range(0, df_nods.shape[0], self.Nexp_per_nod)):
-                        job = pool.apply_async(self.process_nodding_pair, 
+                        job = pool.apply_async(self._process_nodding_pair, 
                                             args=(df_nods, i, row, flat, bpm, 
                                                   tw, ron, object, item_wlen))
                         pool_jobs.append(job)
@@ -803,7 +1031,7 @@ class Pipeline:
             job.get() 
 
 
-    def process_nodding_pair(self, df_nods, i, row, flat, bpm, 
+    def _process_nodding_pair(self, df_nods, i, row, flat, bpm, 
                              tw, ron, object, item_wlen):
         # make sure we do not subtract the frames 
         # at the same nod position
@@ -836,11 +1064,11 @@ class Pipeline:
             with fits.open(file) as hdu:
                 ndit = hdu[0].header[self.key_NDIT]
                 # Loop over the detectors
-                for j, d in enumerate(range(1, len(hdu))):
+                for d in range(1, len(hdu)):
                     frame.append(hdu[d].data)
-                    # Calculate the shot-noise for this detector
-                    frame_err.append(su.detector_shotnoise(hdu[d].data,  
-                                    ron[j], GAIN=self.gain[j], NDIT=ndit))
+            # Calculate the detector shot-noise 
+            frame_err = su.detector_shotnoise(
+                                frame, ron, GAIN=self.gain, NDIT=ndit)
             dt_list.append(frame)
             err_list.append(frame_err)
                             
@@ -859,7 +1087,7 @@ class Pipeline:
                 hdr = hdu[0].header
                 ndit = hdr[self.key_NDIT]
                 # Loop over the detectors
-                for j, d in enumerate(range(1, len(hdu))):
+                for d in range(1, len(hdu)):
                     frame.append(hdu[d].data)
                     # Calculate the shot-noise for this detector
                     # For now only consider noise from bkg image
@@ -871,12 +1099,13 @@ class Pipeline:
                                 [frame, -dt_bkg], [frame_err, err_bkg], 
                                 collapse='sum')
             # correct vertical strips due to readout artifacts
-            frame_bkg_cor, err_bkg_cor = su.util_correct_readout_artifact(
+            result = self._loop_over_detector(su.readout_artifact, False,
                                 frame_bkg_cor, err_bkg_cor, bpm, tw)
+            frame_bkg_cor, err_bkg_cor = result 
             # Apply the flat-fielding
-            frame_bkg_cor, err_bkg_cor = su.util_flat_fielding(
+            frame_bkg_cor, err_bkg_cor = su.flat_fielding(
                                 frame_bkg_cor, err_bkg_cor, flat)
-
+            
             file_name = os.path.join(self.noddingpath, 
                             "Nodding_"+ object.replace(" ", "") + \
                             f"_{item_wlen}_{file}")
@@ -888,8 +1117,8 @@ class Pipeline:
                                 f"_{item_wlen}_{file}", 
                                 "NODDING_FRAME")
             
-            pu.plot_det_image(frame_bkg_cor, file_name, 
-                            f"{object}_NODDING_FRAME_{item_wlen}")
+            self._plot_det_image(file_name, 
+                        f"{object}_NODDING_FRAME_{item_wlen}", frame_bkg_cor)
     
 
     def obs_nodding_combine(self):
@@ -903,7 +1132,7 @@ class Pipeline:
             None
         """
 
-        _print_section("Combine nodding frames")
+        self._print_section("Combine nodding frames")
 
         self.noddingpath = os.path.join(self.outpath, "obs_nodding")
         
@@ -964,8 +1193,7 @@ class Pipeline:
                                 dt, dt_err = su.align_jitter(
                                     hdu[0].data, hdu[1].data, 
                                     int(np.round(
-                                        hdr[self.key_jitter]/self.pix_scale)), 
-                                    tw, debug=False)                            
+                                        hdr[self.key_jitter]/self.pix_scale)))                            
                             frames.append(dt)
                             frames_err.append(dt_err)
 
@@ -974,7 +1202,7 @@ class Pipeline:
                          f"position {pos}")
                     combined, combined_err = su.combine_frames(
                                     frames, frames_err, collapse='mean')
-
+                    
                     # Save the combined obs_nodding observation
                     file_name = os.path.join(self.noddingpath, 
                             "Combined_"+ object.replace(" ", "") + \
@@ -985,14 +1213,15 @@ class Pipeline:
                             f"_{item_wlen}_Nodding_{pos}.fits", 
                             "NODDING_COMBINED")
 
-                    pu.plot_det_image(combined, file_name, 
-                        f"{object}_NODDING_{pos}_Combined_{item_wlen}")
+                    self._plot_det_image(file_name, 
+                        f"{object}_NODDING_{pos}_Combined_{item_wlen}", combined)
 
 
     def obs_extract(self, caltype='NODDING_COMBINED',
-                          f_star=None, companion_sep=None, 
+                          peak_frac=None, companion_sep=None, 
                           bkg_subtract=False, 
                           aper_prim=20, aper_comp=10, debug=False):    
+        # TODO: for staring obs, what's the header info for nodpos?
         """
         Method for extracting. Apply AB pair subtraction,
         readout artifacts correction, and flat fielding.
@@ -1002,9 +1231,11 @@ class Pipeline:
         caltype: str
             Label of the file type to worked on: 
             `NODDING_COMBINED`, `NODDING_FRAME`, or `STARING`.
-        extract : bool
-            If True, it will extarct spectra from each exposure.
-            Otherwise, only 2D image processing will be done.
+        peak_frac: dict
+            the fraction of target signal along the slit at A and B 
+            nodding position (`frac`=0 at the bottom, and 1 at the top) 
+        companion_sep: float
+            separation of the companion in arcsec
         debug : bool
             generate plots for debugging.
 
@@ -1014,7 +1245,7 @@ class Pipeline:
             None
         """
 
-        _print_section("Extract spectra")
+        self._print_section("Extract spectra")
 
         # get updated product info
         self.product_info = pd.read_csv(self.product_file, sep=';')
@@ -1077,17 +1308,17 @@ class Pipeline:
                 
                 # Loop over each observation
                 for file in self.product_info[indices_wlen][self.key_filename]:
-                    job = pool.apply_async(self.process_extraction, 
+                    job = pool.apply_async(self._process_extraction, 
                                         args=(file, bpm, tw, slit, blaze, 
-                                            f_star, aper_prim, aper_comp, 
-                                            companion_sep,bkg_subtract, debug))
+                                            peak_frac, aper_prim, aper_comp, 
+                                            companion_sep, bkg_subtract, debug))
                     pool_jobs.append(job)
         
         for job in pool_jobs:
             job.get() 
 
-    def process_extraction(self, file, bpm, tw, slit, blaze, 
-                            f_star, aper_prim, aper_comp, 
+    def _process_extraction(self, file, bpm, tw, slit, blaze, 
+                            peak_frac, aper_prim, aper_comp, 
                             companion_sep,bkg_subtract, debug):
         with fits.open(os.path.join(self.outpath, file)) as hdu:
             hdr = hdu[0].header
@@ -1095,64 +1326,63 @@ class Pipeline:
             dt_err = hdu[1].data
         pos = hdr[self.key_nodpos]
         slitlen = hdr[self.key_slitlen]
-        ndit = hdr[self.key_NDIT]              
-        # nodthrow = hdr[self.key_nodthrow]
-        if f_star is None:
-            # estimate the location of peak signal from data
-            f0 = su.peak_slit_fraction(dt[0], tw[0], debug=debug) 
-        else:
-            f0 = f_star[pos]
-            # # Slit-fraction of centered for the nod-throw
-            # f = 0.5 + nod*nodthrow/2./slitlen
+        ndit = hdr[self.key_NDIT]
 
-        
+        if peak_frac is not None:
+            f0 = peak_frac[pos]*slitlen/self.pix_scale
+        else:
+            f0 = None
+
         # Extract 1D spectrum of the target
-        flux_pri, err_pri, D, chi2_r = su.util_extract_spec(
-                dt, dt_err, bpm, tw, slit, blaze,  
-                f0=f0, gains=self.gain, NDIT=ndit,
-                aper_half=aper_prim, debug=debug)
+        result = self._loop_over_detector(
+                        su.extract_spec, False,
+                        dt, dt_err, bpm, tw, slit, blaze, blaze, 
+                        self.gain, NDIT=ndit,
+                        cen0=f0, 
+                        aper_half=aper_prim, debug=debug)
+        flux_pri, err_pri, D, chi2_r = result
+
         paths = file.split('/')
         paths[-1] = 'Extr1D_PRIMARY_' + paths[-1]
         file_name = os.path.join(self.outpath, '/'.join(paths))
         su.wfits(file_name, flux_pri, hdr, ext_list=err_pri)
-
-        pu.plot_extr_model(D, chi2_r, file_name)
-
-        print(f"\nLocation of the primary on slit: {f0:.3f} ({pos})")
         self._add_to_product('/'.join(paths), "Extr1D_PRIMARY")
+
+        self._plot_extr_model(file_name, D, chi2_r)
+        self._plot_spec_by_order(file_name, flux_pri) 
         
         if not companion_sep is None:
-            f1 = f0 - companion_sep/slitlen
 
             # Extract a 1D spectrum for the secondary
-            flux_sec, err_sec, D, chi2_r = su.util_extract_spec(
-                    dt, dt_err, bpm, tw, slit, blaze, 
-                    f0=f0, f1=f1, NDIT=ndit, gains=self.gain, 
-                    aper_half=aper_comp, 
-                    bkg_subtract=bkg_subtract,
-                    f_star=flux_pri, debug=debug)
+            result = self._loop_over_detector(
+                            su.extract_spec, False,
+                            dt, dt_err, bpm, tw, slit, blaze, flux_pri,
+                            self.gain, NDIT=ndit,
+                            cen0=f0, 
+                            companion_sep=companion_sep/self.pix_scale,
+                            aper_half=aper_comp, 
+                            bkg_subtract=bkg_subtract,
+                            debug=debug)
+            flux_sec, err_sec, D, chi2_r = result
 
             paths = file.split('/')
             paths[-1] = 'Extr1D_SECONDARY_' + paths[-1]
             file_name = os.path.join(self.outpath, '/'.join(paths))
             su.wfits(file_name, flux_sec, hdr, ext_list=err_sec)
-
-            pu.plot_extr_model(D, chi2_r, file_name)
-
-            print(f"\nLocation of the companion on slit: "
-                    f"{f1:.3f} ({pos})")
             self._add_to_product('/'.join(paths), "Extr1D_SECONDARY")
 
+            self._plot_extr_model(file_name, D, chi2_r)
+            self._plot_spec_by_order(file_name, flux_sec) 
 
 
     def refine_wlen_solution(self, run_skycalc=True, 
-                object = None,
-                data_type = 'Extr1D_PRIMARY', 
-                mode='quad', debug=False):
+                            data_type='Extr1D_PRIMARY', 
+                            object=None,
+                            debug=False):
         """
-        Method for refining wavelength solution by maximizing 
-        cross-correlation functions between the spectrum and a
-        telluric transmission model on a order-by-order basis.
+        Method for refining wavelength solution by manimizing 
+        chi2 between the spectrum and the telluric transmission
+        template on a order-by-order basis.
 
         Parameters
         ----------
@@ -1182,7 +1412,7 @@ class Pipeline:
         if run_skycalc:
             self.run_skycalc()
 
-        _print_section("Refine wavelength solution")
+        self._print_section("Refine wavelength solution")
 
         # Create the calibrated directory if it does not exist yet
         self.corrpath = os.path.join(self.outpath, "obs_calibrated")
@@ -1213,38 +1443,34 @@ class Pipeline:
             file = self.calib_info[indices_wave][self.key_filename].iloc[0]
             wlen_init = fits.getdata(os.path.join(self.calpath, file))
             hdr = fits.getheader(os.path.join(self.calpath, file))
-
-            indices_blaze = (self.calib_info[self.key_caltype] == "BLAZE") \
-                          & (self.calib_info[self.key_wlen] == item_wlen)
-            file = self.calib_info[indices_blaze][self.key_filename].iloc[0]
-            blaze = fits.getdata(os.path.join(self.calpath, file))
             
-            if object is None:
-                print("Use initial wavelength solutions since no standard "
-                      "object is specified.\n")
-                wlen_cal = wlen_init
-            else:
-                indices_wlen = indices & \
-                          (self.product_info[self.key_wlen] == item_wlen) \
-                        & (self.product_info[self.key_target_name] == object)
-                dt = []
-                # sum available spectra 
-                for file in self.product_info[indices_wlen][self.key_filename]:
-                    with fits.open(os.path.join(self.outpath, file)) as hdu:
-                        dt.append(hdu[0].data)
-                dt = np.sum(dt, axis=0)
+            indices_wlen = indices & \
+                          (self.product_info[self.key_wlen] == item_wlen)
+            if object is not None:
+                indices_wlen = indices_wlen & \
+                        (self.product_info[self.key_target_name] == object)
 
-                wlen_cal = su.util_wlen_solution(dt, wlen_init, blaze, tellu, 
-                            mode=mode, debug=debug)
-            
+            dt, dt_err = [], []
+            # sum available spectra 
+            for file in self.product_info[indices_wlen][self.key_filename]:
+                with fits.open(os.path.join(self.outpath, file)) as hdu:
+                    dt.append(hdu[0].data)
+                    dt_err.append(hdu[1].data)
+            dt, dt_err = su.combine_frames(dt, dt_err, collapse='sum')
+
+            wlen_cal = self._loop_over_detector(su.wlen_solution, True,
+                        dt, dt_err, wlen_init, transm_spec=tellu,
+                        debug=debug)
+
             print("\n Output files:")
             file_name = os.path.join(self.corrpath, f'WLEN_{item_wlen}.fits')
             su.wfits(file_name, wlen_cal, hdr)
             self._add_to_product(f'./obs_calibrated/WLEN_{item_wlen}.fits', 
                         "CAL_WLEN")
-        
-        
 
+            self._plot_spec_by_order(file_name, dt, wlen_cal, 
+                                    transm_spec=tellu)
+        
 
     def save_extracted_data(self):
         """
@@ -1261,7 +1487,7 @@ class Pipeline:
             None
         """
 
-        _print_section("Save extracted spectra")
+        self._print_section("Save extracted spectra")
         
         self.corrpath = os.path.join(self.outpath, "obs_calibrated")
 
@@ -1291,10 +1517,10 @@ class Pipeline:
                 unique_wlen = set()
                 for item in self.product_info[indices_obj][self.key_wlen]:
                     unique_wlen.add(item)
-                print(f"Processing target {object}; "
+                print(f"Saving target {object}; "
                       f"wavelength coverage: {unique_wlen}")
 
-                wlens, blazes, specs, errs = [],[],[],[]
+                wlens, specs, errs = [],[],[]
                 for item_wlen in unique_wlen:
                     
                     indices_wlen = indices_obj & \
@@ -1302,18 +1528,16 @@ class Pipeline:
 
                     indices_wave = \
                         (self.product_info[self.key_caltype] == "CAL_WLEN")\
-                        & (self.product_info[self.key_wlen] == item_wlen)
+                      & (self.product_info[self.key_wlen] == item_wlen)
+                    
+                    if not np.any(indices_wave):
+                        indices_wave = \
+                            (self.calib_info[self.key_caltype] == "INIT_WLEN") \
+                          & (self.calib_info[self.key_wlen] == item_wlen)
 
                     file = self.product_info[indices_wave][self.key_filename].iloc[0]
                     wlen = fits.getdata(os.path.join(self.outpath, file))
                     wlens.append(wlen)
-
-                    indices_blaze = \
-                            (self.calib_info[self.key_caltype] == "BLAZE")\
-                          & (self.calib_info[self.key_wlen] == item_wlen)
-                    file = self.calib_info[indices_blaze][self.key_filename].iloc[0]
-                    blaze = fits.getdata(os.path.join(self.calpath, file))
-                    blazes.append(blaze)
 
                     dt, dt_err = [], []
                     # mean-combine A and B spectra
@@ -1330,35 +1554,22 @@ class Pipeline:
                 # reshape spectra in 2D shape: (N_chips, N_pixel)
                 specs = np.reshape(specs, (-1, np.array(wlens).shape[-1]))
                 errs = np.reshape(errs, (-1, np.array(wlens).shape[-1]))
-                blazes = np.reshape(blazes, (-1, np.array(wlens).shape[-1]))
                 wlens = np.reshape(wlens, (-1, np.array(wlens).shape[-1]))
-                specs /= blazes
-                errs /= blazes
 
                 l = label.split('_')[-1]
                 file_name = os.path.join(self.corrpath, 
                             object.replace(" ", "") +\
                             f'_{l}_CRIRES_SPEC2D.fits')
                 su.wfits(file_name, specs, hdr=hdr, 
-                            ext_list=[errs, wlens])
+                            ext_list=(errs, wlens))
                 self._add_to_product("./obs_calibrated/" +\
                                     object.replace(" ", "") +\
                                     f'_{l}_CRIRES_SPEC2D.fits', 
                                      f"SPEC_{l}")
 
-                #unravel spectra in each order and detector to a 1D array.
-                w, f, f_err, w_even = su.util_unravel_spec(
-                                    wlens, specs, errs)
-
-                file_name = os.path.join(self.corrpath, 
-                            object.replace(" ", "") +\
-                            f'_{l}_CRIRES_SPEC1D.dat')
-                header = "Wlen(nm) Flux Flux_err Wlen_even"
-                np.savetxt(file_name, np.c_[w, f, f_err, w_even], header=header)
-
-                pu.plot_spec1d(w, f, f_err, file_name)
-
-        
+                result = SPEC2D(wlens, specs, errs)
+                result.plot_spec1d(file_name[:-4]+'png')
+                result.save_spec1d(file_name[:-4]+'dat')
 
 
     def run_skycalc(self, pwv: float = 5) -> None:
@@ -1378,7 +1589,7 @@ class Pipeline:
             None
         """
 
-        _print_section("Run SkyCalc")
+        self._print_section("Run SkyCalc")
 
         # Indices with SCIENCE frames
         indices = self.header_info[self.key_catg] == "SCIENCE"
@@ -1457,9 +1668,9 @@ class Pipeline:
         # Convolve spectra
 
         if slit_width == "w_0.2":
-            spec_res = 100000.0
+            spec_res = 120000.0
         elif slit_width == "w_0.4":
-            spec_res = 50000.0
+            spec_res = 60000.0
         else:
             raise ValueError(f"Slit width {slit_width} not recognized.")
 
@@ -1670,7 +1881,7 @@ class Pipeline:
             None
         """
 
-        _print_section("Run Molecfit")
+        self._print_section("Run Molecfit")
 
         # Create the molecfit directory if it does not exist yet
         self.molpath = os.path.join(self.outpath, "molecfit")
@@ -1912,7 +2123,7 @@ class Pipeline:
             None
         """
 
-        _print_section("Apply telluric correction")
+        self._print_section("Apply telluric correction")
 
         self.molpath = os.path.join(self.outpath, "molecfit")
         self.corrpath = os.path.join(self.outpath, "obs_calibrated")
@@ -1948,11 +2159,10 @@ class Pipeline:
             np.savetxt(file_name, np.c_[w, f, f_err, w_even], header=header)
 
             print(f"Telluric corrected spectra saved to {self.corrpath}")
-            pu.plot_spec1d(w, f, f_err, file_name)
 
 
     def run_recipes(self, companion_sep=None, bkg_subtract=False, 
-                    aper_prim=10, aper_comp=10,
+                    aper_prim=20, aper_comp=10,
                     run_molecfit=False, wmin=None, wmax=None) -> None:
         """
         Method for running the full chain of recipes.
@@ -1990,7 +2200,7 @@ class Pipeline:
             self.apply_telluric_correction()
 
     def test_run_recipes(self, companion_sep=None, bkg_subtract=False, 
-                    aper_prim=10, aper_comp=10,
+                    aper_prim=20, aper_comp=10, 
                     run_molecfit=False, wmin=None, wmax=None) -> None:
         """
         Method for running the full chain of recipes.
@@ -2011,46 +2221,20 @@ class Pipeline:
         # self.cal_dark()
         # self.cal_flat_raw()
         # self.cal_flat_trace()
-        self.cal_slit_curve()
+        # self.cal_slit_curve()
         # self.cal_flat_norm()
         # self.obs_nodding()
         # self.obs_nodding_combine()
         # self.obs_extract(companion_sep=companion_sep, aper_prim=aper_prim,
         #                  bkg_subtract=bkg_subtract)
-        # self.refine_wlen_solution()
-        # self.save_extracted_data()
+        self.refine_wlen_solution(run_skycalc=True, debug=False)
+        self.save_extracted_data()
         if run_molecfit:
             self.run_molecfit(wmin=wmin, wmax=wmax)
             self.apply_telluric_correction()
             
 
-def _print_section(sect_title: str, bound_char: str = "-", 
-                        extra_line: bool = True) -> None:
-        """
-        Internal method for printing a section title.
-
-        Parameters
-        ----------
-        sect_title : str
-            Section title.
-        bound_char : str
-            Boundary character for around the section title.
-        extra_line : bool
-            Extra new line at the beginning.
-
-        Returns
-        -------
-        NoneType
-            None
-        """
-
-        if extra_line:
-            print("\n" + len(sect_title) * bound_char)
-        else:
-            print(len(sect_title) * bound_char)
-
-        print(sect_title)
-        print(len(sect_title) * bound_char + "\n")
+    
 
 
 def CombineNights(workpath, night_list, object=None, tellu_corrected=False, collapse='weighted'):
@@ -2077,7 +2261,6 @@ def CombineNights(workpath, night_list, object=None, tellu_corrected=False, coll
         None
     """
     
-    _print_section("Combine nights")
 
     from scipy.interpolate import interp1d
 
@@ -2139,7 +2322,5 @@ def CombineNights(workpath, night_list, object=None, tellu_corrected=False, coll
         header = "Wlen(nm) Flux Flux_err"
         np.savetxt(file_name, np.c_[wlen_grid, master, master_err], 
                     header=header)
-
-        pu.plot_spec1d(wlen_grid, master, master_err, file_name)
 
         print(f"Output file -> {file_name}")

@@ -14,7 +14,7 @@ from astropy.io import fits
 from astropy import stats
 # from astropy.modeling import models, fitting
 from numpy.polynomial import polynomial as Poly
-from scipy import ndimage, signal
+from scipy import ndimage, signal, optimize
 from scipy.interpolate import interp1d
 import matplotlib.pyplot as plt 
 import matplotlib as mpl
@@ -22,20 +22,58 @@ mpl.rc('image', interpolation='nearest', origin='lower')
 import warnings
 
 
-def wfits(fname, im, hdr=None, ext_list=None):
-    """wfits - write image to file fname, 
-    overwriting any old file"""
+def wfits(fname, im, hdr=None, ext_list= None):
+    """
+    write data to FITS primary and extensions, overwriting any old file
+    
+    Parameters
+    ----------
+    fname: str
+        path and filename to which the data is saved 
+    im: array
+        data to be saved to a FITS file
+    hdr: FITS `header`
+        header information to be saved
+    ext_list: tuple, array, or list
+        data to be saved to the extension of the FITS file. 
+        It can also be a tuple of data. 
+
+    Returns
+    -------
+    NoneType
+        None
+    """
+
     primary_hdu = fits.PrimaryHDU(im, header=hdr)
     new_hdul = fits.HDUList([primary_hdu])
     if not ext_list is None:
-        if not isinstance(ext_list, list):
-            new_hdul.append(fits.PrimaryHDU(ext_list))
-        else:
+        if isinstance(ext_list, tuple):
             for ext in ext_list:
                 new_hdul.append(fits.PrimaryHDU(ext))
+        else:
+            new_hdul.append(fits.PrimaryHDU(ext_list))
     new_hdul.writeto(fname, overwrite=True, output_verify='ignore') 
 
+
 def util_master_dark(dt, collapse='median', badpix_clip=5):
+    """
+    combine dark frames; generate bad pixel map and readout noise frame
+    
+    Parameters
+    ----------
+    dt: list
+        a list of dark frames to be combined 
+    collapse: str
+        the way of combining dark frames: `mean` or `median`
+    badpix_clip : int
+        sigma of bad pixel clipping
+
+    Returns
+    -------
+    master, rons, badpix: array
+        combined dark frame, readout noise frame, and bad pixel map
+    """
+
     # Combine the darks
     if collapse == 'median':
         master = np.nanmedian(dt, axis=0)
@@ -49,13 +87,34 @@ def util_master_dark(dt, collapse='median', badpix_clip=5):
     # Apply a sigma-clip to identify the bad pixels
     badpix = np.zeros_like(master).astype(bool)
     for i, det in enumerate(master):
-        filtered_data = stats.sigma_clip(det, sigma=badpix_clip, axis=0)
+        filtered_data = stats.sigma_clip(det, sigma=badpix_clip)
         badpix[i] = filtered_data.mask
         master[i][badpix[i]] = np.nan
     
     return master, rons, badpix
 
+
 def util_master_flat(dt, dark, collapse='median', badpix_clip=5):
+    """
+    combine flat frames; generate bad pixel map
+    
+    Parameters
+    ----------
+    dt: list
+        a list of flat frames to be combined 
+    dark: array
+        dark frame to be subtracted from the flat 
+    collapse: str
+        the way of combining flat frames: `mean` or `median`
+    badpix_clip : int
+        sigma of bad pixel clipping
+
+    Returns
+    -------
+    master, badpix: array
+        combined flat frame and bad pixel map
+    """
+
     # Combine the flats
     if collapse == 'median':
         master = np.nanmedian(dt, axis=0)
@@ -70,7 +129,7 @@ def util_master_flat(dt, dark, collapse='median', badpix_clip=5):
     for i, det in enumerate(master):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=Warning)
-            filtered_data = stats.sigma_clip(det, sigma=badpix_clip, axis=1)
+            filtered_data = stats.sigma_clip(det, sigma=badpix_clip)
         badpix[i] = filtered_data.mask
         master[i][badpix[i]] = np.nan
         # plt.imshow(badpix[i])
@@ -79,6 +138,26 @@ def util_master_flat(dt, dark, collapse='median', badpix_clip=5):
     return master, badpix
 
 def combine_frames(dt, err, collapse='mean'):
+    """
+    combine multiple images or spectra with error propogation 
+    
+    Parameters
+    ----------
+    dt: list
+        a list of images or spectra to be combined 
+    err: list
+        a list of associated errors to the input data 
+    collapse: str
+        the way of combining frames: `mean`, `median`, `sum`. 
+        `weighted` applies to spectal data, meaning a weighted average 
+        by the mean SNR squared. 
+
+    Returns
+    -------
+    master, master_err: array
+        combined data and its error
+    """
+
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=RuntimeWarning)
 
@@ -104,89 +183,68 @@ def combine_frames(dt, err, collapse='mean'):
 
     return master, master_err
 
+
 def detector_shotnoise(im, ron, GAIN=2., NDIT=1):
-    return np.sqrt(np.abs(im)/GAIN/NDIT + ron**2)
-
-def util_order_trace(im, bpm, slitlen : float, sub_factor: int = 32):
-
-    # Loop over each detector
-    poly_trace  = []
-    for d, (det, badpix) in enumerate(zip(im, bpm)):
-        print(f"Processing Detector {d}")
-        trace = order_trace(det, badpix, slitlen, sub_factor=sub_factor)
-        poly_trace.append(trace)
-    return poly_trace
-
-
-def util_slit_curve(im, bpm, tw, wlen_mins, wlen_maxs, debug=False):
-
-    # Loop over each detector
-    slit_meta, wlens, x_fpets = [], [], []
-    for d, (det, badpix, trace, wlen_min, wlen_max) in \
-            enumerate(zip(im, bpm, tw, wlen_mins, wlen_maxs)):
-        print(f"Processing Detector {d}")
-        if d == 2:
-            # fix perculiar value of the specific detector/order 
-            wlen_min[-1] = 1949.093
-        slit, wlen, x_fpet = slit_curve(det, badpix, trace, 
-                            wlen_min, wlen_max, debug=debug)
-        slit_meta.append(slit)
-        wlens.append(wlen)
-        x_fpets.append(x_fpet)
-    return slit_meta, wlens, x_fpets
-
-def util_master_flat_norm(im, bpm, tw, slit, badpix_clip_count=1e2, debug=False):
+    """
+    calculate the detector shotnoise map 
     
-    # Loop over each detector
-    blazes, flat_norm  = [], []
-    for d, (det, badpix, trace, slit_meta) in \
-            enumerate(zip(im, bpm, tw, slit)):
-        print(f"Processing Detector {d}")
-        
-        # Set low signal to NaN
-        det[det<badpix_clip_count] = np.nan
+    Parameters
+    ----------
+    im: list or array
+        a frame or a list of detector images     
+    ron: list or array
+        a frame or a list of associated readout noise maps
+    GAIN: list of float or float
+        detector gain for each image
+    NDIT: int
+        number of DIT exposure coadded
 
-        # Correct for the slit-curvature
-        det_rect = spectral_rectify_interp(det, badpix, 
-                                trace, slit_meta)
-
-        # Retrieve the blaze function by mean-collapsing 
-        # the master flat along the slit
-        blaze_orders = mean_collapse(det_rect, trace)
-        blazes.append(blaze_orders)
-
-        flat_norm.append(blaze_norm(det, trace, slit_meta, 
-                                blaze_orders, debug=debug))
-
-    return flat_norm, blazes
+    Returns
+    -------
+    shotnoise: list or array
+        detector shotnoise
+    """
+    if isinstance(GAIN, list):
+        shotnoise = [np.sqrt(np.abs(im[j])/GAIN[j]/NDIT + ron[j]**2) 
+                            for j in range(len(GAIN))]
+    else:
+        shotnoise = np.sqrt(np.abs(im)/GAIN/NDIT + ron**2)
+    return shotnoise 
 
 
+
+def flat_fielding(det, err, flat, debug=False):
+    """
+    apply flat fielding 
     
-def util_correct_readout_artifact(im, err, bpm, tw, debug=False):
-    im_cor, err_cor  = [],[]
-    for d, (det, det_err, badpix, trace) in enumerate(zip(im, err, bpm, tw)):
-        det_cor, det_err_cor = readout_artifact(det, det_err, badpix, trace, debug=debug)
-        im_cor.append(det_cor)
-        err_cor.append(det_err_cor)
-    return np.array(im_cor), np.array(err_cor)
+    Parameters
+    ----------
+    det: array
+        detector images   
+    err: array
+        the assciated errors to the input images 
+    flat: array
+        normalized flat frame (accounting for only the pixel-to-pixel 
+        variations)
 
-def util_flat_fielding(im, im_err, flat, debug=False):
-    im_corr = np.copy(im)
-    err_corr = np.copy(im_err)
-    for d, (det, err, f) in enumerate(zip(im, im_err, flat)):
-        badpix = np.isnan(f).astype(bool)
-        im_corr[d][~badpix] = det[~badpix]/f[~badpix]
-        err_corr[d][~badpix] = err[~badpix]/f[~badpix]
-    if debug:
-        plt.imshow(im_corr[0], vmin=-20, vmax=20)
-        plt.show()
-        plt.imshow(err_corr[0], vmin=0, vmax=10)
-        plt.show()
+    Returns
+    -------
+    im_corr, err_corr: array
+        images and errors corrected for flat
+    """
+    
+    im_corr = np.copy(det)
+    err_corr = np.copy(err)
+    badpix = np.isnan(flat).astype(bool)
+    im_corr[~badpix] /= flat[~badpix]
+    err_corr[~badpix] /= flat[~badpix]
+
     return im_corr, err_corr
 
-def util_extract_spec(im, im_err, bpm, tw, slit, blazes, gains, NDIT=1, 
-                    f0=0.5, f1=None, aper_half=20, 
-                    bkg_subtract=False, f_star=None, debug=False):
+
+def extract_spec(det, det_err, badpix, trace, slit_meta, blaze, spec_star, 
+                    gain, NDIT=1, cen0=90, companion_sep=None, aper_half=20, 
+                    bkg_subtract=False, debug=False):
     """
     Extract 1D spectra from detector images
 
@@ -210,15 +268,15 @@ def util_extract_spec(im, im_err, bpm, tw, slit, blazes, gains, NDIT=1,
     NDIT: int
         number of DIT exposure coadded
     f0: float
-        location of the star on slit in fraction between [0,1]
+        location of the star on slit in pixel 
     f1: float
-        location of the companion on slit in fraction between [0,1]
+        location of the companion on slit in pixel
     aper_half: int
-        half of extraction aperture in pixels
+        half of extraction aperture in pixel
     bkg_subtract: bool
         in case of sub-stellar companion extraction, whether remove the 
         starlight contamination.
-    f_star: array
+    spec_star: array
         in case of sub-stellar companion extraction and `bkg_subtract=True`,
         provide the extracted stellar spectra. This will be scaled according  
         to the PSF and then removed from the science image before extracting
@@ -226,70 +284,118 @@ def util_extract_spec(im, im_err, bpm, tw, slit, blazes, gains, NDIT=1,
 
     Returns
     -------
-    flux, err: array
+    f_opt, f_err: array
         the extracted fluxes and their uncertainties
+    D, chi2_r: array
+        modeled slit function and reduced chi2 of the model (for plotting)
     """
 
-    # Loop over each detector
-    flux, err, D_full, chi2  = [], [], [], []
-    for d, (det, det_err, badpix, trace, slit_meta, blaze, gain) in \
-        enumerate(zip(im, im_err,  bpm, tw, slit, blazes, gains)):
-        
-        # Correct for the slit-curvature
-        dt_rect = spectral_rectify_interp([det, det_err],  
-                                badpix, trace, slit_meta, debug=False)
-        dt_rect = trace_rectify_interp(dt_rect, trace, debug=False)
-        det_rect, err_rect = dt_rect
+    # Correct for the slit curvature and trace curvature
+    dt_rect = spectral_rectify_interp([det, det_err],  
+                            badpix, trace, slit_meta, debug=False)
+    dt_rect = trace_rectify_interp(dt_rect, trace, debug=False) 
 
-        # Extract a 1D spectrum
-        if bkg_subtract:
-            f_opt, f_err, D, chi2_r = extract_spec(
-                    det_rect, err_rect, badpix, trace, 
-                    gain=gain, NDIT=NDIT,
-                    f0=f0, f1=f1, aper_half=aper_half,
-                    bkg_subtract=bkg_subtract,
-                    f_star=f_star[d]/blaze, debug=debug)
-        else:
-            f_opt, f_err, D, chi2_r = extract_spec(
-                    det_rect, err_rect, badpix, trace, 
-                    gain=gain, NDIT=NDIT,
-                    f0=f0, f1=f1, aper_half=aper_half, 
-                    debug=debug)
-        flux.append(f_opt)
-        err.append(f_err)
-        D_full.append(D)
+    im, im_err = dt_rect
+
+    xx_grid = np.arange(im.shape[1])
+    yy_trace = trace_polyval(xx_grid, trace)
+    trace_lower, trace_upper = yy_trace
+
+    flux, err, D, chi2 = [],[],[],[]
+    for o, (yy_upper, yy_lower) in enumerate(zip(trace_upper, trace_lower)):
+        # Crop out the order from the frame
+        # slit_len = np.mean(yy_upper-yy_lower)
+        yy_upper = yy_upper[len(xx_grid)//2]
+        yy_lower = yy_lower[len(xx_grid)//2]
+        im_sub = im[int(yy_lower):int(yy_upper+1)]
+        im_err_sub = im_err[int(yy_lower):int(yy_upper+1)]
+        bpm_sub = badpix[int(yy_lower):int(yy_upper+1)]
+
+        if cen0 is None:
+            # find out the location of the peak signal
+            profile = np.nanmedian(im_sub, axis=1)
+            cen0 = np.argmax(profile)
+
+        # remove starlight contamination
+        if bkg_subtract and companion_sep is not None:
+            im_sub, im_err_sub = remove_starlight(im_sub, im_err_sub**2, 
+                            spec_star[o]/blaze[o], cen0, cen0-companion_sep, 
+                            gain=gain, debug=debug)
+
+        # Pixel-location of target
+        obj_cen = cen0
+        if companion_sep is not None:
+            obj_cen = cen0-companion_sep
+        
+        # Extract a 1D spectrum using the optimal extraction algorithm
+        f_opt, f_err, D_sub, chi2_r = optimal_extraction(
+                                im_sub.T, im_err_sub.T**2, bpm_sub.T, 
+                                obj_cen=int(np.round(obj_cen)), 
+                                aper_half=aper_half, 
+                                gain=gain, NDIT=NDIT, debug=debug) 
+        flux.append(f_opt/blaze[o])
+        err.append(f_err/blaze[o])
+        D.append(D_sub)
         chi2.append(chi2_r)
 
-    return np.array(flux), np.array(err), np.array(D_full), np.array(chi2)
+    return flux, err, D, chi2 
 
-def util_wlen_solution(dt, wlen_init, blazes, tellu, mode='quad', debug=False):
-    wlen_cal  = []
-    for d, (flux, w_init, blaze) in enumerate(zip(dt, wlen_init, blazes)):
-        print(f"Processing Detector {d}")
-        w_cal = wlen_solution(flux, w_init, blaze, tellu, mode=mode, debug=debug)
-        wlen_cal.append(w_cal)
-    return np.array(wlen_cal)
 
-def peak_slit_fraction(im, trace, debug=False):
+def peak_slit_fraction(im, trace):
+    """
+    locate the peak signal along the slit
+    
+    Parameters
+    ----------
+    im: array
+        detector image
+    trace: array
+        polynomials that delineate the edge of the specific order 
+
+    Returns
+    -------
+    frac: float
+        the fraction of peak signal along the slit 
+        (`frac`=0 at the bottom, and 1 at the top) 
+    """
+
     frac = []
     xx_grid = np.arange(im.shape[1])
-    trace_upper, trace_lower = trace
-    for o, (poly_upper, poly_lower) in enumerate(zip(trace_upper, trace_lower)):
+    yy_trace = trace_polyval(xx_grid, trace)
+    trace_lower, trace_upper = yy_trace
+    
+    for (yy_upper, yy_lower) in zip(trace_upper, trace_lower):
         # Crop out the order from the frame
-        yy_upper = Poly.polyval(xx_grid, poly_upper)[len(xx_grid)//2] 
-        yy_lower = Poly.polyval(xx_grid, poly_lower)[len(xx_grid)//2] 
-        slit_len = (yy_upper-yy_lower)
-        im_sub = im[int(yy_lower):int(yy_upper+1)]
-
-        # white-light (collpase along wavlengths) psf
+        slit_len = np.mean(yy_upper-yy_lower)
+        im_sub = im[int(yy_lower[len(yy_lower)//2]):
+                    int(yy_upper[len(yy_lower)//2]+1)]
+        # white-light psf (collpase along wavlengths)
         profile = np.nanmedian(im_sub, axis=1)
-        # # Pixel-location of target
-        f0 = np.argmax(profile) 
-        frac.append((f0)/slit_len)
+        # Pixel-location of the peak signal
+        f0 = np.argmax(profile)
+        frac.append(f0/slit_len)
 
-    return np.mean(frac)
+    return np.mean(frac[1:-1])
 
-def align_jitter(dt, err, pix_shift, tw, debug=False):
+def align_jitter(dt, err, pix_shift, tw=None, debug=False):
+    """
+    apply flat fielding 
+    
+    Parameters
+    ----------
+    dt: array
+        detector images   
+    err: array
+        the assciated errors to the input images 
+    pix_shift: int
+        integer shift in pxiels accodring to the jitter value
+
+    Returns
+    -------
+    dt_shift, err_shift: array
+        shifted images and errors  
+    """
+
     dt_shift = np.copy(dt)
     err_shift = np.copy(err)
     if pix_shift < 0:
@@ -301,53 +407,11 @@ def align_jitter(dt, err, pix_shift, tw, debug=False):
     if debug:
         # print peak signal location
         print(pix_shift, peak_slit_fraction(dt[0], tw[0]))
+
     return dt_shift, err_shift
 
-def util_unravel_spec(wlens, specs, errs):
-    wlens, specs, errs = np.array(wlens), np.array(specs), np.array(errs)
-    Nchip, Nx = wlens.shape
 
-    # generate a evenly spaced wavelength grid 
-    wlen_even = np.copy(wlens)
-    wmin = wlens[:,0] 
-    wmax = wlens[:,-1] 
-    for ind in range(Nchip):
-        wlen_even[ind] = np.linspace(wmin[ind], wmax[ind], Nx)
-
-    indices = np.argsort(wmin)
-    wlen = wlens[indices].flatten()
-    unraveled = []
-    for dt in [specs, errs, wlen_even]:
-        unraveled.append(dt[indices].flatten())
-    spec, err, w_even = unraveled
-
-    return wlen, spec, err, w_even
-
-# def util_unravel_spec_higher(wlens, specs, errs):
-#     # shape: (wlen_settings, detectors, orders, -1)
-#     N_set, N_det, N_ord, Nx = wlens.shape
-
-#     # generate a evenly spaced wavelength grid 
-#     wlen_even = np.copy(wlens)
-#     wmin = wlens[:,:,:,0] 
-#     wmax = wlens[:,:,:,-1] 
-#     for i in range(N_set*N_det*N_ord):
-#         ind = np.unravel_index(i, (N_set, N_det, N_ord))
-#         wlen_even[ind] = np.linspace(wmin[ind], wmax[ind], Nx)
-
-#     wlen_flatten = np.reshape(wlens, (N_set*N_det*N_ord, Nx))
-#     indices = np.argsort(wlen_flatten[:,0])
-#     wlen = wlen_flatten[indices].flatten()
-#     unraveled = []
-#     for dt in [specs, errs, wlen_even]:
-#         dt_flatten = np.reshape(dt, (N_set*N_det*N_ord, Nx))
-#         unraveled.append(dt_flatten[indices].flatten())
-#     spec, err, w_even = unraveled
-
-#     return wlen, spec, err, w_even
-
-
-def order_trace(det, badpix, slitlen : float, sub_factor=64):
+def order_trace(det, badpix, slitlen, sub_factor=128):
     """
     Trace the spectral orders
 
@@ -367,7 +431,7 @@ def order_trace(det, badpix, slitlen : float, sub_factor=64):
     [poly_upper, poly_lower]
         The polynomial coeffiences of upper and lower trace of each order
     """
-
+    
     im = np.ma.masked_array(det, mask=badpix)
 
     # Sub-sample the image along the dispersion axis
@@ -459,7 +523,7 @@ def order_trace(det, badpix, slitlen : float, sub_factor=64):
 
     print(f"-> {len(poly_upper)} orders identified")
 
-    return [poly_upper, poly_lower]
+    return [poly_lower, poly_upper]
 
 
 def slit_curve(det, badpix, trace, wlen_min, wlen_max, sub_factor=4, debug=False):
@@ -487,34 +551,23 @@ def slit_curve(det, badpix, trace, wlen_min, wlen_max, sub_factor=4, debug=False
         initial wavelength solution of each order
     """
 
-    poly_order = 2
+    poly_order = 1
     spacing = 40 # minimum spacing (in pixel) of fpet lines
     
-    # badpix = np.isnan(det)
+    badpix = badpix | np.isnan(det)
     im = np.ma.masked_array(det, mask=badpix)
 
     xx = np.arange(im.shape[1])
-    trace_upper, trace_lower = trace
-    meta0, meta1, meta2, wlen, x_fpet = [], [], [], [], []
-    
-    # Loop over each order
-    for o, (upper, lower, w_min, w_max) in \
-        enumerate(zip(trace_upper, trace_lower, wlen_min, wlen_max)):
-        # Find the upper and lower edges of the order 
-        # with the polynomial coefficients
-        yy_upper = Poly.polyval(xx, upper)
-        yy_lower = Poly.polyval(xx, lower)
-        # yy_mid = Poly.polyval(xx, middle)
-        if np.any(yy_upper > im.shape[0]):
-            yy_upper = np.zeros_like(yy_upper) + im.shape[0] - 4.
-        if np.any(yy_lower < 0):
-            yy_lower = np.zeros_like(yy_upper) + 4.
-        middle = (upper+lower)/2.
+    polys_middle = np.sum(trace, axis=0)/2.
+    # Evaluate the upper and lower edges of all orders
+    yy_trace = trace_polyval(xx, trace)
+    trace_lower, trace_upper = yy_trace
 
-        if debug:
-            plt.plot(xx, yy_upper, 'r')
-            plt.plot(xx, yy_lower, 'r')
-        
+    meta, wlen, x_fpet = [], [], []
+    # Loop over each order
+    for (yy_upper, yy_lower, middle, w_min, w_max) in \
+        zip(trace_upper, trace_lower, polys_middle, wlen_min, wlen_max):
+
         # Loop over each pixel-row in a sub-sampled image
         slit_image, x_slit, poly_slit = [], [], []
         N_lines = 0
@@ -583,7 +636,9 @@ def slit_curve(det, badpix, trace, wlen_min, wlen_max, sub_factor=4, debug=False
 
             # Find mid-point on slit image, i.e. 
             # the intersection of two polynomials
-            root = Poly.polyroots(poly_orth-middle)
+            root = Poly.polyroots(np.pad(poly_orth, 
+                    (0, len(middle)-len(poly_orth)), 'constant')
+                    - middle)
 
             if np.iscomplexobj(root):
                 # slit is close to vertical 
@@ -599,24 +654,10 @@ def slit_curve(det, badpix, trace, wlen_min, wlen_max, sub_factor=4, debug=False
         # Fit a polynomial to the polynomial coefficients
         # using the x-coordinates of the fpet signal
         poly_slit = np.array(poly_slit)
-        poly_meta0 = Poly.polyfit(x_slit, poly_slit[:,0], poly_order)
-        poly_meta1 = Poly.polyfit(x_slit, poly_slit[:,1], poly_order)
-        poly_meta2 = Poly.polyfit(x_slit, poly_slit[:,2], poly_order)
-        meta0.append(poly_meta0)
-        meta1.append(poly_meta1)
-        meta2.append(poly_meta2)
+        meta.append([Poly.polyfit(x_slit, poly_slit[:,i], 2) 
+                        for i in range(poly_order+1)])
         x_fpet.append(x_slit)
         
-        if debug:
-            xx_grid = x_slit
-            yy = np.arange(int(yy_lower.min()-5), int(yy_upper.max()+5))
-            poly_full = np.array([Poly.polyval(xx_grid, poly_meta0), 
-                                  Poly.polyval(xx_grid, poly_meta1),
-                                  Poly.polyval(xx_grid, poly_meta2)]).T
-            for x in range(len(xx_grid)):
-                plt.plot(xx_grid[x], Poly.polyval(xx_grid[x], middle), 'ko')
-                plt.plot(Poly.polyval(yy, poly_full[x]), yy, 'r--', zorder=10)
-
         # Determine the wavelength solution along the detectors/orders
         # Mapping from measured fpet positions to a linear-spaced grid, 
         # fitting with 2nd-order poly
@@ -634,16 +675,77 @@ def slit_curve(det, badpix, trace, wlen_min, wlen_max, sub_factor=4, debug=False
         # plt.plot(np.diff(w_slit))
         # plt.show()
 
-    if debug:
-        plt.imshow(im, vmin=100, vmax=2e4)
-        plt.show()
-
     # check rectified image
-    # if debug:
-    #     spectral_rectify_interp(im, trace, [meta0, meta1, meta2], debug=debug)
-    return [meta0, meta1, meta2], wlen, x_fpet
+    if debug:
+        spectral_rectify_interp(im, badpix, trace, meta, debug=debug)
 
-def spectral_rectify_interp(im_list, badpix, trace, slit_meta, debug=False):
+    return meta, x_fpet, wlen
+
+
+def trace_polyval(xx, tw, ):
+    """
+    evaluate trace polynomials given the pixel grid
+
+    Parameters
+    ----------
+    xx: array
+        pixel grid
+    tw: array
+        polynomial coefficiences for the upper and lower traces 
+        for mutiple orders on one detector image  
+
+    Returns
+    -------
+    yy_list: list
+        the evaluated y coordinates of upper and lower order edges
+    """
+
+    yy_list = []
+    for trace in tw:
+        yy_order = []
+        for poly in trace:
+            yy = Poly.polyval(xx, poly)
+            if np.any(yy > len(xx)):
+                yy = np.zeros_like(yy) + len(xx) - 4.
+            elif np.any(yy < 0):
+                yy = np.zeros_like(yy) + 4.
+            yy_order.append(yy)
+        yy_list.append(yy_order)
+    return yy_list
+
+
+def slit_polyval(xx, meta):
+    """
+    evaluate slit curvature polynomials given the pixel grid
+
+    Parameters
+    ----------
+    xx: array or list
+        pixel grid or a list of x coordinates
+    meta: array
+        meta polynomial coefficiences for the change of slit tilt over 
+        x coordinates
+
+    Returns
+    -------
+    slit: list
+        the evaluated polynomial coefficiences describing the slit tilt 
+        for each given x coordinate
+    """
+
+    if isinstance(xx, list):
+        slit = [np.array([Poly.polyval(x_line, poly_meta) 
+                          for poly_meta in meta_order]).T 
+                for (x_line, meta_order) in zip(xx, meta)]
+    else:
+        slit = [np.array([Poly.polyval(xx, poly_meta) 
+                          for poly_meta in meta_order]).T 
+                for meta_order in meta]
+
+    return slit
+
+
+def spectral_rectify_interp(im_list, badpix, trace, slit_meta, reverse=False, debug=False):
     """
     Correct for the slit-tilt by interpolating to a pixel-grid
 
@@ -658,12 +760,15 @@ def spectral_rectify_interp(im_list, badpix, trace, slit_meta, debug=False):
     slit_meta: array
         polynomials that describing the slit curvature 
         as a function of the dispersion axis
+    reverse: bool
+        if `True`, interpolate back to the tilted slit 
 
     Returns
     -------
     im_rect_spec: array
         rectified images where the slit image is vertical on detector
     """
+
     if np.array(im_list).ndim == 3:
         im_rect_spec = np.array(im_list)
     elif np.array(im_list).ndim == 2:
@@ -672,32 +777,19 @@ def spectral_rectify_interp(im_list, badpix, trace, slit_meta, debug=False):
         raise TypeError("Invalid data dimension")
 
     bpm = (badpix.astype(bool) | np.isnan(im_rect_spec[0]))
+    # bpm_interp = np.zeros_like(bpm).astype(float)
 
-    bpm_interp = np.zeros_like(bpm).astype(float)
+    # Evaluate order traces and slit curvature
     xx_grid = np.arange(0, im_rect_spec.shape[-1])
-    meta0, meta1, meta2 = slit_meta
-    trace_upper, trace_lower = trace
+    yy_trace = trace_polyval(xx_grid, trace)
+    trace_lower, trace_upper = yy_trace
+    slit_poly = slit_polyval(xx_grid, slit_meta)
 
     # Loop over each order
-    for o, (poly_upper, poly_lower, poly_meta0, poly_meta1, poly_meta2) in \
-        enumerate(zip(trace_upper, trace_lower, meta0, meta1, meta2)):
-
-        # Get the upper and lower edges of the order
-        yy_upper = Poly.polyval(xx_grid, poly_upper)
-        yy_lower = Poly.polyval(xx_grid, poly_lower)
-        if np.any(yy_upper > im_rect_spec.shape[1]):
-            yy_upper = np.zeros_like(yy_upper) + im_rect_spec.shape[1] - 4.
-        if np.any(yy_lower < 0):
-            yy_lower = np.zeros_like(yy_upper) + 4.
-
+    for (yy_upper, yy_lower, poly_full) in zip(trace_upper, trace_lower, slit_poly):
         yy_grid = np.arange(int(yy_lower.min()), int(yy_upper.max()+1))
 
-        # Retrieve a pixel-grid using the slit-curvature 
-        # polynomial coefficients
-        poly_full = np.array([Poly.polyval(xx_grid, poly_meta0), 
-                              Poly.polyval(xx_grid, poly_meta1), 
-                              Poly.polyval(xx_grid, poly_meta2)]).T
-        isowlen_grid = np.empty((len(yy_grid), len(xx_grid)))
+        isowlen_grid = np.zeros((len(yy_grid), len(xx_grid)))
         # Loop over the horizontal axis
         for x in range(len(xx_grid)):
             isowlen_grid[:, x] = Poly.polyval(yy_grid, poly_full[x])
@@ -711,13 +803,21 @@ def spectral_rectify_interp(im_list, badpix, trace, slit_meta, debug=False):
             
             # Correct for the slit-curvature by interpolating onto the grid
             for r, dt in enumerate(data_row):
-                im_rect_spec[r, int(yy_grid[0]+i)] = interp1d(xx_grid[~mask], 
+                if reverse:
+                    im_rect_spec[r, int(yy_grid[0]+i)] = interp1d(x_isowlen[~mask], 
+                                                        dt[~mask], 
+                                                        kind='cubic', 
+                                                        bounds_error=False, 
+                                                        fill_value=np.nan
+                                                        )(xx_grid)
+                else:
+                    im_rect_spec[r, int(yy_grid[0]+i)] = interp1d(xx_grid[~mask], 
                                                         dt[~mask], 
                                                         kind='cubic', 
                                                         bounds_error=False, 
                                                         fill_value=np.nan
                                                         )(x_isowlen)
-
+                                                       
     if debug:
         plt.imshow(im_rect_spec[0])
         plt.show()
@@ -726,6 +826,7 @@ def spectral_rectify_interp(im_list, badpix, trace, slit_meta, debug=False):
         return im_rect_spec[0]
     else:
         return im_rect_spec
+
 
 def trace_rectify_interp(im_list, trace, debug=False):
     """
@@ -753,19 +854,11 @@ def trace_rectify_interp(im_list, trace, debug=False):
         raise TypeError("Invalid data dimension")
 
     xx_grid = np.arange(0, im_rect.shape[-1])
-    trace_upper, trace_lower = trace
+    yy_trace = trace_polyval(xx_grid, trace)
+    trace_lower, trace_upper = yy_trace
+    trace_mid = trace_polyval(xx_grid, np.mean(trace, axis=0)[np.newaxis,:])[0]
 
-    for o, (poly_upper, poly_lower) in \
-                enumerate(zip(trace_upper, trace_lower)):
-        poly_mid = (poly_upper + poly_lower)/2.
-        yy_mid = Poly.polyval(xx_grid, poly_mid)
-        yy_upper = Poly.polyval(xx_grid, poly_upper)
-        yy_lower = Poly.polyval(xx_grid, poly_lower)
-        if np.any(yy_upper > im_rect.shape[1]):
-            yy_upper = np.zeros_like(yy_upper) + im_rect.shape[1] - 4.
-        if np.any(yy_lower < 0):
-            yy_lower = np.zeros_like(yy_upper) + 4.
-
+    for (yy_upper, yy_lower, yy_mid) in zip(trace_upper, trace_lower, trace_mid):
         shifts = yy_mid - yy_mid[len(xx_grid)//2] 
         yy_grid = np.arange(int(yy_lower.min()), int(yy_upper.max()+1))
 
@@ -778,14 +871,65 @@ def trace_rectify_interp(im_list, trace, debug=False):
                 im_rect[r,yy_grid,x] = interp1d(yy_grid[~mask], dt[~mask], 
                                                 kind='cubic', 
                                                 bounds_error=False, 
-                                                fill_value='extrapolate'
+                                                fill_value=np.nan
                                                 )(yy_grid+shifts[x])
     if debug:
-        plt.imshow(im_rect[0], vmin=-20, vmax=20)
+        plt.imshow(np.log(im_rect[0]))
         plt.show()
     return im_rect
 
-def mean_collapse(im, trace, f0=0.5, fw=0.5, sigma=5):
+
+def master_flat_norm(det, badpix, trace, slit_meta, slitlen=None, debug=False):
+    """
+    normalize master flat frame and extract balze function
+    
+    Parameters
+    ----------
+    det: array
+        master flat frame 
+    badpix: array
+        bad pixel map corresponding to the input image
+    trace: array
+        polynomials that delineate the edge of the specific order 
+    slit_meta: array
+        polynomials that describing the slit curvature as a 
+        function of the dispersion axis
+    slitlen: float
+        the length of slit in pixels
+
+    Returns
+    -------
+    flat_norm, blazes: array
+        normalized flat frame and blaze functions
+    """
+
+    # Correct for the slit curvature
+    det_rect = spectral_rectify_interp(det, badpix, trace, slit_meta)
+    filtered_data = stats.sigma_clip(det_rect, sigma=5)
+    badpix_rect = filtered_data.mask | badpix
+    # measure the trace again
+    trace_update = order_trace(det_rect, badpix_rect, slitlen=slitlen)
+
+    # Retrieve the blaze function by mean-collapsing 
+    # the master flat along the slit
+    blaze, blaze_image = extract_blaze(det_rect, badpix_rect, trace_update)
+
+    blaze_image = spectral_rectify_interp(blaze_image, np.zeros_like(badpix), 
+                        trace_update, slit_meta, reverse=True)
+    
+    # Set low signal to NaN
+    flat_norm = det / blaze_image
+    flat_norm[flat_norm<0.5] = np.nan
+    flat_norm[flat_norm>1.2] = np.nan
+
+    if debug:
+        plt.imshow(flat_norm, vmin=0.8, vmax=1.2)
+        plt.show()
+
+    return flat_norm, blaze, trace_update
+
+
+def extract_blaze(im, badpix, trace, f0=0.5, fw=0.5, sigma=5):
     """
     Collpase 2D image along the cross-dispersion direction 
     in an order-by-order basis.
@@ -794,6 +938,8 @@ def mean_collapse(im, trace, f0=0.5, fw=0.5, sigma=5):
     ----------
     im: array
         input flat image to be normalized
+    badpix: array
+        bad pixel map corresponding to the input image
     trace: array
         polynomials that delineate the edge of the specific order 
 
@@ -802,117 +948,38 @@ def mean_collapse(im, trace, f0=0.5, fw=0.5, sigma=5):
     blaze_orders: array
         1D blaze function of each order
     """
-    im_copy = np.copy(im)
+    badpix = badpix.astype(bool)
+
     xx_grid = np.arange(0, im.shape[1])
+    yy_trace = trace_polyval(xx_grid, trace)
+    trace_lower, trace_upper = yy_trace
 
+    blaze_image = np.ones_like(im)*np.nan
     blaze_orders = []
-    trace_upper, trace_lower = trace
-
     # Loop over each order
-    for o, (poly_upper, poly_lower) in \
-            enumerate(zip(trace_upper, trace_lower)):
-        yy_upper = Poly.polyval(xx_grid, poly_upper)
-        yy_lower = Poly.polyval(xx_grid, poly_lower)
-        if np.any(yy_upper > im.shape[0]):
-            yy_upper = np.zeros_like(yy_upper) + im.shape[0] - 4.
-        if np.any(yy_lower < 0):
-            yy_lower = np.zeros_like(yy_upper) + 4.
+    for (yy_upper, yy_lower) in zip(trace_upper, trace_lower):
 
         blaze = np.zeros_like(xx_grid, dtype=np.float64)
         indices = [range(int(low+(f0-fw)*(up-low)), 
-                         int(low+(f0+fw)*(up-low))+1) \
-                   for (up, low) in zip(yy_upper, yy_lower)]
+                             int(low+(f0+fw)*(up-low))+1) \
+                        for (up, low) in zip(yy_upper, yy_lower)]
 
         # Loop over each column
         for i in range(len(indices)):
-            mask = np.isnan(im_copy[indices[i],i])
+            mask = badpix[indices[i],i] | np.isnan(im[indices[i],i])
             if np.sum(mask)>0.9*len(mask):
                 blaze[i] = np.nan
             else:
                 blaze[i], _, _ = stats.sigma_clipped_stats(
-                    im_copy[indices[i],i][~mask], sigma=sigma)
+                    im[indices[i],i][~mask], sigma=sigma)
+            blaze_image[indices[i],i] = blaze[i]
         blaze_orders.append(blaze)
 
-    return blaze_orders
-
-def blaze_norm(im, trace, slit_meta, blaze_orders, debug=False):
-    """
-    Correct for the slit-tilt by interpolating to a pixel-grid
-
-    Parameters
-    ----------
-    im: array
-        input flat image to be normalized
-    trace: array
-        polynomials that delineate the edge of the specific order 
-    slit_meta: array
-        polynomials that describing the slit curvature 
-        as a function of the dispersion axis
-    blaze_orders: array
-        1D blaze function of each order
-
-    Returns
-    -------
-    im_norm: array
-        normalized flat field
-    """
+    return blaze_orders, blaze_image
     
-    im_norm = np.copy(im)
-    im_copy = np.ones_like(im, dtype=np.float64)*np.nan
-    xx_grid = np.arange(0, im.shape[1])
-    meta0, meta1, meta2 = slit_meta
-    trace_upper, trace_lower = trace
 
-    # Loop over each order
-    for o, (poly_upper, poly_lower, poly_meta0, poly_meta1, poly_meta2, \
-            blaze) in enumerate(zip(trace_upper, trace_lower,
-            meta0, meta1, meta2, blaze_orders)):
 
-        yy_upper = Poly.polyval(xx_grid, poly_upper)
-        yy_lower = Poly.polyval(xx_grid, poly_lower)
-        if np.any(yy_upper > im.shape[0]):
-            yy_upper = np.zeros_like(yy_upper) + im.shape[0] - 4.
-        if np.any(yy_lower < 0):
-            yy_lower = np.zeros_like(yy_upper) + 4.
-
-        yy_grid = np.arange(int(yy_lower.min()), int(yy_upper.max()+1))
-
-        # Retrieve a pixel-grid using the slit-curvature 
-        # polynomial coefficients
-        poly_full = np.array([Poly.polyval(xx_grid, poly_meta0), 
-                              Poly.polyval(xx_grid, poly_meta1),
-                              Poly.polyval(xx_grid, poly_meta2)]).T
-        isowlen_grid = np.empty((len(yy_grid), len(xx_grid)))
-        # Loop over the horizontal axis
-        for x in range(len(xx_grid)):
-            isowlen_grid[:, x] = Poly.polyval(yy_grid, poly_full[x])
-        
-        # Loop over each row in the order
-        for i, x_isowlen in enumerate(isowlen_grid):
-            
-            mask = np.isnan(blaze)
-            if np.sum(mask)>0.9*len(mask):
-                continue
-
-            # Build a blaze model image from blaze function 
-            # taking into account the slit-curvature 
-            im_copy[int(yy_grid[0]+i)] = interp1d(x_isowlen[~mask], 
-                                            blaze[~mask], 
-                                            kind='cubic', 
-                                            bounds_error=False, 
-                                            fill_value=np.nan
-                                            )(xx_grid)
-                                            
-    # Normalize the image by the blaze model image
-    im_norm /= im_copy
-    im_norm[im_norm<0.1] = np.nan
-    if debug:
-        plt.imshow(im_norm, vmin=0.8, vmax=1.2)
-        plt.show()
-
-    return im_norm
-
-def readout_artifact(det, det_err, badpix, trace, Nborder=10, debug=False):
+def readout_artifact(det, det_err, badpix, trace, Nborder=10, sigma=3, debug=False):
     """
     Correct for readout noise artifacts that appear like vertical strips 
     by subtracting the inter-order average value in each column on detector.
@@ -941,22 +1008,18 @@ def readout_artifact(det, det_err, badpix, trace, Nborder=10, debug=False):
     det_err[badpix] = np.nan
 
     xx = np.arange(det.shape[1])
-    ron_col, err_col = np.zeros(det.shape[1]), np.zeros(det.shape[1])
-    trace_upper, trace_lower = trace
-    uppers, lowers = [], [] 
-    for o, (upper, lower) in enumerate(zip(trace_upper, trace_lower)):
-        yy_upper = Poly.polyval(xx, upper)
-        yy_lower = Poly.polyval(xx, lower)
-        uppers.append(yy_upper.max())
-        lowers.append(yy_lower.min())
+    yy_trace = trace_polyval(xx, trace)
+    trace_lower, trace_upper = yy_trace
+    lowers = [np.min(item) for item in trace_lower]
+    uppers = [np.max(item) for item in trace_upper]
     uppers = uppers[:-1]
     lowers = lowers[1:]
-
+    
     indices_row = []
     for up, low in zip(uppers, lowers):
         indices_row += list(range(int(up+Nborder), int(low-Nborder+1)))
 
-    im = stats.sigma_clip(det[indices_row], sigma=3)
+    im = stats.sigma_clip(det[indices_row], sigma=sigma, axis=0)
     im_err = np.ma.masked_array(det_err[indices_row], mask=im.mask)
     ron_col = np.ma.mean(im, axis=0)
     err_col = np.sqrt(np.ma.sum(im_err**2, axis=0)) / np.sum(~im.mask, axis=0)
@@ -969,93 +1032,59 @@ def readout_artifact(det, det_err, badpix, trace, Nborder=10, debug=False):
         plt.show()
     return det, det_err
 
-def extract_spec(im, im_err, bpm, trace, gain=2., NDIT=1, f0=0.5, f1=None, aper_half=20, bkg_subtract=False, f_star=None, debug=False):
+
+def remove_starlight(D_full, V_full, spec_star, cen0_p, cen1_p, 
+                    aper0=50, aper1=10, aper2=20, sub_factor=32, 
+                    gain=2.0, NDIT=1., debug=False):
     """
-    Extract 1D spectra from detector images
+    [EXPERIMENTAL!] Remove starlight contamination at the position of 
+    the widely separated companion in a 2D detector image. 
 
     Parameters
     ----------
-    im: array
-        input science image that has been calibrated
-    im_err: array
-        readout+background noise associated with the input science image
-    badpix: array
-        bad pixel map corresponding to the input image
-    trace: array
-        polynomials that delineate the edge of the specific order 
-    gain: float
-        detector gain
-    NDIT: int
-        number of DIT exposure coadded
-    f0: float
-        location of the star on slit in fraction between [0,1]
-    f1: float
-        location of the companion on slit in fraction between [0,1]
-    aper_half: int
-        half of extraction aperture in pixels
-    bkg_subtract: bool
-        in case of sub-stellar companion extraction, whether remove the 
-        starlight contamination.
-    f_star: array
+    D_full: array
+        cropped image of one order 
+    V_full: array
+        Variance of the input image accounting for sky background 
+        and readout noise
+    spec_star: array
         in case of sub-stellar companion extraction and `bkg_subtract=True`,
         provide the extracted stellar spectra. This will be scaled according  
         to the PSF and then removed from the science image before extracting
         the companion spectra.
+    cen0_p: float
+        location of the star on slit in pixel 
+    cen1_p: float
+        location of the companion on slit in pixel
+    aper0: int
+        half aperture for masking the negative primary trace
+    aper1: int
+        half aperture for masking the negative secondary trace 
+        and the primary line core
+    aper2: int
+        half aperture for determining the line center
+    sub_factor: int
+        binning factor along the dispersion axis
+    gain: float
+        detector gain
+    NDIT: int
+        number of DIT exposure coadded
 
     Returns
     -------
-    flux, err: array
-        the extracted fluxes and their uncertainties
+    D_full, Err_full: array
+        image and error after the starlight removal
     """
-
-    im_copy = np.copy(im)
-    bpm_copy = np.copy(bpm)
-    err_copy = np.copy(im_err)
-    xx_grid = np.arange(0, im.shape[1])
-    flux, err, D, chi2 = [],[],[],[]
-    trace_upper, trace_lower = trace
-
-    for o, (poly_upper, poly_lower) in enumerate(zip(trace_upper, trace_lower)):
-        # poly_mid = (poly_upper + poly_lower)/2.
-        # yy_mid = Poly.polyval(xx_grid, poly_mid)
-        
-        # Crop out the order from the frame
-        yy_upper = Poly.polyval(xx_grid, poly_upper)[len(xx_grid)//2] 
-        yy_lower = Poly.polyval(xx_grid, poly_lower)[len(xx_grid)//2] 
-        slit_len = (yy_upper-yy_lower)
-        im_sub = im_copy[int(yy_lower):int(yy_upper+1)]
-        im_err_sub = err_copy[int(yy_lower):int(yy_upper+1)]
-        bpm_sub = bpm_copy[int(yy_lower):int(yy_upper+1)]
-
-        # remove starlight contamination
-        if bkg_subtract and f1:
-            im_sub, im_err_sub = remove_starlight(im_sub, im_err_sub**2, f_star[o], slit_len*f0, slit_len*f1, gain=gain, debug=debug)
-
-        # Pixel-location of target
-        obj_cen = slit_len*f0
-        if not f1 is None:
-            obj_cen = slit_len*f1
-        # print(slit_len, f0, obj_cen)
-        
-        # Extract a 1D spectrum using the optimal extraction algorithm
-        f_opt, f_err, D_sub, chi2_r = optimal_extraction(im_sub.T, im_err_sub.T**2, bpm_sub.T, int(np.round(obj_cen)), 
-                                          aper_half, gain=gain, NDIT=NDIT, debug=debug) 
-        flux.append(f_opt)
-        err.append(f_err)
-        D.append(D_sub)
-        chi2.append(chi2_r)
-
-    return np.array(flux), np.array(err), np.array(D), np.array(chi2)
-
-def remove_starlight(D_full, V_full, f_star, cen0_p, cen1_p, aper0=50, aper1=10, aper2=20, sub_factor=32, gain=2.0, NDIT=1., debug=False):
     # determine the location of peak signal from data
+    D_full = np.nan_to_num(D_full)
     spatial_x = np.arange(len(D_full))
     bkg = np.zeros_like(D_full)
-    f_star = np.nan_to_num(f_star)
 
     polys = []
     x_sub = np.arange(0, D_full.shape[-1], sub_factor) + sub_factor/2.
-    D = np.reshape(D_full, (D_full.shape[0], D_full.shape[-1]//sub_factor, sub_factor))
+    D = np.reshape(D_full, (D_full.shape[0], 
+                            D_full.shape[-1]//sub_factor, 
+                            sub_factor))
     D_sub = np.nanmedian(D, axis=2)
 
     # estimate center of the PSF peak
@@ -1063,12 +1092,14 @@ def remove_starlight(D_full, V_full, f_star, cen0_p, cen1_p, aper0=50, aper1=10,
     #        better to be large but, not too large to avoid the companion
     profile = np.nanmedian(-D_sub, axis=1)
     p = np.argmax(profile)
-    cen0_n = np.sum(spatial_x[int(p-aper2):int(p+aper2)]*profile[int(p-aper2):int(p+aper2)]) / \
+    cen0_n = np.sum(spatial_x[int(p-aper2):int(p+aper2)] * \
+                    profile[int(p-aper2):int(p+aper2)]) / \
                     np.sum(profile[int(p-aper2):int(p+aper2)]) 
     cen1_n = cen0_n - cen0_p + cen1_p
     profile = np.nanmedian(D_sub, axis=1)
     p = np.argmax(profile)
-    cen0_p = np.sum(spatial_x[int(p-aper2):int(p+aper2)]*profile[int(p-aper2):int(p+aper2)]) / \
+    cen0_p = np.sum(spatial_x[int(p-aper2):int(p+aper2)] * \
+                    profile[int(p-aper2):int(p+aper2)]) / \
                     np.sum(profile[int(p-aper2):int(p+aper2)]) 
 
     # aper0: mask the negative primary trace
@@ -1076,7 +1107,7 @@ def remove_starlight(D_full, V_full, f_star, cen0_p, cen1_p, aper0=50, aper1=10,
     mask =  ((spatial_x>cen1_n-aper1) & (spatial_x<cen1_n+aper1)) | \
             ((spatial_x>cen0_n-aper0) & (spatial_x<cen0_n+aper0))  
     
-    # not sure the secondary is located at which side
+    # check at which side the secondary is located
     if cen1_p - cen0_p > 0: 
         m = (~mask) & (spatial_x-cen0_p-aper1<0)
     else:
@@ -1092,8 +1123,9 @@ def remove_starlight(D_full, V_full, f_star, cen0_p, cen1_p, aper0=50, aper1=10,
         polys.append(poly)
 
     polys = np.array(polys)
-    polys_model = np.empty((D_full.shape[-1], polys.shape[-1]))
-    # suppose each polynomial coeffecient vary with wavelength linearly (1st order poly).
+    polys_model = np.zeros((D_full.shape[-1], polys.shape[-1]))
+    # suppose each polynomial coeffecient vary with wavelength linearly
+    # evaluate polynomials at the full x coordinates (dispersion axis)
     for d in range(polys.shape[-1]):
         polys_model[:, d] = Poly.polyval(np.arange(D_full.shape[-1]), \
             Poly.polyfit(x_sub + sub_factor/2., polys[:, d], 1))
@@ -1114,14 +1146,12 @@ def remove_starlight(D_full, V_full, f_star, cen0_p, cen1_p, aper0=50, aper1=10,
 
     profile_model = np.median(bkg, axis=1)
 
-    bkg = bkg * f_star / np.nanmedian(f_star)
+    bkg = bkg * np.nan_to_num(spec_star) / np.nanmedian(spec_star)
 
     if debug:
         plt.plot(profile)
         plt.plot(profile_model)
         plt.show()
-        # plt.imshow(D_full, vmin=-10, vmax=20, aspect='auto')
-        # plt.show()
         plt.imshow(D_full-bkg, vmin=-10, vmax=20, aspect='auto')
         plt.show()
 
@@ -1132,13 +1162,47 @@ def remove_starlight(D_full, V_full, f_star, cen0_p, cen1_p, aper0=50, aper1=10,
 def optimal_extraction(D_full, V_full, bpm_full, obj_cen, aper_half, \
                        badpix_clip=3, max_iter=10, \
                        gain=2., NDIT=1., etol=1e-6, debug=False):
+    """
+    Optimal extraction based on Horne(1986)
+
+    Parameters
+    ----------
+    D_full: array
+        cropped image of one order 
+    V_full: array
+        Variance of the input image accounting for background 
+        and readout noise
+    bpm_full: array
+        bad pixel map corresponding to the input image
+    obj_cen: float
+        location of the target on slit in fraction between [0,1] 
+    aper_half: int
+        half of extraction aperture in pixels
+    badpix_clip: int
+        sigma of bad pixel clipping 
+    max_iter: int
+        maximum number of iterations for bad pixel or cosmic ray rejection
+    gain: float
+        detector gain
+    NDIT: int
+        number of DIT exposure coadded
+    etol: float
+        The tolerance parameter to avoid division by 0
+
+    Returns
+    -------
+    f_opt, f_err: array
+        the extracted fluxes and their uncertainties
+    D, chi2_r: array
+        modeled slit function and reduced chi2 of the model (for plotting)
+    """
 
     D = D_full[:,obj_cen-aper_half:obj_cen+aper_half+1] # Observation
     V = V_full[:,obj_cen-aper_half:obj_cen+aper_half+1] # Variance
     bpm = bpm_full[:,obj_cen-aper_half:obj_cen+aper_half+1]
 
     # Sigma-clip the observation and add bad-pixels to map
-    filtered_D = stats.sigma_clip(D, sigma=badpix_clip, axis=0)
+    filtered_D = stats.sigma_clip(D, sigma=badpix_clip, axis=1)
     bpm = filtered_D.mask | bpm 
     M_bp_init = ~bpm.astype(bool)
     D = np.nan_to_num(D, nan=etol)
@@ -1160,9 +1224,19 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen, aper_half, \
                         D_norm[:,x], 2, M_bp_init[:,x], \
                         clip=badpix_clip, plotting=False)
         P[:,x] = p_model
-        # M_bp_init[:,x] = M_bp_new
-    P[P<=0] = etol
-
+    
+    # ensure the positivity of P, mute the values far away from peak
+    psf = np.mean(P, axis=0)
+    indice = np.argwhere(psf<=0).T[0]
+    if len(indice)>0:
+        ind = np.searchsorted(indice, len(psf)//2)
+        if ind == 0:
+            P[:, indice[0]:] = etol
+        elif ind < len(indice) and ind > 0:
+            P[:, :indice[ind-1]+1] = etol
+            P[:, indice[ind]:] = etol
+        elif ind == len(indice):
+            P[:, :indice[-1]+1] = etol
 
     # Normalize the polynomial model (profile) per pixel-column
     for w in wave_x:
@@ -1170,23 +1244,26 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen, aper_half, \
 
     ite = 0
     M_bp = np.copy(M_bp_init)
-    V_new = V + D / gain / NDIT
+    V_new = V + np.abs(D) / gain / NDIT
     while ite < max_iter:
         # Optimally extracted spectrum, obtained by accounting
         # for the profile and variance
         f_opt = np.sum(M_bp*P*D/V_new, axis=1) / (np.sum(M_bp*P*P/V_new, axis=1) + etol)
         
+        # M_bp[f_opt<0] = False
+
         # Residual of expanded optimally extracted spectrum and the observation
         Res = M_bp * (D - P*np.tile(f_opt, (P.shape[1],1)).T)**2/V_new
 
         # Calculate a new variance with the optimally extracted spectrum
-        V_new = V + P*np.tile(np.abs(f_opt), (P.shape[1],1)).T / gain / NDIT
+        V_new = V + np.abs(P*np.tile(np.abs(f_opt), (P.shape[1],1)).T) / gain / NDIT
 
         # Halt iterations if residuals are small enough
         if np.all(Res < badpix_clip**2):
             break
-
+        
         for x in wave_x:
+            # reject only one outlier at a time.
             if np.any(Res[x]>badpix_clip**2):
                 M_bp[x, np.argmax(Res[x]-badpix_clip**2)] = 0.
         ite += 1
@@ -1198,14 +1275,111 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen, aper_half, \
     f_opt[badchannel] = np.nan
     # Rescale the variance by the chi2
     chi2_r = np.sum(Res)/(np.sum(M_bp)-len(f_opt))
-    var = 1. / (np.sum(M_bp*P*P/V_new, axis=1)+etol) * chi2_r
 
+    if chi2_r > 1:
+        var = 1. / (np.sum(M_bp*P*P/V_new, axis=1)+etol) * chi2_r
+    else:
+        var = 1. / (np.sum(M_bp*P*P/V_new, axis=1)+etol)
 
     return f_opt, np.sqrt(var), [D.T, P.T], chi2_r
 
 
+def wlen_solution(fluxes, errs, w_init, transm_spec=None, 
+                p0_range=0.3, p1_range=0.03, p2_range=0.003,
+                minimum_strength=0.005, debug=False):
+    """
+    Method for refining wavelength solution by maximizing 
+    cross-correlation functions between the spectrum and a
+    telluric transmission model on a order-by-order basis.
 
-def wlen_solution(fluxes, w_init, blazes, transm_spec, mode='quad', minimum_strength=0.005, debug=False):
+    Parameters
+    ----------
+
+    mode: str
+        If mode is `linear`, then the wavelength solution is 
+        corrected with a linear function. If mode is `quad`,
+        the correction is a quadratic function.
+    debug : bool
+        generate plots for debugging.
+
+    Returns
+    -------
+    wlens: array
+        the refined wavelength solution
+        
+    """
+
+    # Prepare a function to interpolate the skycalc transmission
+    template_interp_func = interp1d(transm_spec[:,0], transm_spec[:,1], 
+                                    kind='linear')
+
+    def func_poly(poly, *args):
+        wave, flux, err = args
+
+        # Apply the polynomial coefficients
+        new_wave = Poly.polyval(wave - np.mean(wave), poly) + wave
+
+        # Interpolate the template onto the new wavelength grid
+        template = template_interp_func(new_wave)
+
+        # Minimize the chi-squared error, ignore the detector-edges
+        chi_squared = np.nansum(((template - flux)[10:-10] / err[10:-10])**2)
+
+        return chi_squared
+
+    wlens = []
+    for o in range(len(fluxes)):
+        f, f_err, wlen_init = fluxes[o], errs[o], w_init[o]
+        # normalize the sectrum
+        nans = np.isnan(f)
+        vmin, vmax = np.percentile(f[~nans], (1, 99)) 
+        f, f_err = f/vmax, f_err/vmax
+
+        index_o = (transm_spec[:,0]>np.min(wlen_init)) & \
+                  (transm_spec[:,0]<np.max(wlen_init))
+
+        # Check if there are enough telluric features in this wavelength range
+        if np.std(transm_spec[:,1][index_o]) > minimum_strength: 
+            
+            # Use scipy.optimize to find the best-fitting coefficients
+            res = optimize.minimize(
+                        func_poly, 
+                        args=(wlen_init[~nans], f[~nans], f_err[~nans]), 
+                        x0=[0,0,0], method='Nelder-Mead', tol=1e-8, 
+                        bounds=[(-p0_range,+p0_range),
+                                (-p1_range,+p1_range), 
+                                (-p2_range,+p2_range)]) 
+            poly_opt = res.x
+            if debug:
+                print(poly_opt)
+
+            # if the coefficient hits the prior edge, fitting is unsuccessful
+            # fall back to the 0th oder solution.
+            if np.isclose(np.abs(poly_opt[-1]), p2_range):
+                res = optimize.minimize(
+                        func_poly, 
+                        args=(wlen_init[~nans], f[~nans], f_err[~nans]), 
+                        x0=[0], method='Nelder-Mead', tol=1e-8, 
+                        bounds=[(-p0_range,+p0_range),
+                                # (-p1_range,+p1_range), 
+                                ])
+                poly_opt = res.x
+                if debug:
+                    print(poly_opt)
+            wlen_cal = wlen_init + \
+                    Poly.polyval(wlen_init - np.mean(wlen_init), poly_opt)     
+        else:
+            warnings.warn("Not enough telluric features to correct "
+                         f"wavelength for order {o}")
+            wlen_cal = wlen_init
+
+        wlens.append(wlen_cal)
+
+    return wlens
+
+
+def wlen_solution_slow(fluxes, err, w_init, blazes, transm_spec=None, 
+                    mode='quad', minimum_strength=0.005, debug=True):
     """
     Method for refining wavelength solution by maximizing 
     cross-correlation functions between the spectrum and a
