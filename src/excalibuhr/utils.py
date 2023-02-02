@@ -20,7 +20,10 @@ import matplotlib.pyplot as plt
 import matplotlib as mpl
 mpl.rc('image', interpolation='nearest', origin='lower')
 import warnings
-
+# from excalibuhr.data import SPEC2D
+import os
+import shutil
+import subprocess
 
 def wfits(fname, im, hdr=None, ext_list= None):
     """
@@ -411,7 +414,7 @@ def align_jitter(dt, err, pix_shift, tw=None, debug=False):
     return dt_shift, err_shift
 
 
-def order_trace(det, badpix, slitlen, sub_factor=128):
+def order_trace(det, badpix, slitlen, sub_factor=128, debug=True):
     """
     Trace the spectral orders
 
@@ -431,7 +434,8 @@ def order_trace(det, badpix, slitlen, sub_factor=128):
     [poly_upper, poly_lower]
         The polynomial coeffiences of upper and lower trace of each order
     """
-    
+    order_length_min = 0.5*slitlen
+
     im = np.ma.masked_array(det, mask=badpix)
 
     # Sub-sample the image along the dispersion axis
@@ -448,7 +452,7 @@ def order_trace(det, badpix, slitlen, sub_factor=128):
 
     # Set insignificant signal (<3sigma) to 0, only peaks are left 
     cont_std = np.nanstd(im_grad, axis=0)
-    im_grad[(im_grad < cont_std*3)] = 0
+    im_grad[(im_grad < cont_std*4)] = 0
     im_grad = np.nan_to_num(im_grad.data)
 
     width = 2
@@ -459,30 +463,52 @@ def order_trace(det, badpix, slitlen, sub_factor=128):
 
         # Find the pixels where the signal is significant
         indices = signal.argrelmax(yy)[0]
+        # reject narrow peaks caused by outliers 
+        # mask = [(yy[ind+1]+yy[ind-1])>0 for ind in indices]
+        # indices = indices[mask]
+        # indices = np.insert(indices, len(indices), 2043)
+        ind_distace = np.diff(indices)
+        # print(ind_distace, order_length_min)
 
-        if len(indices)%2!=0:
-            raise RuntimeError("Data are too noisy to clearly identify edges. " 
-                          "Please increase `sub_factor`.")
+        if ind_distace[0]<0.9*slitlen:
+            lows = indices[1::2]
+            # lows = indices[:-1][ind_distace>order_length_min]
+        else:
+            lows = indices[::2]
+        ups = indices[np.searchsorted(indices, lows)+1]
+
+        # if debug:
+        #     plt.plot(yy)
+        #     for ind in lows:
+        #         plt.axvline(ind, color='k')
+        #     for ind in ups:
+        #         plt.axvline(ind, color='r')
+        #     plt.show()
+
 
         # Find the y-coordinates of the edges, weighted by the 
         # significance of the signal (i.e. center-of-mass)
-        cens = np.array([np.sum(xx[int(p-width):int(p+width+1)]* \
+        cens_low = np.array([np.sum(xx[int(p-width):int(p+width+1)]* \
                                 yy[int(p-width):int(p+width+1)]) / \
                          np.sum(yy[int(p-width):int(p+width+1)]) \
-                         for p in indices])
-
-        # Order of y-coordinates is lower, upper, lower, ...
-        lower.append(cens[::2])
-        upper.append(cens[1::2])
+                         for p in lows])
+        cens_up = np.array([np.sum(xx[int(p-width):int(p+width+1)]* \
+                                yy[int(p-width):int(p+width+1)]) / \
+                         np.sum(yy[int(p-width):int(p+width+1)]) \
+                         for p in ups])
 
         # Real x-coordinate of this column
         xx_loc.append(xx_bin[i])
+        # Order of y-coordinates is lower, upper, lower, ...
+        lower.append(cens_low)
+        upper.append(cens_up)
+
 
     upper = np.array(upper).T
     lower = np.array(lower).T
     poly_upper, poly_lower = [], []
     poly_order = 2
-    order_length_min = 125
+    
     # Loop over each order
     for (loc_up, loc_low) in zip(upper, lower):
         # Fit polynomials to the upper and lower edges of each order
@@ -498,7 +524,7 @@ def order_trace(det, badpix, slitlen, sub_factor=128):
         if slit_len.min() < order_length_min:
             # skip the order that is incomplete
             continue
-        elif slit_len.max()-slit_len.min() > 2.:
+        elif np.mean(slit_len) < 0.9*slitlen:
             # the upper or lower trace hits the edge.
             if np.mean(yy_up) > im.shape[0]*0.5:
                 # refine the upper trace solution with fixed slit length
@@ -522,6 +548,16 @@ def order_trace(det, badpix, slitlen, sub_factor=128):
             poly_lower.append(poly_low)
 
     print(f"-> {len(poly_upper)} orders identified")
+
+    if debug:
+        xx_grid = np.arange(0, im.shape[1])
+        yy_trace = trace_polyval(xx_grid, [poly_lower, poly_upper])
+        trace_lower, trace_upper = yy_trace
+        plt.imshow(np.log10(im))
+        for yy_lower, yy_upper in zip(trace_lower, trace_upper):
+            plt.plot(xx, yy_lower, 'r')
+            plt.plot(xx, yy_upper, 'r')
+        plt.show()
 
     return [poly_lower, poly_upper]
 
@@ -682,7 +718,7 @@ def slit_curve(det, badpix, trace, wlen_min, wlen_max, sub_factor=4, debug=False
     return meta, x_fpet, wlen
 
 
-def trace_polyval(xx, tw, ):
+def trace_polyval(xx, tw):
     """
     evaluate trace polynomials given the pixel grid
 
@@ -1652,3 +1688,414 @@ def PolyfitClip(x, y, dg, m=None, w=None, clip=4., max_iter=10, \
             break
         ite+=1
     return y_model, poly#, mask
+
+def fit_continuum_clip(x, y, order, pixel_distance=50, sigma=1.5, max_iter=20):
+    x_mean = x - np.nanmean(x) 
+    A_full = np.vander(x_mean, order)
+
+    peak_inds, _ = signal.find_peaks(y, distance=pixel_distance)
+    x_peaks, y_peaks = x_mean[peak_inds], y[peak_inds]
+    mask = np.ones_like(x_peaks, dtype=bool)
+
+    for i in range(max_iter):
+        peak_inds = peak_inds[mask]
+        x_peaks = x_peaks[mask]
+        y_peaks = y_peaks[mask]
+        mask = np.ones_like(x_peaks, dtype=bool)
+        A_matrix = np.vander(x_peaks, order)
+        coeffs = np.linalg.solve(np.dot(A_matrix.T, A_matrix), 
+                                 np.dot(A_matrix.T, y_peaks))
+        y_model = np.dot(A_full, coeffs)
+        res = (y - y_model)[peak_inds]
+        # med = np.median(np.abs(res))
+        std = np.std(res)
+        # plt.scatter(x_peaks[mask], res)
+        # plt.axhline(-sigma*std)
+        if np.min(res) < -sigma*std:
+            mask[np.argmin(res)] = False
+        else:
+            break
+        # plt.plot(x, y)
+        # plt.scatter(x[peak_inds], y[peak_inds])
+        # plt.scatter(x_peaks[mask]+np.nanmean(x) , y_peaks[mask])
+        # plt.show()
+
+    return y_model, coeffs
+
+def fit_continuum(x, y, order, pixel_distance=500):
+    x_mean = x - np.nanmean(x) 
+    A_full = np.vander(x_mean, order)
+
+    peak_inds, _ = signal.find_peaks(y, distance=pixel_distance)
+    x_peaks, y_peaks = x_mean[peak_inds], y[peak_inds]
+
+
+    A_matrix = np.vander(x_peaks, order)
+    coeffs = np.linalg.solve(np.dot(A_matrix.T, A_matrix), 
+                                 np.dot(A_matrix.T, y_peaks))
+    y_model = np.dot(A_full, coeffs)
+
+    return y_model, coeffs
+
+
+
+def create_eso_recipe_config(
+    eso_recipe: str, outpath: str, verbose: bool
+    ) -> None:
+    """
+    Internal method for creating a configuration file with default
+    values for a specified `EsoRex` recipe. Also check if `EsorRex`
+    is found and raise an error otherwise.
+    From pycrires (see )
+
+    Parameters
+    ----------
+    eso_recipe : str
+        Name of the `EsoRex` recipe.
+    outpath : str
+        Path to save the config files.
+    verbose : bool
+        Print output produced by ``esorex``.
+
+    Returns
+    -------
+    NoneType
+        None
+    """
+
+    config_file = os.path.join(outpath, f"{eso_recipe}.rc") 
+
+    if shutil.which("esorex") is None:
+        raise RuntimeError(
+            "Esorex is not accessible from the command line. "
+            "Please make sure that the ESO pipeline is correctly "
+            "installed and included in the PATH variable."
+        )
+
+    if not os.path.exists(config_file):
+    # if True:
+        print()
+
+        esorex = ["esorex", f"--create-config={config_file}", eso_recipe]
+
+        if verbose:
+            stdout = None
+        else:
+            stdout = subprocess.DEVNULL
+
+        subprocess.run(esorex, cwd=outpath, stdout=stdout, check=True)
+
+        # Open config file and adjust some parameters
+        with open(config_file, "r", encoding="utf-8") as open_config:
+            config_text = open_config.read()
+
+        if eso_recipe == "molecfit_model":
+            config_text = config_text.replace(
+                "USE_INPUT_KERNEL=TRUE",
+                "USE_INPUT_KERNEL=FALSE",
+            )
+
+            config_text = config_text.replace(
+                "LIST_MOLEC=NULL",
+                "LIST_MOLEC=H2O,CO2,CO,CH4,O2,N2O",
+            )
+
+            config_text = config_text.replace(
+                "FIT_MOLEC=NULL",
+                "FIT_MOLEC=1,0,1,1,0,1",
+            )
+
+            config_text = config_text.replace(
+                "REL_COL=NULL",
+                "REL_COL=1.0,1.0,1.0,1.0,1.0,1.0",
+            )
+
+            # config_text = config_text.replace(
+            #     "LIST_MOLEC=NULL",
+            #     "LIST_MOLEC=H2O,CO2,CO,CH4",
+            # )
+
+            # config_text = config_text.replace(
+            #     "FIT_MOLEC=NULL",
+            #     "FIT_MOLEC=1,1,1,1",
+            # )
+
+            # config_text = config_text.replace(
+            #     "REL_COL=NULL",
+            #     "REL_COL=1.0,1.0,1.0,1.0",
+            # )
+
+            config_text = config_text.replace(
+                "MAP_REGIONS_TO_CHIP=1",
+                "MAP_REGIONS_TO_CHIP=NULL",
+            )
+
+            config_text = config_text.replace(
+                "COLUMN_LAMBDA=lambda",
+                "COLUMN_LAMBDA=WAVE",
+            )
+
+            config_text = config_text.replace(
+                "COLUMN_FLUX=flux",
+                "COLUMN_FLUX=FLUX",
+            )
+
+            config_text = config_text.replace(
+                "COLUMN_DFLUX=NULL",
+                "COLUMN_DFLUX=FLUX_ERR",
+            )
+
+            config_text = config_text.replace(
+                "PIX_SCALE_VALUE=0.086",
+                "PIX_SCALE_VALUE=0.056",
+            )
+
+            config_text = config_text.replace(
+                "FTOL=1e-10",
+                "FTOL=1e-8",
+            )
+
+            config_text = config_text.replace(
+                "XTOL=1e-10",
+                "XTOL=1e-8",
+            )
+
+            config_text = config_text.replace(
+                "CHIP_EXTENSIONS=FALSE",
+                "CHIP_EXTENSIONS=TRUE",
+            )
+
+            config_text = config_text.replace(
+                "FIT_WLC=0",
+                "FIT_WLC=1",
+            )
+
+            config_text = config_text.replace(
+                "WLC_N=1",
+                "WLC_N=1",
+            )
+
+            config_text = config_text.replace(
+                "WLC_CONST=-0.05",
+                "WLC_CONST=0.0",
+            )
+
+            # config_text = config_text.replace(
+            #     "FIT_RES_LORENTZ=TRUE",
+            #     "FIT_RES_LORENTZ=FALSE",
+            # )
+
+            config_text = config_text.replace(
+                "VARKERN=FALSE",
+                "VARKERN=TRUE",
+            )
+
+            config_text = config_text.replace(
+                "CONTINUUM_N=0",
+                "CONTINUUM_N=1",
+            )
+
+            # config_text = config_text.replace(
+            #     "CONTINUUM_CONST=1.0",
+            #     "CONTINUUM_CONST=1000.0",
+            # )
+
+        elif eso_recipe == "molecfit_calctrans":
+            config_text = config_text.replace(
+                "USE_INPUT_KERNEL=TRUE",
+                "USE_INPUT_KERNEL=FALSE",
+            )
+
+            config_text = config_text.replace(
+                "CHIP_EXTENSIONS=FALSE",
+                "CHIP_EXTENSIONS=TRUE",
+            )
+
+        elif eso_recipe == "molecfit_correct":
+            config_text = config_text.replace(
+                "CHIP_EXTENSIONS=FALSE",
+                "CHIP_EXTENSIONS=TRUE",
+            )
+
+        with open(config_file, "w", encoding="utf-8") as open_config:
+            open_config.write(config_text)
+
+        if not verbose:
+            print(" [DONE]")
+
+def molecfit(input_path, spec, wmin=None, wmax=None, target_name=None, verbose=False):
+    if target_name is None:
+        target_name = "SCIENCE.fits"
+
+    primary_hdu = fits.PrimaryHDU(header=spec.header)
+
+    hdul_out = fits.HDUList([primary_hdu])
+
+    w0 = spec.wlen[:,0]
+    w1 = spec.wlen[:,-1]
+    if wmin is None or wmax is None:
+        map_chip = range(1, spec.wlen.shape[0]+1)
+        wmin, wmax = w0, w1
+    else:
+        # map input wavelength ranges to chips
+        map_chip = np.zeros(len(wmin))
+        for i, (a, b) in enumerate(zip(wmin, wmax)):
+            for j, (x0, x1) in enumerate(zip(w0, w1)):
+                if a>x0 and b<x1:
+                    map_chip[i] = j+1
+        mask = (map_chip==0)
+        wmin, wmax = np.array(wmin)[~mask], np.array(wmax)[~mask]
+        map_chip = map_chip[~mask]
+
+    map_ext = range(0, spec.wlen.shape[0]+1)
+    wlc_fit = np.ones_like(map_chip, dtype=int)
+
+    # Loop over chips
+    for i_det in range(spec.wlen.shape[0]):
+        wave = spec.wlen[i_det]
+        flux = spec.flux[i_det]#/np.nanmedian(spec.flux[i_det])
+        flux_err = spec.err[i_det]#/np.nanmedian(spec.flux[i_det])
+        if verbose:   
+            plt.plot(wave, flux, color='k', alpha=0.7)
+        mask = np.isnan(flux) | np.isnan(flux_err)
+        col1 = fits.Column(name='WAVE', format='D', array=wave)
+        col2 = fits.Column(name='FLUX', format='D', array=flux)
+        col3 = fits.Column(name='FLUX_ERR', format='D', array=flux_err)
+        table_hdu = fits.BinTableHDU.from_columns([col1, col2, col3])
+        hdul_out.append(table_hdu)
+    if verbose:        
+        for a,b in zip(wmin, wmax): 
+            plt.axvspan(a, b, alpha=0.3, color='r')
+        plt.show()
+    # Create FITS file with SCIENCE
+    file_science = os.path.join(input_path, target_name)
+    hdul_out.writeto(file_science, overwrite=True)
+
+    # Create FITS file with WAVE_INCLUDE
+    col_wmin = fits.Column(name="LOWER_LIMIT", format="D", array=wmin)
+    col_wmax = fits.Column(name="UPPER_LIMIT", format="D", array=wmax)
+    col_map = fits.Column(name="MAPPED_TO_CHIP", format="I", array=map_chip)
+    col_wlc = fits.Column(name="WLC_FIT_FLAG", format="I", array=wlc_fit)
+    col_cont = fits.Column(name="CONT_FIT_FLAG", format="I", array=wlc_fit)
+    columns = [col_wmin, col_wmax, col_map, col_wlc, col_cont]
+    table_hdu = fits.BinTableHDU.from_columns(columns)
+    file_wave_inc = os.path.join(input_path, "WAVE_INCLUDE.fits")
+    table_hdu.writeto(file_wave_inc, overwrite=True)
+
+    # Create FITS file with MAPPING_ATMOSPHERIC
+    name = "ATM_PARAMETERS_EXT"
+    col_atm = fits.Column(name=name, format="K", array=map_ext)
+    table_hdu = fits.BinTableHDU.from_columns([col_atm])
+    file_map_atm = os.path.join(input_path, "MAPPING_ATMOSPHERIC.fits")
+    table_hdu.writeto(file_map_atm, overwrite=True)
+
+    # Create FITS file with MAPPING_CONVOLVE
+    name = "LBLRTM_RESULTS_EXT"
+    col_conv = fits.Column(name=name, format="K", array=map_ext)
+    table_hdu = fits.BinTableHDU.from_columns([col_conv])
+    file_map_conv = os.path.join(input_path, "MAPPING_CONVOLVE.fits")
+    table_hdu.writeto(file_map_conv, overwrite=True)
+
+    # Create FITS file with MAPPING_CORRECT
+    name = "TELLURIC_CORR_EXT"
+    col_corr = fits.Column(name=name, format="K", array=map_ext)
+    table_hdu = fits.BinTableHDU.from_columns([col_corr])
+    file_map_corr = os.path.join(input_path, "MAPPING_CORRECT.fits")
+    table_hdu.writeto(file_map_corr, overwrite=True)
+
+    # prepare sof and run molecfit_model with esorex
+    sof_file = os.path.join(input_path, "model.sof")
+    with open(sof_file, "w", encoding="utf-8") as sof_open:
+        sof_open.write(f'{file_science} SCIENCE\n')
+        sof_open.write(f'{file_wave_inc} WAVE_INCLUDE\n')
+
+    create_eso_recipe_config("molecfit_model", input_path, verbose=verbose)
+    config_file = os.path.join(input_path, "molecfit_model.rc")
+
+    esorex = [
+        "esorex",
+        f"--recipe-config={config_file}",
+        f"--output-dir={input_path}",
+        "molecfit_model",
+        sof_file,
+    ]
+
+    if verbose:
+        stdout = None
+    else:
+        stdout = subprocess.DEVNULL
+        print("Running EsoRex...", end="", flush=True)
+
+    subprocess.run(esorex, cwd=input_path, stdout=stdout, check=True)
+
+    if not verbose:
+        print(" [DONE]")
+
+    file_atm_par = os.path.join(input_path, "ATM_PARAMETERS.fits")
+    file_mol = os.path.join(input_path, "MODEL_MOLECULES.fits")
+    file_best_par = os.path.join(input_path, "BEST_FIT_PARAMETERS.fits")
+    # prepare sof and run molecfit_calctrans with esorex
+    sof_file = os.path.join(input_path, "calctrans.sof")
+    with open(sof_file, "w", encoding="utf-8") as sof_open:
+        sof_open.write(f'{file_science} SCIENCE\n')
+        sof_open.write(f'{file_map_atm} MAPPING_ATMOSPHERIC\n')
+        sof_open.write(f'{file_map_conv} MAPPING_CONVOLVE\n')
+        sof_open.write(f'{file_atm_par} ATM_PARAMETERS\n')
+        sof_open.write(f'{file_mol} MODEL_MOLECULES\n')
+        sof_open.write(f'{file_best_par} BEST_FIT_PARAMETERS\n')
+
+    create_eso_recipe_config("molecfit_calctrans", input_path, verbose=verbose)
+    config_file = os.path.join(input_path, "molecfit_calctrans.rc")
+
+    esorex = [
+        "esorex",
+        f"--recipe-config={config_file}",
+        f"--output-dir={input_path}",
+        "molecfit_calctrans",
+        sof_file,
+    ]
+
+    if verbose:
+        stdout = None
+    else:
+        stdout = subprocess.DEVNULL
+        print("Running EsoRex...", end="", flush=True)
+
+    subprocess.run(esorex, cwd=input_path, stdout=stdout, check=True)
+
+    if not verbose:
+        print(" [DONE]")
+
+    file_tellu_corr = os.path.join(input_path, "TELLURIC_CORR.fits")
+    # prepare sof and run molecfit_model with esorex
+    sof_file = os.path.join(input_path, "correct.sof")
+    with open(sof_file, "w", encoding="utf-8") as sof_open:
+        sof_open.write(f'{file_science} SCIENCE\n')
+        sof_open.write(f"{file_map_corr} MAPPING_CORRECT\n")
+        sof_open.write(f"{file_tellu_corr} TELLURIC_CORR\n")
+
+    create_eso_recipe_config("molecfit_correct", input_path, verbose=verbose)
+    config_file = os.path.join(input_path, "molecfit_correct.rc")
+
+    esorex = [
+        "esorex",
+        f"--recipe-config={config_file}",
+        f"--output-dir={input_path}",
+        "molecfit_correct",
+        sof_file,
+    ]
+
+    if verbose:
+        stdout = None
+    else:
+        stdout = subprocess.DEVNULL
+        print("Running EsoRex...", end="", flush=True)
+
+    subprocess.run(esorex, cwd=input_path, stdout=stdout, check=True)
+
+    if not verbose:
+        print(" [DONE]")
+
+    best_params = fits.getdata(file_best_par, 1)
+    np.savetxt(os.path.join(input_path, 'BEST_FIT_PARAMETERS.txt'), 
+                    best_params.tolist()[:-2], fmt='%s')
