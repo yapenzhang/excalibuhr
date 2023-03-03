@@ -1564,7 +1564,7 @@ def extract_spec(det, det_err, badpix, trace, slit_meta, blaze, spec_star,
 
 def optimal_extraction(D_full, V_full, bpm_full, obj_cen, aper_half=20, 
                        badpix_clip=5, filter_width=121,
-                       max_iter=40, extr_level=0.95, 
+                       max_iter=30, extr_level=0.95, 
                        gain=2., NDIT=1., etol=1e-6, debug=False):
     """
     Optimal extraction based on Horne(1986)
@@ -1630,7 +1630,7 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen, aper_half=20,
         # if np.median(snr) > 5:
         #     y[snr<5] = np.nan
         # clip bad pixels
-        y_filtered = stats.sigma_clip(y, sigma=badpix_clip)
+        y_filtered = stats.sigma_clip(y, sigma=3)
         mask = np.logical_not(np.logical_or(bpm[:,x], y_filtered.mask))
         if np.sum(mask) < 0.5*len(wave_x):
             P[:,x] = np.zeros_like(y)
@@ -1668,70 +1668,69 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen, aper_half=20,
     # determine the extraction aperture by including 95% flux
     cdf = np.cumsum(psf)     
     extr_aper = (cdf > (1.-extr_level)/2.) & (cdf < (1.+extr_level)/2.)
-    # print(spatial_x[aper_extr])
-
+    extr_aper_not = (cdf < (1.-extr_level)/2.) | (cdf > (1.+extr_level)/2.)
+    D[:, extr_aper_not] = 0.
+    V[:, extr_aper_not] = 1./etol
+    P[:, extr_aper_not] = etol
+    # plt.imshow(D, aspect='auto')
+    # plt.show()
+    # plt.imshow(P, aspect='auto')
+    # plt.show()
 
     # mask bad pixels
-    norm_filtered = stats.sigma_clip(D/P, sigma=badpix_clip, axis=1)
-    # M_bp = (np.logical_not(bpm) & np.logical_not(norm_filtered.mask)).astype(float)
-    M_bp = np.logical_not(np.logical_or(norm_filtered.mask, bpm)).astype(float)
-    M_bp = (np.logical_not(norm_filtered.mask)).astype(float)
-    # plt.imshow(bpm, aspect='auto')
-    # plt.show()
-    # plt.imshow(M_bp, aspect='auto')
-    # plt.show()
+    M_bp = np.ones_like(np.logical_not(bpm))
+    M_bp[:, extr_aper_not] = False
+    norm_filtered = stats.sigma_clip((D/P)[:,extr_aper], sigma=3, axis=1)
+    M_bp[:, extr_aper] &= np.logical_not(norm_filtered.mask)
+
     
     f_opt = np.sum(M_bp*P*D/V_new, axis=1) / (np.sum(M_bp*P*P/V_new, axis=1) + etol)
-    # V_new = V + np.abs(P*np.tile(f_std, (P.shape[1],1)).T) / gain / NDIT
-    # plt.plot(f_opt)
-    # plt.show()
+    V_new = V + np.abs(P*np.tile(f_opt, (P.shape[1],1)).T) / gain / NDIT
+
+    if debug:
+        plt.plot(f_std)
+        plt.plot(f_opt)
 
     for ite in range(max_iter):
 
-        # Residual of expanded optimally extracted spectrum and the observation
+        # Residual of optimally extracted spectrum and the observation
         Res = M_bp * (D - P*np.tile(f_opt, (P.shape[1],1)).T)**2/V_new
 
-        # plt.imshow(D[980:1000], vmin=-50, vmax=1e3, aspect='auto')
+        good_channels = np.all(Res<badpix_clip**2, axis=1)
+        f_prox = interp1d(wave_x[good_channels], f_opt[good_channels], 
+                    kind='cubic', bounds_error=False, fill_value=0.)(wave_x)
+        Res = M_bp * (D - P*np.tile(f_prox, (P.shape[1],1)).T)**2/V_new
+        bad_channels = np.any(Res>badpix_clip**2, axis=1)
+        # plt.plot(wave_x, bad_channels)
         # plt.show()
-        # plt.imshow(Res[980:1000], vmin=-50, vmax=50, aspect='auto')
+        # plt.imshow(M_bp[1450:1460], aspect='auto')
         # plt.show()
-
-        # Halt iterations if residuals are small enough
-        if np.all(Res < badpix_clip**2):
-            break
-
-        # fig, axes = plt.subplots(ncols=2, sharey=True)
-        # axes[0].imshow(M_bp[980:1000], aspect='auto')
-        for x in wave_x:
-            # for low S/N channels, mask 
-            # if np.sum(Res[x]>badpix_clip**2) > 0.5*len(Res[x]):
-            #     V_new[x] = 1./etol
-            # reject only one outlier at a time.
-            if np.any(Res[x]>badpix_clip**2):
-                M_bp[x, np.argmax(Res[x]-badpix_clip**2)] = 0.
-        
-        # axes[1].imshow(M_bp[980:1000], aspect='auto')
+        # plt.imshow(Res[1450:1460], aspect='auto')
         # plt.show()
+        # plt.imshow(D[1450:1460], vmin=0, vmax=np.max(D), aspect='auto')
+        # plt.show()
+        for x in wave_x[bad_channels]:
+            M_bp[x, np.argmax(Res[x]-badpix_clip**2)] = False
 
         # Optimally extracted spectrum, obtained by accounting
         # for the profile and variance
         f_opt = np.sum(M_bp*P*D/V_new, axis=1) / (np.sum(M_bp*P*P/V_new, axis=1) + etol)
         # Calculate a new variance with the optimally extracted spectrum
         V_new = V + np.abs(P*np.tile(f_opt, (P.shape[1],1)).T) / gain / NDIT 
-        # plt.plot(f_opt)
+        if not np.any(bad_channels):
+            break
 
-    # if debug:
-    # print(ite)
-    # plt.show()
+    # interpolate over bad wavelength channels which contain more than 40% bad pixels
+    good_channels = (np.sum(M_bp, axis=1) > np.sum(extr_aper)*0.6)
+    f_opt = interp1d(wave_x[good_channels], f_opt[good_channels], 
+                    kind='cubic', bounds_error=False, fill_value=0.)(wave_x)
+    if debug:
+        print(ite)
+        plt.plot(f_opt)
+        plt.show()
 
-    # Final optimally extracted spectrum
-    # f_opt = np.sum(M_bp*P*D/V_new, axis=1) / (np.sum(M_bp*P*P/V_new, axis=1)+etol)
-    # mask bad wavelength channels which contain more than 50% bad pixels
-    # badchannel = (np.sum(M_bp, axis=1) < len(spatial_x)*0.5)
-    # f_opt[badchannel] = np.nan
     # Rescale the variance by the reduced chi2
     chi2_r = np.nansum(Res)/(np.sum(M_bp)-len(f_opt))
-
     if chi2_r > 1:
         var = 1. / (np.sum(M_bp*P*P/V_new, axis=1)+etol) * chi2_r
     else:

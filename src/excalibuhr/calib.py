@@ -1209,7 +1209,7 @@ class CriresPipeline:
                             frames_err.append(dt_err)
 
                     # Mean-combine the images for each nodding position
-                    print("\nCombining {0:d} frames at nodding ".format(j+1),
+                    print("\nCombining {0:d} frames at nodding".format(j+1),
                          f"position {pos}")
                     combined, combined_err = su.combine_frames(
                                     frames, frames_err, collapse='mean')
@@ -1389,7 +1389,7 @@ class CriresPipeline:
             filename = os.path.join(self.outpath, '/'.join(paths))
             su.wfits(filename, ext_list={"FLUX": flux_sec, 
                                     "FLUX_ERR": err_sec}, header=hdr)
-            self._add_to_product('/'.join(paths), "Extr1D_PRIMARY")
+            self._add_to_product('/'.join(paths), "Extr1D_SECONDARY")
             self._plot_spec_by_order(filename, flux_sec)
             
             paths = file.split('/')
