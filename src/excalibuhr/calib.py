@@ -271,8 +271,10 @@ class CriresPipeline:
         """
 
         print(f"Output file -> {prod_type}: out/{file}")
-
-        header = fits.getheader(os.path.join(self.outpath, file))
+        if file[-4:] == 'fits':
+            header = fits.getheader(os.path.join(self.outpath, file))
+        else:
+            header = {}
 
         calib_dict = {}
         keywords = self.header_keys.values()
@@ -369,16 +371,18 @@ class CriresPipeline:
                 yy_trace = su.trace_polyval(xx, trace)
                 trace_lower, trace_upper = yy_trace
                 slit_meta, x_fpets = slit[i], x_fpet[i]
-                slit_poly = su.slit_polyval(x_fpets, slit_meta)
-                for (yy_upper, yy_lower, polys) in \
-                            zip(trace_upper, trace_lower, slit_poly):                    
+                # slit_poly = su.slit_polyval(x_fpets, slit_meta)
+                for (yy_upper, yy_lower, slope, x_peak) in \
+                            zip(trace_upper, trace_lower, slit_meta, x_fpets):                    
                     yy = np.arange(int(yy_lower.min()), int(yy_upper.max()+1))
-                    for x in range(len(polys)):
-                        ax.plot(Poly.polyval(yy, polys[x]), yy, ':r', zorder=9)
+                    for x in x_peak:
+                        xs = x - slope*(yy-(yy[0]+yy[-1])/2.)
+                        ax.plot(xs, yy, ':r', zorder=9)
             ax.set_title(f"Detector {i}", size='large', fontweight='bold')
 
         plt.suptitle(title)
         plt.savefig(savename[:-4]+'png')
+        # plt.show()
         plt.close(fig)
 
 
@@ -406,7 +410,7 @@ class CriresPipeline:
                                   (transm_spec[:,0]<xx[-1])
                         ax.plot(transm_spec[:,0][indices], 
                                 transm_spec[:,1][indices]*vmax, 
-                                color='orange', alpha=0.8,
+                                color='orange',
                                 label='Telluric template')
                     
                 ax.set_ylim((0.7*vmin, 1.1*vmax))
@@ -433,18 +437,21 @@ class CriresPipeline:
         plt.close(fig)
 
 
-    def _plot_extr_model(self, savename, D, chi2):
+    def _plot_extr_model(self, savename):
         self._set_plot_style()
-        # check data dimension
-        D, chi2 = np.array(D), np.array(chi2)
-        Ndet, Norder = D.shape[0], D.shape[1]
+        D, P, V, id_det, id_order, chi2 = self.load_extr2D(savename+'.npz')
+        Ndet, Norder = chi2.shape[0], chi2.shape[1]
         fig, axes = plt.subplots(nrows=Norder*2, ncols=Ndet, 
                         figsize=(2*Norder, 14), sharex=True, sharey=True,  
                         constrained_layout=True)
         for i in range(Ndet):
+            D_det = np.split(D, id_det)
+            P_det = np.split(P, id_det)
+            D_order = np.split(D_det[i], id_order[i])
+            P_order = np.split(P_det[i], id_order[i])
             for o in range(0, 2*Norder, 2):
                 ax_d, ax_m = axes[Norder*2-o-2, i], axes[Norder*2-o-1, i] 
-                data, model = D[i, o//2, 0], D[i, o//2, 1]
+                data, model = D_order[o//2], P_order[o//2]
                 nans = np.isnan(data)
                 vmin, vmax = np.percentile(data[~nans], (5, 95))
                 ax_d.imshow(data, vmin=vmin, vmax=vmax, aspect='auto')
@@ -452,10 +459,8 @@ class CriresPipeline:
                 ax_d.set_title(r"Order {0}, $\chi_r^2$: {1:.2f}".format(
                                         o//2, chi2[i, o//2]))
             axes[-1,i].set_xlabel(f"Detector {i}", size='large', fontweight='bold')
-        paths = savename.split('/')
-        paths[-1] = 'Model_' + paths[-1][:-4] 
-        savename = os.path.join(self.outpath, '/'.join(paths))
-        plt.savefig(savename+'png')
+        plt.savefig(savename+'.png')
+        # plt.show()
         plt.close(fig)
 
 
@@ -511,7 +516,7 @@ class CriresPipeline:
             # Save the master dark, read-out noise, and bad-pixel maps
             file_name = os.path.join(self.calpath, 
                             f'DARK_MASTER_DIT{item}.fits')
-            su.wfits(file_name, master, hdr)
+            su.wfits(file_name, ext_list={"FLUX": master}, header=hdr)
             self._add_to_calib(f'DARK_MASTER_DIT{item}.fits', 
                             "DARK_MASTER")
             self._plot_det_image(file_name, f"DARK_MASTER, DIT={item:.1f}",
@@ -519,13 +524,13 @@ class CriresPipeline:
             
             file_name = os.path.join(self.calpath, 
                             f'DARK_RON_DIT{item}.fits')
-            su.wfits(file_name, rons, hdr)
+            su.wfits(file_name, ext_list={"FLUX": rons}, header=hdr)
             self._add_to_calib(f'DARK_RON_DIT{item}.fits', 
                             "DARK_RON")
 
             file_name = os.path.join(self.calpath, 
                             f'DARK_BPM_DIT{item}.fits')
-            su.wfits(file_name, badpix.astype(int), hdr)
+            su.wfits(file_name, ext_list={"FLUX": badpix.astype(int)}, header=hdr)
             self._add_to_calib(f'DARK_BPM_DIT{item}.fits', 
                             "DARK_BPM")
 
@@ -618,12 +623,12 @@ class CriresPipeline:
             # Save the master flat and bad-pixel map
             file_name = os.path.join(self.calpath, 
                             f'FLAT_MASTER_{item_wlen}.fits')
-            su.wfits(file_name, master, hdr)
+            su.wfits(file_name, ext_list={"FLUX": master}, header=hdr)
             self._add_to_calib(f'FLAT_MASTER_{item_wlen}.fits', "FLAT_MASTER")
 
             file_name = os.path.join(self.calpath, 
                             f'FLAT_BPM_{item_wlen}.fits')
-            su.wfits(file_name, badpix.astype(int), hdr)
+            su.wfits(file_name, ext_list={"FLUX": badpix.astype(int)}, header=hdr)
             self._add_to_calib(f'FLAT_BPM_{item_wlen}.fits', 
                             "FLAT_BPM")
             
@@ -711,7 +716,7 @@ class CriresPipeline:
             print("\n Output files:")
             # Save the polynomial coefficients
             file_name = os.path.join(self.calpath, f'TW_FLAT_{item_wlen}.fits')
-            su.wfits(file_name, trace, hdr)
+            su.wfits(file_name, ext_list={"FLUX": trace}, header=hdr)
             self._add_to_calib(f'TW_FLAT_{item_wlen}.fits', "TRACE_TW")
             
             self._plot_det_image(file_name, f"FLAT_MASTER_{item_wlen}", 
@@ -806,7 +811,7 @@ class CriresPipeline:
             # Assess the slit curvature and wavelengths along the orders
             slit = self._loop_over_detector(su.slit_curve, True,
                             fpet, bpm, tw, wlen_mins, wlen_maxs,
-                            sub_factor=sub_factor, debug=debug)
+                            debug=debug)
             meta, x_fpet, wlen = slit
 
             print("\n Output files:")
@@ -814,7 +819,7 @@ class CriresPipeline:
             # and an initial wavelength solution
             file_name = os.path.join(self.calpath, 
                             f'SLIT_TILT_{item_wlen}.fits')
-            su.wfits(file_name, meta, hdr)
+            su.wfits(file_name, ext_list={"FLUX": meta}, header=hdr)
             self._add_to_calib(f'SLIT_TILT_{item_wlen}.fits', "SLIT_TILT")
 
             self._plot_det_image(file_name, f"FPET_{item_wlen}", 
@@ -822,7 +827,7 @@ class CriresPipeline:
 
             file_name = os.path.join(self.calpath, 
                             f'INIT_WLEN_{item_wlen}.fits')
-            su.wfits(file_name, wlen, hdr)
+            su.wfits(file_name, ext_list={"WAVE": wlen}, header=hdr)
             self._add_to_calib(f'INIT_WLEN_{item_wlen}.fits', "INIT_WLEN")
             
 
@@ -888,18 +893,18 @@ class CriresPipeline:
             print("\n Output files:")
             file_name = os.path.join(self.calpath, 
                                     f'FLAT_NORM_{item_wlen}.fits')
-            su.wfits(file_name, flat_norm, hdr)
+            su.wfits(file_name, ext_list={"FLUX": flat_norm}, header=hdr)
             self._add_to_calib(f'FLAT_NORM_{item_wlen}.fits', "FLAT_NORM")
             self._plot_det_image(file_name, f"FLAT_NORM_{item_wlen}", 
                             flat_norm, tw=trace_update)
 
             file_name = os.path.join(self.calpath, f'BLAZE_{item_wlen}.fits')
-            su.wfits(file_name, blazes, hdr)
+            su.wfits(file_name, ext_list={"FLUX": blazes}, header=hdr)
             self._add_to_calib(f'BLAZE_{item_wlen}.fits', "BLAZE")
             self._plot_spec_by_order(file_name, blazes) 
 
             file_name = os.path.join(self.calpath, f'TW_FLAT_{item_wlen}.fits')
-            su.wfits(file_name, trace_update, hdr)
+            su.wfits(file_name, ext_list={"FLUX": trace_update}, header=hdr)
         
             
 
@@ -1114,7 +1119,8 @@ class CriresPipeline:
             file_name = os.path.join(self.noddingpath, 
                             "Nodding_"+ object.replace(" ", "") + \
                             f"_{item_wlen}_{file}")
-            su.wfits(file_name, frame_bkg_cor, hdr, ext_list=err_bkg_cor)
+            su.wfits(file_name, ext_list={"FLUX": frame_bkg_cor, 
+                                "FLUX_ERR": err_bkg_cor}, header=hdr)
 
             print(f"\nProcessed file {file} at nod position {pos}")
             self._add_to_product("./obs_nodding/Nodding_" + \
@@ -1192,11 +1198,11 @@ class CriresPipeline:
                             hdr = hdu[0].header
                             # in case of jittering
                             if np.isclose(hdr[self.key_jitter], 0):
-                                dt, dt_err = hdu[0].data, hdu[1].data
+                                dt, dt_err = hdu["FLUX"].data, hdu["FLUX_ERR"].data
                             else:
                                 # apply integer shift only to align frames
                                 dt, dt_err = su.align_jitter(
-                                    hdu[0].data, hdu[1].data, 
+                                    hdu["FLUX"].data, hdu["FLUX_ERR"].data, 
                                     int(np.round(
                                         hdr[self.key_jitter]/self.pix_scale)))                            
                             frames.append(dt)
@@ -1212,7 +1218,8 @@ class CriresPipeline:
                     file_name = os.path.join(self.noddingpath, 
                             "Combined_"+ object.replace(" ", "") + \
                             f"_{item_wlen}_Nodding_{pos}.fits")
-                    su.wfits(file_name, combined, hdr, ext_list=combined_err)
+                    su.wfits(file_name, ext_list={"FLUX": combined, 
+                                "FLUX_ERR": combined_err}, header=hdr)
                     self._add_to_product("./obs_nodding/Combined_"+ \
                             object.replace(" ", "") + \
                             f"_{item_wlen}_Nodding_{pos}.fits", 
@@ -1225,7 +1232,7 @@ class CriresPipeline:
     def obs_extract(self, caltype='NODDING_COMBINED',
                           peak_frac=None, companion_sep=None, 
                           bkg_subtract=False, 
-                          aper_prim=20, aper_comp=10, debug=False):    
+                          aper_prim=15, aper_comp=10, debug=False):    
         # TODO: for staring obs, what's the header info for nodpos?
         """
         Method for extracting. Apply AB pair subtraction,
@@ -1327,35 +1334,42 @@ class CriresPipeline:
                             companion_sep,bkg_subtract, debug):
         with fits.open(os.path.join(self.outpath, file)) as hdu:
             hdr = hdu[0].header
-            dt = hdu[0].data
-            dt_err = hdu[1].data
+            dt = hdu["FLUX"].data
+            dt_err = hdu["FLUX_ERR"].data
         pos = hdr[self.key_nodpos]
         slitlen = hdr[self.key_slitlen]
         ndit = hdr[self.key_NDIT]
-
+           
         if peak_frac is not None:
             f0 = peak_frac[pos]*slitlen/self.pix_scale
         else:
             f0 = None
 
-        # Extract 1D spectrum of the target
+        # Extract 1D (and 2D) spectrum of the target
         result = self._loop_over_detector(
                         su.extract_spec, False,
                         dt, dt_err, bpm, tw, slit, blaze, blaze, 
                         self.gain, NDIT=ndit,
                         cen0=f0, 
                         aper_half=aper_prim, debug=debug)
-        flux_pri, err_pri, D, chi2_r = result
+        flux_pri, err_pri, D, P, V, id_order, chi2_r = result
+
 
         paths = file.split('/')
         paths[-1] = 'Extr1D_PRIMARY_' + paths[-1]
-        file_name = os.path.join(self.outpath, '/'.join(paths))
-        su.wfits(file_name, flux_pri, hdr, ext_list=err_pri)
+        filename = os.path.join(self.outpath, '/'.join(paths))
+        su.wfits(filename, ext_list={"FLUX": flux_pri, 
+                                "FLUX_ERR": err_pri}, header=hdr)
         self._add_to_product('/'.join(paths), "Extr1D_PRIMARY")
-
-        self._plot_extr_model(file_name, D, chi2_r)
-        self._plot_spec_by_order(file_name, flux_pri) 
+        self._plot_spec_by_order(filename, flux_pri)
         
+        paths = file.split('/')
+        paths[-1] = 'Extr2D_PRIMARY_' + paths[-1][:-5]
+        filename2d = os.path.join(self.outpath, '/'.join(paths))
+        self.save_extr2D(filename2d, D, P, V, id_order, chi2_r)
+        self._add_to_product('/'.join(paths)+'.npz', "Extr2D_PRIMARY")
+        self._plot_extr_model(filename2d)
+
         if not companion_sep is None:
 
             # Extract a 1D spectrum for the secondary
@@ -1368,17 +1382,42 @@ class CriresPipeline:
                             aper_half=aper_comp, 
                             bkg_subtract=bkg_subtract,
                             debug=debug)
-            flux_sec, err_sec, D, chi2_r = result
+            flux_sec, err_sec, D, P, V, id_order, chi2_r = result
 
             paths = file.split('/')
             paths[-1] = 'Extr1D_SECONDARY_' + paths[-1]
-            file_name = os.path.join(self.outpath, '/'.join(paths))
-            su.wfits(file_name, flux_sec, hdr, ext_list=err_sec)
-            self._add_to_product('/'.join(paths), "Extr1D_SECONDARY")
+            filename = os.path.join(self.outpath, '/'.join(paths))
+            su.wfits(filename, ext_list={"FLUX": flux_sec, 
+                                    "FLUX_ERR": err_sec}, header=hdr)
+            self._add_to_product('/'.join(paths), "Extr1D_PRIMARY")
+            self._plot_spec_by_order(filename, flux_sec)
+            
+            paths = file.split('/')
+            paths[-1] = 'Extr2D_SECONDARY_' + paths[-1][:-5]
+            filename2d = os.path.join(self.outpath, '/'.join(paths))
+            self.save_extr2D(filename2d, D, P, V, id_order, chi2_r)
+            self._add_to_product('/'.join(paths)+'.npz', "Extr2D_SECONDARY")
+            self._plot_extr_model(filename2d)
 
-            self._plot_extr_model(file_name, D, chi2_r)
-            self._plot_spec_by_order(file_name, flux_sec) 
 
+    def save_extr2D(self, filename, *ragged_list):
+        D, P, V, id_order, chi2 = ragged_list
+        D_stack, id_det = su.stack_ragged(D)
+        P_stack, id_det = su.stack_ragged(P)
+        V_stack, id_det = su.stack_ragged(V)
+        np.savez(filename, FLUX=D_stack, FLUX_ERR=V_stack,
+                        MODEL=P_stack, id_det=id_det, id_order=id_order,
+                        chi2=chi2)
+
+    def load_extr2D(self, filename):
+        data = np.load(filename)
+        D = data['FLUX']
+        V = data['FLUX_ERR']
+        P = data['MODEL']
+        id_det = data['id_det']
+        id_order = data['id_order']
+        chi2 = data['chi2']
+        return D, P, V, id_det, id_order, chi2
 
     def refine_wlen_solution(self, run_skycalc=True, 
                             data_type='Extr1D_PRIMARY', 
@@ -1459,8 +1498,8 @@ class CriresPipeline:
             # sum available spectra 
             for file in self.product_info[indices_wlen][self.key_filename]:
                 with fits.open(os.path.join(self.outpath, file)) as hdu:
-                    dt.append(hdu[0].data)
-                    dt_err.append(hdu[1].data)
+                    dt.append(hdu["FLUX"].data)
+                    dt_err.append(hdu["FLUX_ERR"].data)
             dt, dt_err = su.combine_frames(dt, dt_err, collapse='sum')
 
             wlen_cal = self._loop_over_detector(su.wlen_solution, True,
@@ -1469,7 +1508,7 @@ class CriresPipeline:
 
             print("\n Output files:")
             file_name = os.path.join(self.corrpath, f'WLEN_{item_wlen}.fits')
-            su.wfits(file_name, wlen_cal, hdr)
+            su.wfits(file_name, ext_list={"WAVE": wlen_cal}, header=hdr)
             self._add_to_product(f'./obs_calibrated/WLEN_{item_wlen}.fits', 
                         "CAL_WLEN")
 
@@ -1549,8 +1588,8 @@ class CriresPipeline:
                     for file in self.product_info[indices_wlen][self.key_filename]:
                         with fits.open(os.path.join(self.outpath, file)) as hdu:
                             hdr = hdu[0].header
-                            dt.append(hdu[0].data)
-                            dt_err.append(hdu[1].data)
+                            dt.append(hdu["FLUX"].data)
+                            dt_err.append(hdu["FLUX_ERR"].data)
                     master, master_err = su.combine_frames(
                                     dt, dt_err, collapse='mean')
                     specs.append(master)
@@ -1565,14 +1604,14 @@ class CriresPipeline:
                 file_name = os.path.join(self.corrpath, 
                             object.replace(" ", "") +\
                             f'_{l}_CRIRES_SPEC2D.fits')
-                su.wfits(file_name, specs, hdr=hdr, 
-                            ext_list=(errs, wlens))
+                su.wfits(file_name, ext_list={"FLUX": specs, "FLUX_ERR":errs,
+                                            "WAVE": wlens}, header=hdr)
                 self._add_to_product("./obs_calibrated/" +\
                                     object.replace(" ", "") +\
                                     f'_{l}_CRIRES_SPEC2D.fits', 
                                      f"SPEC_{l}")
 
-                result = SPEC2D(wlens, specs, errs)
+                result = SPEC2D(wlen=wlens, flux=specs, err=errs)
                 result.plot_spec1d(file_name[:-4]+'png')
                 result.save_spec1d(file_name[:-4]+'dat')
 
@@ -1687,7 +1726,7 @@ class CriresPipeline:
 
         transm_spec = np.column_stack((1e3 * wave.value, trans))
         out_file= os.path.join(self.calpath, "TRANSM_SPEC.fits")
-        su.wfits(out_file, transm_spec)
+        su.wfits(out_file, ext_list={"FLUX": transm_spec})
         self._add_to_calib('TRANSM_SPEC.fits', "TELLU_SKYCALC")
 
 
@@ -1745,26 +1784,6 @@ class CriresPipeline:
         su.molecfit(input_path, dt, wmin, wmax, 
                     target_name=science_file.split('/')[-1], verbose=True)
 
-        # # reformat molecfit output, add output files to product info
-        # wlens, specs, errs = [], [], []
-        # file_tac = "SCIENCE_TELLURIC_CORR_{}".format(science_file.split('/')[-1])
-        # with fits.open(os.path.join(input_path, file_tac)) as hdu:
-        #     hdr = hdu[0].header
-        #     for i in range(1, len(hdu)):
-        #         wlens.append(hdu[i].data['WAVE'])
-        #         specs.append(hdu[i].data['FLUX'])
-        #         errs.append(hdu[i].data['FLUX_ERR'])
-
-        # Nx = len(wlens[0])
-        # with fits.open(os.path.join(input_path, "TELLURIC_DATA.fits")) as hdu:
-        #     dt = hdu[1].data
-        #     mwlen = np.reshape(dt['mlambda'], (-1, Nx))*1e3
-        #     mtrans = np.reshape(dt['mtrans'], (-1, Nx))
-        # su.wfits(os.path.join(self.molpath, "TELLURIC_MODEL.fits"), 
-        #             [mwlen, mtrans])
-        # self._add_to_product("./molecfit/TELLURIC_MODEL.fits", f"TELLU")
-
-
 
     def apply_telluric_correction(self):
         """
@@ -1804,8 +1823,8 @@ class CriresPipeline:
         
         for file in self.product_info[indices][self.key_filename]:
             with fits.open(os.path.join(self.outpath, file)) as hdu:
-                specs = hdu[0].data
-                errs = hdu[1].data
+                specs = hdu["FLUX"].data
+                errs = hdu["FLUX_ERR"].data
             specs /= mtrans
             errs /= mtrans
 
@@ -1858,7 +1877,7 @@ class CriresPipeline:
             self.run_molecfit(wmin=wmin, wmax=wmax)
             self.apply_telluric_correction()
 
-    def test_run_recipes(self, companion_sep=None, bkg_subtract=False, 
+    def preprocessing_recipes(self, companion_sep=None, bkg_subtract=False, 
                     aper_prim=20, aper_comp=10, 
                     run_molecfit=False, wmin=None, wmax=None) -> None:
         """
@@ -1876,23 +1895,21 @@ class CriresPipeline:
         NoneType
             None
         """
-        # self.extract_header()
-        # self.cal_dark()
-        # self.cal_flat_raw()
-        # self.cal_flat_trace()
-        # self.cal_slit_curve()
-        # self.cal_flat_norm()
-        # self.obs_nodding()
-        # self.obs_nodding_combine()
+        self.extract_header()
+        self.cal_dark()
+        self.cal_flat_raw()
+        self.cal_flat_trace()
+        self.cal_slit_curve()
+        self.cal_flat_norm()
+        self.obs_nodding()
+        self.obs_nodding_combine()
         # self.obs_extract(companion_sep=companion_sep, aper_prim=aper_prim,
-        #                  bkg_subtract=bkg_subtract)
-        # self.refine_wlen_solution(run_skycalc=True, debug=False)
+        #                  bkg_subtract=bkg_subtract, debug=True)
+        # self.refine_wlen_solution(run_skycalc=True, debug=True)
         # self.save_extracted_data()
         # if run_molecfit:
         #     self.run_molecfit(wmin=wmin, wmax=wmax, verbose=True)
             # self.apply_telluric_correction()
-            
-
     
 
 
