@@ -1132,10 +1132,9 @@ class CriresPipeline:
                         f"{object}_NODDING_FRAME_{item_wlen}", frame_bkg_cor)
     
 
-    def obs_nodding_combine(self):
+    def obs_nodding_combine(self, clip=3):
         """
-        Method for combining multiple nodding exposures to single 
-        A and B farme.
+        Method for combining multiple nodding exposures to single A or B farme.
 
         Returns
         -------
@@ -1212,7 +1211,8 @@ class CriresPipeline:
                     print("\nCombining {0:d} frames at nodding".format(j+1),
                          f"position {pos}")
                     combined, combined_err = su.combine_frames(
-                                    frames, frames_err, collapse='mean')
+                                        frames, frames_err, 
+                                        collapse='mean', clip=clip)
                     
                     # Save the combined obs_nodding observation
                     file_name = os.path.join(self.noddingpath, 
@@ -1233,7 +1233,6 @@ class CriresPipeline:
                           peak_frac=None, companion_sep=None, 
                           bkg_subtract=False, 
                           aper_prim=15, aper_comp=10, debug=False):    
-        # TODO: for staring obs, what's the header info for nodpos?
         """
         Method for extracting. Apply AB pair subtraction,
         readout artifacts correction, and flat fielding.
@@ -1315,8 +1314,6 @@ class CriresPipeline:
                 slit = fits.getdata(os.path.join(self.calpath, file))
                 file = self.calib_info[indices_blaze][self.key_filename].iloc[0]
                 blaze = fits.getdata(os.path.join(self.calpath, file))
-                # file = self.calib_info[indices_wave][self.key_filename].iloc[0]
-                # wlens = fits.getdata(os.path.join(self.calpath, file))
                 
                 # Loop over each observation
                 for file in self.product_info[indices_wlen][self.key_filename]:
