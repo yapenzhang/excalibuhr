@@ -829,6 +829,65 @@ def slit_polyval(xx, meta):
 
     return slit
 
+def spectral_rectify_bin(im, badpix, trace, slit, debug=False):
+
+    bpm = np.logical_not((badpix.astype(bool) | np.isnan(im)))
+    im = np.nan_to_num(im)
+    # Evaluate order traces and slit curvature
+    xx = np.arange(im.shape[1])
+    col = len(xx)//2
+
+    yy_trace = trace_polyval(xx, trace)
+    trace_lower, trace_upper = yy_trace
+
+    im_rect = np.copy(im)
+    # Loop over each order
+    for (yy_upper, yy_lower, slope) in \
+        zip(trace_upper, trace_lower, slit):
+
+        yy = np.arange(int(yy_lower.max()+1), int(yy_upper.min()))
+        yy_edge = np.arange(int(yy_lower.max()+1), int(yy_upper.min())+1)
+        
+        # map the regular grid to the slit-tilted grid
+        xx_slit = np.array([xx - slope*(row-(yy[0]+yy[-1])/2.) for row in yy_edge])
+
+        # for each wavelength channel in the regular grid, 
+        # find out three (or two) pixels that the slanted slit passes through, and
+        # combine their counts weighting by the area of each pixel covered by the slit 
+        for row in yy:
+            row_sub = row - yy[0]
+            # calculate the area of each pixel covered by the slanted slit
+            if np.floor(xx_slit[row_sub,col]) == np.floor(xx_slit[row_sub+1,col]):
+                s2 = (np.floor(xx_slit[row_sub,col]+1) - xx_slit[row_sub,col] + np.floor(xx_slit[row_sub+1,col]+1) - xx_slit[row_sub+1,col])/2.
+                s3 = 1. - s2
+                s1 = 0.
+            else:
+                s1 = (np.floor(xx_slit[row_sub+1,col]+1) - xx_slit[row_sub+1,col])**2/2./slope
+                s3 = (xx_slit[row_sub,col] - np.floor(xx_slit[row_sub,col]))**2/2./slope
+                s2 = 1. - s1 - s3
+            weights = np.array([s1, s2, s3])
+            # print(weights)
+            for x in xx:
+                # skip detector edges
+                if (np.floor(xx_slit[row_sub,x])-1 >= 0) and (np.floor(xx_slit[row_sub,x])+1 < len(xx)):
+                    bins = im[row,int(np.floor(xx_slit[row_sub,x])-1):int(np.floor(xx_slit[row_sub,x])+2)]
+                    mask = bpm[row,int(np.floor(xx_slit[row_sub,x])-1):int(np.floor(xx_slit[row_sub,x])+2)]
+                    # skip bad pixels
+                    if np.any(weights[mask]):
+                        weights /= np.sum(weights[mask])
+                        im_rect[row,x] = np.dot(bins[mask], weights[mask])
+                    else:
+                        im_rect[row,x] = np.nan
+                else:
+                    im_rect[row,x] = np.nan
+    if debug:
+        vmin, vmax = np.percentile(im_rect[~np.isnan(im_rect)], [5, 95])
+        plt.imshow(im_rect, vmin=vmin, vmax=vmax)
+        plt.show()
+    
+    return im_rect                           
+
+
 def spectral_rectify_interp(im_list, badpix, trace, slit, reverse=False, debug=False):
     if np.array(im_list).ndim == 3:
         im = np.array(im_list)
@@ -880,7 +939,7 @@ def spectral_rectify_interp(im_list, badpix, trace, slit, reverse=False, debug=F
     if np.array(im_list).ndim == 2:
         return im_rect[0]
     else:
-        return im_rect                           
+        return im_rect       
 
 
 def spectral_rectify_interp_complex(im_list, badpix, trace, slit_meta, reverse=False, debug=False):
@@ -1299,7 +1358,7 @@ def remove_starlight(D_full, V_full, spec_star, cen0_p, cen1_p,
 
 def extract_spec(det, det_err, badpix, trace, slit_meta, blaze, spec_star, 
                     gain, NDIT=1, cen0=90, companion_sep=None, aper_half=20, 
-                    bkg_subtract=False, debug=False):
+                    bkg_subtract=False, interpolation=True, debug=False):
     """
     Extract 1D spectra from detector images
 
@@ -1348,8 +1407,12 @@ def extract_spec(det, det_err, badpix, trace, slit_meta, blaze, spec_star,
     """
 
     # Correct for the slit curvature and trace curvature
-    dt_rect = spectral_rectify_interp([det, det_err],  
-                            badpix, trace, slit_meta, debug=False)
+    if interpolation:
+        dt_rect = spectral_rectify_interp([det, det_err], badpix, trace, slit_meta, debug=False)
+    else:
+        im_rect = spectral_rectify_bin(det, badpix, trace, slit_meta, debug=False)
+        err_rect = spectral_rectify_bin(det_err, badpix, trace, slit_meta, debug=False)
+        dt_rect = [im_rect, err_rect]
     dt_rect = trace_rectify_interp(dt_rect, trace, debug=False) 
 
     im, im_err = dt_rect
@@ -1360,7 +1423,7 @@ def extract_spec(det, det_err, badpix, trace, slit_meta, blaze, spec_star,
 
     # pix_scale = 0.056
     flux, err, D, P, V, chi2 = [],[],[],[],[],[]
-    for o, (yy_upper, yy_lower) in enumerate(zip(trace_upper, trace_lower)):
+    for o, (yy_upper, yy_lower, slope) in enumerate(zip(trace_upper, trace_lower, slit_meta)):
         # Crop out the order from the frame
         # slit_len = np.mean(yy_upper-yy_lower)
         yy_upper = yy_upper[len(xx_grid)//2]
@@ -1406,12 +1469,14 @@ def extract_spec(det, det_err, badpix, trace, slit_meta, blaze, spec_star,
     return flux, err, D_stack, P_stack, V_stack, id_order, chi2 
 
 
-def optimal_extraction(D_full, V_full, bpm_full, obj_cen, aper_half=20, 
+def optimal_extraction(D_full, V_full, bpm_full, obj_cen, 
+                       aper_half=20, 
                        badpix_clip=5, filter_width=121,
                        max_iter=30, extr_level=0.95, 
                        gain=2., NDIT=1., etol=1e-6, debug=False):
     """
     Optimal extraction based on Horne(1986)
+
     Parameters
     ----------
     D_full: array
@@ -1467,12 +1532,6 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen, aper_half=20,
     # For each row, apply a median filter while clipping bad pixels
     for x in spatial_x:
         y = D_norm[:,x]
-        # mask channels where snr < 5
-        # snr = D[:,x]/np.sqrt(V_new[:,x])
-        # plt.plot(snr)
-        # plt.show()
-        # if np.median(snr) > 5:
-        #     y[snr<5] = np.nan
         # clip bad pixels
         y_filtered = stats.sigma_clip(y, sigma=3)
         mask = np.logical_not(np.logical_or(bpm[:,x], y_filtered.mask))
@@ -1505,9 +1564,9 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen, aper_half=20,
     # Normalize the spatial profile per wavelength channel
     for w in wave_x:
         P[w] /= np.sum(P[w])
-    if debug:
-        plt.imshow(P, aspect='auto')
-        plt.show()
+    # if debug:
+    #     plt.imshow(P, aspect='auto')
+    #     plt.show()
 
     # determine the extraction aperture by including 95% flux
     cdf = np.cumsum(psf)     
@@ -1516,67 +1575,75 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen, aper_half=20,
     D[:, extr_aper_not] = 0.
     V[:, extr_aper_not] = 1./etol
     P[:, extr_aper_not] = etol
-    # print(spatial_x[extr_aper])
-    # plt.imshow(D, aspect='auto')
-    # plt.show()
-    # plt.imshow(P, aspect='auto')
-    # plt.show()
+    # if debug:
+    #     plt.plot(cdf)
+    #     plt.show()
 
     # mask bad pixels
     M_bp = np.ones_like(np.logical_not(bpm))
     M_bp[:, extr_aper_not] = False
+    M_bp[:10, :] = False
+    M_bp[-10:, :] = False
     norm_filtered = stats.sigma_clip((D/P)[:,extr_aper], sigma=3, axis=1)
     M_bp[:, extr_aper] &= np.logical_not(norm_filtered.mask)
 
-    
     f_opt = np.sum(M_bp*P*D/V_new, axis=1) / (np.sum(M_bp*P*P/V_new, axis=1) + etol)
     V_new = V + np.abs(P*np.tile(f_opt, (P.shape[1],1)).T) / gain / NDIT
     var = 1. / (np.sum(M_bp*P*P/V_new, axis=1)+etol)
-    Res = M_bp * (D - P*np.tile(f_opt, (P.shape[1],1)).T)**2/V_new
-    chi2_r = np.nansum(Res)/(np.sum(M_bp)-len(f_opt))
+    snr = np.nanmedian(f_opt/np.sqrt(var))
+    # print(snr)
 
-    if np.nanmedian(f_opt/np.sqrt(var)) > 200:
-        return f_opt, np.sqrt(var), D.T, P.T, np.sqrt(V_new).T, chi2_r
+    # if debug:
+    #     fig, axes = plt.subplots(ncols=2, sharey=True)
+    #     axes[0].imshow(D/P, vmin=0, vmax=8e4, aspect='auto')
+    #     axes[1].imshow(M_bp, aspect='auto')
+    #     plt.show()
 
     if debug:
-        plt.imshow(M_bp, aspect='auto')
-        plt.show()
         plt.plot(f_std)
         plt.plot(f_opt)
+        # plt.show()
 
     for ite in range(max_iter):
 
         # Residual of optimally extracted spectrum and the observation
         Res = M_bp * (D - P*np.tile(f_opt, (P.shape[1],1)).T)**2/V_new
+        # dirty fix to the issues of rejecting good pixels for bright sources
+        if snr > 200:
+            Res /= 4.
 
         good_channels = np.all(Res<badpix_clip**2, axis=1)
         f_prox = interp1d(wave_x[good_channels], f_opt[good_channels], 
                     kind='cubic', bounds_error=False, fill_value=0.)(wave_x)
         Res = M_bp * (D - P*np.tile(f_prox, (P.shape[1],1)).T)**2/V_new
+        if snr > 200:
+            Res /= 4.
+
         bad_channels = np.any(Res>badpix_clip**2, axis=1)
-        # plt.plot(wave_x, bad_channels)
-        # plt.show()
-        # plt.imshow(M_bp[1450:1460], aspect='auto')
-        # plt.show()
-        # plt.imshow(Res[1450:1460], aspect='auto')
-        # plt.show()
-        # plt.imshow(D[1450:1460], vmin=0, vmax=np.max(D), aspect='auto')
-        # plt.show()
         for x in wave_x[bad_channels]:
             M_bp[x, np.argmax(Res[x]-badpix_clip**2)] = False
+
+        # if debug:
+        #     # plt.plot(bad_channels.astype(float)*np.median(f_opt))
+        #     # plt.show()
+        #     fig, axes = plt.subplots(ncols=2, sharey=True)
+        #     axes[0].imshow(Res, vmin=0, vmax=40, aspect='auto')
+        #     axes[1].imshow(M_bp, aspect='auto')
+        #     plt.show()
 
         # Optimally extracted spectrum, obtained by accounting
         # for the profile and variance
         f_opt = np.sum(M_bp*P*D/V_new, axis=1) / (np.sum(M_bp*P*P/V_new, axis=1) + etol)
+
         # Calculate a new variance with the optimally extracted spectrum
-        V_new = V + np.abs(P*np.tile(f_opt, (P.shape[1],1)).T) / gain / NDIT 
+        V_new = V + np.abs(P*np.tile(f_opt, (P.shape[1],1)).T) / gain / NDIT
         if not np.any(bad_channels):
             break
 
     # interpolate over bad wavelength channels which contain more than 40% bad pixels
-    good_channels = (np.sum(M_bp, axis=1) > np.sum(extr_aper)*0.6)
-    f_opt = interp1d(wave_x[good_channels], f_opt[good_channels], 
-                    kind='cubic', bounds_error=False, fill_value=0.)(wave_x)
+    # good_channels = (np.sum(M_bp, axis=1) > np.sum(extr_aper)*0.6)
+    # f_opt = interp1d(wave_x[good_channels], f_opt[good_channels], 
+    #                 kind='cubic', bounds_error=False, fill_value=0.)(wave_x)
     if debug:
         print(ite)
         plt.plot(f_opt)

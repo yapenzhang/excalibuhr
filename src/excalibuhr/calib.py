@@ -439,7 +439,7 @@ class CriresPipeline:
 
     def _plot_extr_model(self, savename):
         self._set_plot_style()
-        D, P, V, id_det, id_order, chi2 = self.load_extr2D(savename+'.npz')
+        D, P, V, id_det, id_order, chi2 = self._load_extr2D(savename+'.npz')
         Ndet, Norder = chi2.shape[0], chi2.shape[1]
         fig, axes = plt.subplots(nrows=Norder*2, ncols=Ndet, 
                         figsize=(2*Norder, 14), sharex=True, sharey=True,  
@@ -1229,7 +1229,7 @@ class CriresPipeline:
                         f"{object}_NODDING_{pos}_Combined_{item_wlen}", combined)
 
 
-    def obs_extract(self, caltype='NODDING_COMBINED',
+    def obs_extract(self, caltype='NODDING_COMBINED', object=None,
                           peak_frac=None, companion_sep=None, 
                           bkg_subtract=False, 
                           aper_prim=15, aper_comp=10, debug=False):    
@@ -1268,12 +1268,15 @@ class CriresPipeline:
         # Select the type of observations we want to work with
         indices = (self.product_info[self.key_caltype] == caltype)
 
-        # Check unique targets
         unique_target = set()
-        for item in self.product_info[indices][self.key_target_name]:
-            unique_target.add(item)
-        if len(unique_target) == 0:
-            raise RuntimeError("No reduced frames to extract")
+        if object is not None:
+            unique_target.add(object)
+        else:
+            # Check all unique targets
+            for item in self.product_info[indices][self.key_target_name]:
+                unique_target.add(item)
+            if len(unique_target) == 0:
+                raise RuntimeError("No reduced frames to extract")
 
         # Loop over each target
         for object in unique_target:
@@ -1347,7 +1350,7 @@ class CriresPipeline:
                         su.extract_spec, False,
                         dt, dt_err, bpm, tw, slit, blaze, blaze, 
                         self.gain, NDIT=ndit,
-                        cen0=f0, 
+                        cen0=f0,
                         aper_half=aper_prim, debug=debug)
         flux_pri, err_pri, D, P, V, id_order, chi2_r = result
 
@@ -1363,7 +1366,7 @@ class CriresPipeline:
         paths = file.split('/')
         paths[-1] = 'Extr2D_PRIMARY_' + paths[-1][:-5]
         filename2d = os.path.join(self.outpath, '/'.join(paths))
-        self.save_extr2D(filename2d, D, P, V, id_order, chi2_r)
+        self._save_extr2D(filename2d, D, P, V, id_order, chi2_r)
         self._add_to_product('/'.join(paths)+'.npz', "Extr2D_PRIMARY")
         self._plot_extr_model(filename2d)
 
@@ -1392,12 +1395,12 @@ class CriresPipeline:
             paths = file.split('/')
             paths[-1] = 'Extr2D_SECONDARY_' + paths[-1][:-5]
             filename2d = os.path.join(self.outpath, '/'.join(paths))
-            self.save_extr2D(filename2d, D, P, V, id_order, chi2_r)
+            self._save_extr2D(filename2d, D, P, V, id_order, chi2_r)
             self._add_to_product('/'.join(paths)+'.npz', "Extr2D_SECONDARY")
             self._plot_extr_model(filename2d)
 
 
-    def save_extr2D(self, filename, *ragged_list):
+    def _save_extr2D(self, filename, *ragged_list):
         D, P, V, id_order, chi2 = ragged_list
         D_stack, id_det = su.stack_ragged(D)
         P_stack, id_det = su.stack_ragged(P)
@@ -1406,7 +1409,7 @@ class CriresPipeline:
                         MODEL=P_stack, id_det=id_det, id_order=id_order,
                         chi2=chi2)
 
-    def load_extr2D(self, filename):
+    def _load_extr2D(self, filename):
         data = np.load(filename)
         D = data['FLUX']
         V = data['FLUX_ERR']
