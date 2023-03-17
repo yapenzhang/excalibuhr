@@ -22,7 +22,7 @@ import matplotlib.pyplot as plt
 class CriresPipeline:
 
     def __init__(self, workpath: str, night: str, clean_start: bool = False,
-                 num_processes: int = 8,
+                 num_processes: int = 4,
                  **header_keys: dict) -> None:
         """
         Parameters
@@ -55,7 +55,7 @@ class CriresPipeline:
         self.workpath = os.path.abspath(workpath)
         self.night = night
         self.key_caltype = 'CAL TYPE'
-        self.header_keys = header_keys
+        # self.header_keys = header_keys
         self.nightpath = os.path.join(self.workpath, self.night)
         self.rawpath = os.path.join(self.workpath, self.night, "raw")
         self.calpath = os.path.join(self.workpath, self.night, "cal")
@@ -66,11 +66,34 @@ class CriresPipeline:
         self.gain=[2.15, 2.19, 2.0]
         self.pix_scale=0.056 #arcsec
         self.num_processes = num_processes
-        
         print(f"Data reduction folder: {self.nightpath}")
 
-        # self.detlin_path = 'cr2res_cal_detlin_coeffs.fits'
+        self.header_keys = {
+                    'key_filename': 'ORIGFILE',
+                    'key_target_name': 'OBJECT',
+                    'key_mjd': 'MJD-OBS',
+                    'key_ra': 'RA',
+                    'key_dec': 'DEC',
+                    'key_dtype':'ESO DPR TYPE',
+                    'key_catg': 'ESO DPR CATG',
+                    'key_DIT': 'ESO DET SEQ1 DIT',
+                    'key_NDIT': 'ESO DET NDIT',
+                    'key_wlen': 'ESO INS WLEN ID',
+                    'key_nodpos': 'ESO SEQ NODPOS',
+                    'key_nexp_per_nod': 'ESO SEQ NEXPO',
+                    'key_slitlen': 'ESO INS SLIT1 LEN',
+                    'key_slitwid': 'ESO INS SLIT1 NAME',
+                    'key_jitter': 'ESO SEQ JITTERVAL',
+                    'key_nabcycle': 'ESO SEQ NABCYCLES',
+                    # 'key_nodthrow': 'ESO SEQ NODTHROW',
+                    'key_wave_min': 'ESO INS WLEN BEGIN', 
+                    'key_wave_max': 'ESO INS WLEN END', 
+                    'key_wave_cen': 'ESO INS WLEN CENY', 
+                            }
+        for par in self.header_keys.keys():
+            setattr(self, par, self.header_keys[par])
 
+        # self.detlin_path = 'cr2res_cal_detlin_coeffs.fits'
         # Create the directories if they do not exist
         if not os.path.exists(os.path.join(self.workpath, self.night)):
             os.makedirs(os.path.join(self.workpath, self.night))
@@ -100,9 +123,6 @@ class CriresPipeline:
         else:
 
             self.header_info = None 
-
-        for par in header_keys.keys():
-            setattr(self, par, header_keys[par])
 
         if os.path.isfile(self.calib_file):
             print("Reading calibration information from calib_info.txt")
@@ -362,10 +382,11 @@ class CriresPipeline:
                 trace = tw[i]
                 yy_trace = su.trace_polyval(xx, trace)
                 trace_lower, trace_upper = yy_trace
-                for (yy_upper, yy_lower) in \
-                        zip(trace_upper, trace_lower):
+                for o, (yy_upper, yy_lower) in \
+                        enumerate(zip(trace_upper, trace_lower)):
                     ax.plot(xx, yy_upper, 'r')
                     ax.plot(xx, yy_lower, 'r')
+                    ax.text(xx[len(xx)//5], np.mean(yy_upper+yy_lower)/2., f'Order {o}')
             if not slit is None:
                 trace = tw[i]
                 yy_trace = su.trace_polyval(xx, trace)
@@ -412,8 +433,8 @@ class CriresPipeline:
                                 transm_spec[:,1][indices]*vmax, 
                                 color='orange',
                                 label='Telluric template')
-                    
-                ax.set_ylim((0.7*vmin, 1.1*vmax))
+                if vmin != vmax:    
+                    ax.set_ylim((0.7*vmin, 1.1*vmax))
             axes[0,d].set_title(f"Detector {d}", size='large', fontweight='bold')
         
         for i in range(Norder):
@@ -452,10 +473,11 @@ class CriresPipeline:
             for o in range(0, 2*Norder, 2):
                 ax_d, ax_m = axes[Norder*2-o-2, i], axes[Norder*2-o-1, i] 
                 data, model = D_order[o//2], P_order[o//2]
-                nans = np.isnan(data)
-                vmin, vmax = np.percentile(data[~nans], (5, 95))
-                ax_d.imshow(data, vmin=vmin, vmax=vmax, aspect='auto')
-                ax_m.imshow(model, vmin=0, vmax=np.max(model), aspect='auto')
+                if data.size != 0:
+                    nans = np.isnan(data)
+                    vmin, vmax = np.percentile(data[~nans], (5, 95))
+                    ax_d.imshow(data, vmin=vmin, vmax=vmax, aspect='auto')
+                    ax_m.imshow(model, vmin=0, vmax=np.max(model), aspect='auto')
                 ax_d.set_title(r"Order {0}, $\chi_r^2$: {1:.2f}".format(
                                         o//2, chi2[i, o//2]))
             axes[-1,i].set_xlabel(f"Detector {i}", size='large', fontweight='bold')
@@ -670,7 +692,7 @@ class CriresPipeline:
 
 
 
-    def cal_flat_trace(self, sub_factor: int = 128, debug=False) -> None:
+    def cal_flat_trace(self, debug=False) -> None:
         """
         Method for identifying traces of spectral order in `MASTER FLAT`.
 
@@ -711,7 +733,7 @@ class CriresPipeline:
             trace = self._loop_over_detector(
                             su.order_trace, True, flat, bpm, 
                             slitlen=hdr[self.key_slitlen]/self.pix_scale,
-                            sub_factor=sub_factor, debug=debug)
+                            debug=debug)
 
             print("\n Output files:")
             # Save the polynomial coefficients
@@ -723,7 +745,7 @@ class CriresPipeline:
                             flat, tw=trace)
             
 
-    def cal_slit_curve(self, sub_factor=4, debug=False) -> None:
+    def cal_slit_curve(self, debug=False) -> None:
         """
         Method for tracing slit curvature in the `FPET` calibration frame.
         Determine initial wavelength solution by mapping FPET lines to 
@@ -1643,20 +1665,20 @@ class CriresPipeline:
 
         sky_calc = skycalc_ipy.SkyCalc()
 
-        wlen_id= self.header_info[indices][self.key_wlen].iloc[0]
-        slit_width= self.header_info[indices][self.key_slitwid].iloc[0]
+        wlen_id = self.header_info[indices][self.key_wlen].iloc[0]
+        slit_width = self.header_info[indices][self.key_slitwid].iloc[0]
         mjd_start = self.header_info[indices][self.key_mjd].iloc[0]
         ra_mean = np.mean(self.header_info[self.key_ra][indices])
         dec_mean = np.mean(self.header_info[self.key_dec][indices])
 
-        sky_calc.get_almanac_data(
-            ra=ra_mean,
-            dec=dec_mean,
-            date=None,
-            mjd=mjd_start,
-            observatory="paranal",
-            update_values=True,
-        )
+        # sky_calc.get_almanac_data(
+        #     ra=ra_mean,
+        #     dec=dec_mean,
+        #     date=None,
+        #     mjd=mjd_start,
+        #     observatory="paranal",
+        #     update_values=True,
+        # )
 
         print(f"  - MJD = {mjd_start:.2f}")
         print(f"  - RA (deg) = {ra_mean:.2f}")
@@ -1903,13 +1925,6 @@ class CriresPipeline:
         self.cal_flat_norm()
         self.obs_nodding()
         self.obs_nodding_combine()
-        # self.obs_extract(companion_sep=companion_sep, aper_prim=aper_prim,
-        #                  bkg_subtract=bkg_subtract, debug=True)
-        # self.refine_wlen_solution(run_skycalc=True, debug=True)
-        # self.save_extracted_data()
-        # if run_molecfit:
-        #     self.run_molecfit(wmin=wmin, wmax=wmax, verbose=True)
-            # self.apply_telluric_correction()
     
 
 

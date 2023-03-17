@@ -112,6 +112,8 @@ class SPEC2D:
             return self.wlen.flatten(), self.flux.flatten(), None
 
     def wlen_cut(self, w0, w1):
+        # list of wavelength ranges to keep, 
+        # w0: the lower bounds, w1: the upper bounds.
         mask = np.zeros_like(self.wlen, dtype=bool)
         for a, b in zip(w0, w1):
             mask = mask | ((self.wlen>a) & (self.wlen<b))

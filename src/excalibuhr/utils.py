@@ -320,7 +320,7 @@ def align_jitter(dt, err, pix_shift, tw=None, debug=False):
     return dt_shift, err_shift
 
 
-def order_trace(det, badpix, slitlen, sub_factor=128, debug=False):
+def order_trace(det, badpix, slitlen, sub_factor=64, poly_order=2, debug=False):
     """
     Trace the spectral orders
 
@@ -340,42 +340,39 @@ def order_trace(det, badpix, slitlen, sub_factor=128, debug=False):
     [poly_upper, poly_lower]
         The polynomial coeffiences of upper and lower trace of each order
     """
-    order_length_min = 0.95*slitlen
+    order_length_min = 0.75*slitlen
+    width = 2
 
     im = np.ma.masked_array(det, mask=badpix)
 
-    # Sub-sample the image along the dispersion axis
+    # Bin the image along the dispersion axis to reject outlier pixels
     xx = np.arange(im.shape[1])
     xx_bin = xx[::sub_factor] + (sub_factor-1)/2.
-    im_bin = np.ma.median(im.reshape(im.shape[0], 
-                                     im.shape[1]//sub_factor, 
-                                     sub_factor), 
-                          axis=2)
+    im_clipped = stats.sigma_clip(
+                            im.reshape(im.shape[0], 
+                                        im.shape[1]//sub_factor, 
+                                        sub_factor), 
+                            axis=2)
+    im_bin = np.ma.median(im_clipped, axis=2)
 
-    # Subtract a shifted image from its un-shifted self
-    # The result is approximately the trace edge
+    # Subtract a shifted image from its un-shifted self 
+    # (i.e. image gradient) to detect the trace edge
     im_grad = np.abs(im_bin[1:,:]-im_bin[:-1,:])
 
     # Set insignificant signal (<3sigma) to 0, only peaks are left 
     cont_std = np.nanstd(im_grad, axis=0)
-    im_grad[(im_grad < cont_std*4)] = 0
+    im_grad[(im_grad < cont_std*3)] = 0
     im_grad = np.nan_to_num(im_grad.data)
 
-    width = 2
     xx_loc, upper, lower   = [], [], []
     # Loop over each column in the sub-sampled image
     for i in range(im_grad.shape[1]):
+
+        # Find the peaks and separate upper and lower traces
         yy = im_grad[:,int(i)]
-
-        # Find the pixels where the signal is significant
         indices = signal.argrelmax(yy)[0]
-        # reject narrow peaks caused by outliers 
-        # mask = [(yy[ind+1]+yy[ind-1])>0 for ind in indices]
-        # indices = indices[mask]
-        # indices = np.insert(indices, len(indices), 2043)
-        ind_distace = np.diff(indices)
-        # print(ind_distace, order_length_min)
 
+        ind_distace = np.diff(indices)
         if ind_distace[0]<0.9*slitlen:
             lows = indices[1::2]
             # lows = indices[:-1][ind_distace>order_length_min]
@@ -391,29 +388,25 @@ def order_trace(det, badpix, slitlen, sub_factor=128, debug=False):
         #         plt.axvline(ind, color='r')
         #     plt.show()
 
-
         # Find the y-coordinates of the edges, weighted by the 
         # significance of the signal (i.e. center-of-mass)
         cens_low = np.array([np.sum(xx[int(p-width):int(p+width+1)]* \
-                                yy[int(p-width):int(p+width+1)]) / \
-                         np.sum(yy[int(p-width):int(p+width+1)]) \
-                         for p in lows])
+                                    yy[int(p-width):int(p+width+1)]) / \
+                            np.sum(yy[int(p-width):int(p+width+1)]) \
+                            for p in lows])
         cens_up = np.array([np.sum(xx[int(p-width):int(p+width+1)]* \
-                                yy[int(p-width):int(p+width+1)]) / \
-                         np.sum(yy[int(p-width):int(p+width+1)]) \
-                         for p in ups])
+                                    yy[int(p-width):int(p+width+1)]) / \
+                            np.sum(yy[int(p-width):int(p+width+1)]) \
+                            for p in ups])
 
-        # Real x-coordinate of this column
+        # x and y coordinates of the trace edges
         xx_loc.append(xx_bin[i])
-        # Order of y-coordinates is lower, upper, lower, ...
         lower.append(cens_low)
         upper.append(cens_up)
-
 
     upper = np.array(upper).T
     lower = np.array(lower).T
     poly_upper, poly_lower = [], []
-    poly_order = 2
     
     # Loop over each order
     for (loc_up, loc_low) in zip(upper, lower):
@@ -431,9 +424,9 @@ def order_trace(det, badpix, slitlen, sub_factor=128, debug=False):
             # skip the order that is incomplete
             continue
         elif np.mean(slit_len) < 0.95*slitlen:
-            # print("up")
             # the upper or lower trace hits the edge.
             if np.mean(yy_up) > im.shape[0]*0.5:
+                # print("up")
                 # refine the upper trace solution with fixed slit length
                 yy_up = yy_low + slitlen
                 poly_up = Poly.polyfit(xx, yy_up, poly_order)
@@ -445,15 +438,18 @@ def order_trace(det, badpix, slitlen, sub_factor=128, debug=False):
             poly_upper.append(poly_up)
             poly_lower.append(poly_low)
         else:
-            # refine the trace solution by fixing the slit length
+            # refine the trace solution by fixing the mid trace and slit length
+            yy_up_new = yy_mid + slitlen / 2.
+            yy_low_new = yy_mid - slitlen / 2.
             # yy_up = yy_low + slitlen
             # yy_mid_new = (yy_up + yy_low) / 2.
             # yy_up -= yy_mid_new[len(yy_mid)//2]-yy_mid[len(yy_mid)//2]
             # yy_low -= yy_mid_new[len(yy_mid)//2]-yy_mid[len(yy_mid)//2]
-            # poly_up = Poly.polyfit(xx, yy_up, poly_order)
-            # poly_low = Poly.polyfit(xx, yy_low, poly_order)
+            poly_up = Poly.polyfit(xx, yy_up_new, poly_order)
+            poly_low = Poly.polyfit(xx, yy_low_new, poly_order)
             poly_upper.append(poly_up)
             poly_lower.append(poly_low)
+
 
     print(f"-> {len(poly_upper)} orders identified")
 
@@ -470,7 +466,7 @@ def order_trace(det, badpix, slitlen, sub_factor=128, debug=False):
     return [poly_lower, poly_upper]
 
 
-def slit_curve_old(det, badpix, trace, wlen_min, wlen_max, sub_factor=8, debug=False):
+def slit_curve_deprecated(det, badpix, trace, wlen_min, wlen_max, sub_factor=8, debug=False):
     """
     Trace the spectral orders
 
@@ -1511,10 +1507,16 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
     D = D_full[:,obj_cen-aper_half:obj_cen+aper_half+1] # Observation
     V = V_full[:,obj_cen-aper_half:obj_cen+aper_half+1] # Variance
     bpm = bpm_full[:,obj_cen-aper_half:obj_cen+aper_half+1]
+
+    if D.size == 0:
+        # print("Trace falls outside of the detector")
+        return np.zeros(D.shape[0]), np.zeros(D.shape[0]), \
+                np.zeros(D.T.shape), np.zeros(D.T.shape), \
+                np.zeros(D.T.shape), np.nan
+
     D = np.nan_to_num(D, nan=etol)
     V = np.nan_to_num(V, nan=1./etol)
     V_new = V + np.abs(D) / gain / NDIT
-
 
     wave_x = np.arange(D.shape[0])
     spatial_x = np.arange(D.shape[1])
