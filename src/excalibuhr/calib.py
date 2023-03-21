@@ -84,7 +84,7 @@ class CriresPipeline:
                     'key_slitlen': 'ESO INS SLIT1 LEN',
                     'key_slitwid': 'ESO INS SLIT1 NAME',
                     'key_jitter': 'ESO SEQ JITTERVAL',
-                    'key_nabcycle': 'ESO SEQ NABCYCLES',
+                    # 'key_nabcycle': 'ESO SEQ NABCYCLES',
                     # 'key_nodthrow': 'ESO SEQ NODTHROW',
                     'key_wave_min': 'ESO INS WLEN BEGIN', 
                     'key_wave_max': 'ESO INS WLEN END', 
@@ -1016,16 +1016,11 @@ class CriresPipeline:
                 bpm = fits.getdata(os.path.join(self.calpath, file))
                 file = self.calib_info[indices_tw][self.key_filename].iloc[0]
                 tw = fits.getdata(os.path.join(self.calpath, file))
-                file = self.calib_info[indices_slit][self.key_filename].iloc[0]
-                slit = fits.getdata(os.path.join(self.calpath, file))
-                file = self.calib_info[indices_blaze][self.key_filename].iloc[0]
-                blaze = fits.getdata(os.path.join(self.calpath, file))
             
                 # Loop over each DIT
                 for item_dit in unique_dit:
                     print(f"Wavelength setting: {item_wlen}, "
                           f"DIT value: {item_dit} s.")
-
 
                     indices_nod_A = indices_wlen & \
                             (self.header_info[self.key_DIT] == item_dit) & \
@@ -1034,23 +1029,22 @@ class CriresPipeline:
                             (self.header_info[self.key_DIT] == item_dit) & \
                             (self.header_info[self.key_nodpos] == 'B')
                     df_nods = self.header_info[indices_nod_A | indices_nod_B]\
-                                .sort_values(self.key_filename)
+                                    .sort_values(self.key_filename)
 
                     nod_a_count = sum(indices_nod_A)
                     nod_b_count = sum(indices_nod_B)
-                    assert nod_a_count == nod_b_count, \
-                            "There is an unequal number of exposures \
-                            at nod A and nod B."
-                    print(f"Number of AB pairs: {nod_a_count}")
 
                     try:
                         self.Nexp_per_nod = int(self.header_info[indices_nod_A]\
                                       [self.key_nexp_per_nod].iloc[0])
                     except:
-                        self.Nexp_per_nod = int(nod_a_count//\
-                            self.header_info[indices_nod_A]\
-                            [self.key_nabcycle].iloc[0])
-
+                        # Some headers missing the NEXP key
+                        self.Nexp_per_nod = int(nod_a_count//self.header_info[indices_nod_A][self.key_nabcycle].iloc[0])
+                    
+                    if nod_a_count == nod_b_count:
+                        print(f"Number of AB pairs: {nod_a_count}")
+                    else:
+                        print(f"Number of A and B files: {nod_a_count, nod_b_count}")
 
                     for i, row in enumerate(
                             range(0, df_nods.shape[0], self.Nexp_per_nod)):
@@ -1065,33 +1059,51 @@ class CriresPipeline:
 
     def _process_nodding_pair(self, df_nods, i, row, flat, bpm, 
                              tw, ron, object, item_wlen):
-        # make sure we do not subtract the frames 
-        # at the same nod position
-        pos_bkg = set()
-        for p in df_nods[self.key_nodpos].iloc[
-                        row:row+self.Nexp_per_nod]:
-            pos_bkg.add(p)
+        # check the nodding position of the current frame
         pos = set()
         for p in df_nods[self.key_nodpos].iloc[
-                row+(-1)**(i%2)*self.Nexp_per_nod: \
-                row+(-1)**(i%2)*self.Nexp_per_nod+self.Nexp_per_nod]:
+                        row:row+self.Nexp_per_nod]:
             pos.add(p)
+        
+        if row+(-1)**(i%2)*self.Nexp_per_nod < df_nods.shape[0]:
+            # Select background frames (the opposite nodding position) 
+            # correspsonding to the current frame
+            pos_bkg = set()
+            for p in df_nods[self.key_nodpos].iloc[
+                    row+(-1)**(i%2)*self.Nexp_per_nod: \
+                    row+(-1)**(i%2)*self.Nexp_per_nod+self.Nexp_per_nod]:
+                pos_bkg.add(p)
+
+            bkg_list = [os.path.join(self.rawpath, item) \
+                        for item in df_nods[self.key_filename].iloc[
+                            row+(-1)**(i%2)*self.Nexp_per_nod: \
+                            row+(-1)**(i%2)*self.Nexp_per_nod+self.Nexp_per_nod]
+                        ]
+        else:
+            # in case the nodding cycle was interrupted, use the frame 
+            # in the previous cycle as the background image.
+            pos_bkg = set()
+            for p in df_nods[self.key_nodpos].iloc[
+                    row+(-2)*self.Nexp_per_nod: \
+                    row+(-2)*self.Nexp_per_nod+self.Nexp_per_nod]:
+                pos_bkg.add(p)
+                            
+            bkg_list = [os.path.join(self.rawpath, item) \
+                        for item in df_nods[self.key_filename].iloc[
+                            row+(-2)*self.Nexp_per_nod: \
+                            row+(-2)*self.Nexp_per_nod+self.Nexp_per_nod]
+                        ]
                         
+        # make sure not to subtract frames at the same nod position
         if pos == pos_bkg:
             raise RuntimeError("Subtracting frames at the \
             same nodding position. Check if there are missing \
             AB cycle files.")
-                        
-
-        # Select the following background measurement 
-        file_list = [os.path.join(self.rawpath, item) \
-                    for item in df_nods[self.key_filename]\
-                                .iloc[row:row+self.Nexp_per_nod]
-                    ]
+        
         dt_list, err_list = [], []
         
-        # Loop over the frames and use it as the bkg image
-        for file in file_list:
+        # Loop over the bkg frames and combine them as a bkg image
+        for file in bkg_list:
             frame, frame_err = [], []
             with fits.open(file) as hdu:
                 ndit = hdu[0].header[self.key_NDIT]
@@ -1111,9 +1123,7 @@ class CriresPipeline:
                         
         # Select the nod position science image
         # Loop over the observations of the current nod position
-        for file in df_nods[self.key_filename].iloc[
-                row+(-1)**(i%2)*self.Nexp_per_nod: \
-                row+(-1)**(i%2)*self.Nexp_per_nod+self.Nexp_per_nod]:
+        for file in df_nods[self.key_filename].iloc[row:row+self.Nexp_per_nod]:
             frame, frame_err = [], []
             with fits.open(os.path.join(self.rawpath, file)) as hdu:
                 hdr = hdu[0].header
@@ -1195,7 +1205,6 @@ class CriresPipeline:
 
             # Loop over each WLEN setting
             for item_wlen in unique_wlen:
-                print(f"Wavelength setting: {item_wlen}")
                 
                 indices_wlen = indices_obj & \
                             (self.product_info[self.key_wlen] == item_wlen)
@@ -1207,6 +1216,7 @@ class CriresPipeline:
                 tw = fits.getdata(os.path.join(self.calpath, file))
 
                 # Loop over the nodding positions
+                INT_total = 0.
                 for pos in ['A', 'B']:
                     indices_pos = indices_wlen & \
                             (self.product_info[self.key_nodpos] == pos)
@@ -1224,8 +1234,7 @@ class CriresPipeline:
                                 # apply integer shift only to align frames
                                 dt, dt_err = su.align_jitter(
                                     hdu["FLUX"].data, hdu["FLUX_ERR"].data, 
-                                    int(np.round(
-                                        hdr[self.key_jitter]/self.pix_scale)))                            
+                                    int(np.round(hdr[self.key_jitter]/self.pix_scale)))
                             frames.append(dt)
                             frames_err.append(dt_err)
 
@@ -1249,6 +1258,10 @@ class CriresPipeline:
 
                     self._plot_det_image(file_name, 
                         f"{object}_NODDING_{pos}_Combined_{item_wlen}", combined)
+
+                    INT_total += hdr[self.key_DIT]*hdr[self.key_NDIT]*(j+1)/3600.
+                
+                print(f"On-target time for {object} with wavelength setting {item_wlen}: {INT_total:.2f} hrs \n") 
 
 
     def obs_extract(self, caltype='NODDING_COMBINED', object=None,
@@ -1542,10 +1555,7 @@ class CriresPipeline:
         """
         Method for saving extracted spectra and calibrated wavelength.
         to the folder `obs_calibrated`. And save the flattened array to
-        `.dat` files, including 4 columns: 
-        Wlen(nm), Flux, Flux_err, Wlen_even. `Wlen_even` is an 
-        evenly spaced wavelength grid, for the covenience of later
-        interpolation and combination of different nights.
+        `.dat` files, including 3 columns: Wlen(nm), Flux, Flux_err. 
 
         Returns
         -------
@@ -1583,8 +1593,7 @@ class CriresPipeline:
                 unique_wlen = set()
                 for item in self.product_info[indices_obj][self.key_wlen]:
                     unique_wlen.add(item)
-                print(f"Saving target {object}; "
-                      f"wavelength coverage: {unique_wlen}")
+                
 
                 wlens, specs, errs = [],[],[]
                 for item_wlen in unique_wlen:
@@ -1636,6 +1645,12 @@ class CriresPipeline:
                 result = SPEC2D(wlen=wlens, flux=specs, err=errs)
                 result.plot_spec1d(file_name[:-4]+'png')
                 result.save_spec1d(file_name[:-4]+'dat')
+
+                w_mid = np.mean(wlens[wlens.shape[0]//2])
+                snr_mid = np.mean((specs/errs)[wlens.shape[0]//2])
+                
+                print(f"Saved target {object} {l} with wavelength coverage {unique_wlen}; ",
+                      f"average S/N @ {w_mid:d} nm ~ {snr_mid}.")
 
 
     def run_skycalc(self, pwv: float = 5) -> None:
@@ -1899,9 +1914,7 @@ class CriresPipeline:
             self.run_molecfit(wmin=wmin, wmax=wmax)
             self.apply_telluric_correction()
 
-    def preprocessing_recipes(self, companion_sep=None, bkg_subtract=False, 
-                    aper_prim=20, aper_comp=10, 
-                    run_molecfit=False, wmin=None, wmax=None) -> None:
+    def preprocessing(self) -> None:
         """
         Method for running the full chain of recipes.
 
@@ -1974,8 +1987,8 @@ def CombineNights(workpath, night_list, object=None, tellu_corrected=False, coll
                 names = f"{object}*{target}*{app}"
 
             corrpath = os.path.join(workpath, night, 'out', "obs_calibrated")
-            file_list = glob.glob(os.path.join(corrpath, names))
-            for filename in file_list:
+            bkg_list = glob.glob(os.path.join(corrpath, names))
+            for filename in bkg_list:
                 specs.append(np.genfromtxt(filename, skip_header=1))
         if len(specs)<1:
             continue

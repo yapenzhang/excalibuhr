@@ -1658,7 +1658,6 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
     else:
         var = 1. / (np.sum(M_bp*P*P/V_new, axis=1)+etol)
     
-    
     return f_opt, np.sqrt(var), D.T, P.T, np.sqrt(V_new).T, chi2_r
 
 
