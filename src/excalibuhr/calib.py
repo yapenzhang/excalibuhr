@@ -386,7 +386,8 @@ class CriresPipeline:
                         enumerate(zip(trace_upper, trace_lower)):
                     ax.plot(xx, yy_upper, 'r')
                     ax.plot(xx, yy_lower, 'r')
-                    ax.text(xx[len(xx)//5], np.mean(yy_upper+yy_lower)/2., f'Order {o}')
+                    ax.text(xx[len(xx)//10], np.mean(yy_upper+yy_lower)/2., 
+                            f'Order {o}', va='middle', color='white')
             if not slit is None:
                 trace = tw[i]
                 yy_trace = su.trace_polyval(xx, trace)
@@ -1650,7 +1651,7 @@ class CriresPipeline:
                 snr_mid = np.mean((specs/errs)[wlens.shape[0]//2])
                 
                 print(f"Saved target {object} {l} with wavelength coverage {unique_wlen}; ",
-                      f"average S/N @ {w_mid:d} nm ~ {snr_mid}.")
+                      f"average S/N @ {w_mid:.0f} nm ~ {snr_mid:.0f}.")
 
 
     def run_skycalc(self, pwv: float = 5) -> None:

@@ -370,7 +370,8 @@ def order_trace(det, badpix, slitlen, sub_factor=64, poly_order=2, debug=False):
 
         # Find the peaks and separate upper and lower traces
         yy = im_grad[:,int(i)]
-        indices = signal.argrelmax(yy)[0]
+        # indices = signal.argrelmax(yy)[0]
+        indices, _ = signal.find_peaks(yy, distance=10) 
 
         ind_distace = np.diff(indices)
         if ind_distace[0]<0.9*slitlen:
@@ -379,14 +380,6 @@ def order_trace(det, badpix, slitlen, sub_factor=64, poly_order=2, debug=False):
         else:
             lows = indices[::2]
         ups = indices[np.searchsorted(indices, lows)+1]
-
-        # if debug:
-        #     plt.plot(yy)
-        #     for ind in lows:
-        #         plt.axvline(ind, color='k')
-        #     for ind in ups:
-        #         plt.axvline(ind, color='r')
-        #     plt.show()
 
         # Find the y-coordinates of the edges, weighted by the 
         # significance of the signal (i.e. center-of-mass)
@@ -399,10 +392,18 @@ def order_trace(det, badpix, slitlen, sub_factor=64, poly_order=2, debug=False):
                             np.sum(yy[int(p-width):int(p+width+1)]) \
                             for p in ups])
 
+        # if debug:
+        #     plt.plot(yy)
+        #     for ind in cens_low:
+        #         plt.axvline(ind, color='k')
+        #     for ind in cens_up:
+        #         plt.axvline(ind, color='r')
+        #     plt.show()
+
         # x and y coordinates of the trace edges
         xx_loc.append(xx_bin[i])
-        lower.append(cens_low)
-        upper.append(cens_up)
+        lower.append(cens_low+1)
+        upper.append(cens_up+1)
 
     upper = np.array(upper).T
     lower = np.array(lower).T
@@ -629,46 +630,45 @@ def slit_curve_deprecated(det, badpix, trace, wlen_min, wlen_max, sub_factor=8, 
 
     return meta, x_fpet, wlen
 
-def FPET_model(xx, yy, params):
-    a, b, c, d, sigma, amp, tilt = params
-    # x = a + b*xx + c*xx**2
-    x = Poly.polyval(xx - np.mean(xx), (a,b,c)) + xx
-    x_peak = np.arange(-0.5*len(x), 1.5*len(x), d)
-    model = []
-    for y in yy:
-        x_new = x + tilt*(y-len(yy)/2.)
-        z = np.sum([amp*np.exp(-(x_new-xp)**2/2./sigma**2) for xp in x_peak], axis=0)
-        model.append(z)
-    plt.imshow(model, aspect='auto')
-    plt.show()
-    return np.array(model)
+# def FPET_model(xx, yy, params):
+#     a, b, c, d, sigma, amp, tilt = params
+#     # x = a + b*xx + c*xx**2
+#     x = Poly.polyval(xx - np.mean(xx), (a,b,c)) + xx
+#     x_peak = np.arange(-0.5*len(x), 1.5*len(x), d)
+#     model = []
+#     for y in yy:
+#         x_new = x + tilt*(y-len(yy)/2.)
+#         z = np.sum([amp*np.exp(-(x_new-xp)**2/2./sigma**2) for xp in x_peak], axis=0)
+#         model.append(z)
+#     plt.imshow(model, aspect='auto')
+#     plt.show()
+#     return np.array(model)
 
-def func_MSE(params, *args):
-    xx, yy, im = args
-    model = FPET_model(xx, yy, params)
-    nans = np.isnan(im)
-    return np.mean(np.square(model[~nans]-im[~nans]))
+# def func_MSE(params, *args):
+#     xx, yy, im = args
+#     model = FPET_model(xx, yy, params)
+#     nans = np.isnan(im)
+#     return np.mean(np.square(model[~nans]-im[~nans]))
 
-def func_slitcurve(slope, plotting=False, *args):
-    xx, yy, im = args
-    shift = []
-    collapse = np.zeros_like(xx)
-    for i in range(im.shape[0]):
-        x_new = xx + slope*(yy[i]-(yy[0]+yy[-1])/2.)
-        nans = np.isnan(im[i])
-        shift.append(interp1d(x_new[~nans], im[i][~nans], bounds_error=False, fill_value=0)(xx))
-        collapse += interp1d(x_new[~nans], im[i][~nans], bounds_error=False, fill_value=0)(xx)
-    peaks, properties = signal.find_peaks(collapse, height=2.*np.mean(collapse)) 
-    if plotting:
-        plt.plot(xx, collapse)
-        for p in peaks:
-            plt.scatter(xx[p], collapse[p])
-        plt.show()
-        plt.imshow(shift)
-        plt.show()
-    return -np.sum(collapse[peaks])
+# def func_slitcurve(slope, plotting=False, *args):
+#     xx, yy, im = args
+#     shift = []
+#     collapse = np.zeros_like(xx)
+#     for i in range(im.shape[0]):
+#         x_new = xx + slope*(yy[i]-(yy[0]+yy[-1])/2.)
+#         nans = np.isnan(im[i])
+#         shift.append(interp1d(x_new[~nans], im[i][~nans], bounds_error=False, fill_value=0)(xx))
+#         collapse += interp1d(x_new[~nans], im[i][~nans], bounds_error=False, fill_value=0)(xx)
+#     peaks, properties = signal.find_peaks(collapse, height=2.*np.mean(collapse)) 
+#     if plotting:
+#         plt.plot(xx, collapse)
+#         for p in peaks:
+#             plt.scatter(xx[p], collapse[p])
+#         plt.show()
+#         plt.imshow(shift)
+#         plt.show()
+#     return -np.sum(collapse[peaks])
  
-
 
 def slit_curve(det, badpix, trace, wlen_min, wlen_max, debug=False):
     
@@ -703,7 +703,7 @@ def slit_curve(det, badpix, trace, wlen_min, wlen_max, debug=False):
                            ccf[i][int(p-width):int(p+width)]) / \
                     np.sum(ccf[i][int(p-width):int(p+width)]) \
                     for i,p in enumerate(peaks)]
-        poly = Poly.polyfit(range(im_sub.shape[0]), cens, 1)
+        _, poly = PolyfitClip(range(im_sub.shape[0]), cens, 1)
         slope = poly[1]
         tilt.append(slope)
         
@@ -1700,9 +1700,10 @@ def wlen_solution(fluxes, errs, w_init, transm_spec=None,
         template = template_interp_func(new_wave)
 
         # Minimize the mean squared error, ignore the detector-edges
-        # mean_squared = np.nanmean(((template - flux)[10:-10])**2)
-        chi_squared = np.nanmean(((template - flux)[10:-10] / err[10:-10])**2)
-        # mean_squared = -np.dot(flux[10:-10]-np.mean(flux[10:-10]), template[10:-10]-np.mean(template[10:-10]))
+        # mean_squared = np.nanmean(((template - flux)[20:-20])**2)
+        # chi_squared = np.nanmean(((template - flux)[20:-20] / err[20:-20])**2)
+        chi_squared = -np.dot(flux[20:-20]-np.mean(flux[20:-20]), 
+                               template[20:-20]-np.mean(template[20:-20]))
 
         return chi_squared
 
@@ -2041,7 +2042,7 @@ def PolyfitClip(x, y, dg, m=None, w=None, clip=4., max_iter=10, \
     #     else:
     #         break
     #     ite+=1
-    return y_model, poly#, mask
+    return y_model, poly
 
 def fit_continuum_clip(x, y, order, pixel_distance=50, sigma=1.5, max_iter=20):
     x_mean = x - np.nanmean(x) 
@@ -2106,7 +2107,7 @@ def create_eso_recipe_config(
     Internal method for creating a configuration file with default
     values for a specified `EsoRex` recipe. Also check if `EsorRex`
     is found and raise an error otherwise.
-    From pycrires (see )
+    From pycrires (see https://pycrires.readthedocs.io)
 
     Parameters
     ----------
