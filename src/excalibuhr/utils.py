@@ -16,6 +16,7 @@ from astropy import stats
 from numpy.polynomial import polynomial as Poly
 from scipy import ndimage, signal, optimize
 from scipy.interpolate import interp1d
+from scipy.sparse import csc_matrix
 import matplotlib.pyplot as plt 
 import matplotlib as mpl
 mpl.rc('image', interpolation='nearest', origin='lower')
@@ -1409,8 +1410,9 @@ def extract_spec(det, det_err, badpix, trace, slit_meta, blaze, spec_star,
         im_rect = spectral_rectify_bin(det, badpix, trace, slit_meta, debug=False)
         err_rect = spectral_rectify_bin(det_err, badpix, trace, slit_meta, debug=False)
         dt_rect = [im_rect, err_rect]
-    dt_rect = trace_rectify_interp(dt_rect, trace, debug=False) 
+    # dt_rect = trace_rectify_interp(dt_rect, trace, debug=False) 
 
+    # im, im_err = det, det_err
     im, im_err = dt_rect
 
     xx_grid = np.arange(im.shape[1])
@@ -1542,7 +1544,7 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
         else:
             # apply a median filter
             y_smooth = ndimage.median_filter(y[mask], filter_width)
-            P[:,x] = interp1d(wave_x[mask], y_smooth, kind='cubic', 
+            P[:,x] = interp1d(wave_x[mask], y_smooth, kind='linear', 
                                 bounds_error=False, 
                                 fill_value=np.nanmedian(y_smooth))(wave_x)
             # plt.plot(wave_x[mask], y[mask])
@@ -1610,6 +1612,7 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
 
         # Residual of optimally extracted spectrum and the observation
         Res = M_bp * (D - P*np.tile(f_opt, (P.shape[1],1)).T)**2/V_new
+        
         # dirty fix to the issues of rejecting good pixels for bright sources
         if snr > 200:
             Res /= 4.
@@ -1969,6 +1972,32 @@ def SpecConvolve(in_wlen, in_flux, out_res, in_res=1e6, verbose=False):
     return flux_LSF
 
 
+def SpecConvolve_GL(in_wlen, in_flux, out_res, gamma, in_res=1e6, verbose=False):
+
+    def G(x, sigma):
+        """ Return Gaussian line shape wth sigma """
+        return 1./ np.sqrt(2. * np.pi) / sigma\
+                                * np.exp(-(x / sigma)**2 / 2.)
+
+    def L(x, gamma):
+        """ Return Lorentzian line shape at x with HWHM gamma """
+        return gamma / np.pi / (x**2 + gamma**2)
+
+    sigma_LSF = np.sqrt(1./out_res**2-1./in_res**2)/(2.*np.sqrt(2.*np.log(2.)))
+    spacing = np.mean(2.*np.diff(in_wlen)/ \
+      (in_wlen[1:]+in_wlen[:-1]))
+
+    # Calculate the sigma to be used in the gauss filter in pixels
+    sigma_LSF_gauss_filter = sigma_LSF/spacing
+    # print(sigma_LSF_gauss_filter, out_res, in_res)
+    xx = np.arange(-int(20*sigma_LSF_gauss_filter), int(20*sigma_LSF_gauss_filter+1), 1)
+    win_G = G(xx, sigma_LSF_gauss_filter)
+    win_L = L(xx, gamma)
+    win_V = signal.convolve(win_L, win_G, mode='same') / sum(win_G)
+    flux_V = signal.convolve(in_flux, win_V, mode='same') / sum(win_V)
+
+    return flux_V
+
 def PolyfitClip(x, y, dg, m=None, w=None, clip=4., max_iter=10, \
                 plotting=False):
     """
@@ -2092,6 +2121,51 @@ def fit_continuum(x, y, order, pixel_distance=500):
 
     return y_model, coeffs
 
+
+def find_kernel_SVD(spec_sharp, spec_broad, kernel_size, rcond=1e-3):
+    spec_sharp[np.isnan(spec_sharp)] = 0
+    spec_broad[np.isnan(spec_broad)] = 0
+
+    n = len(spec_sharp) 
+    shift = np.arange(-kernel_size, kernel_size + 1)
+
+    # Create a broadcasting array of indices for each shift value
+    idx = np.arange(n)
+    idx_shifted = idx[:, np.newaxis] - shift
+
+    # Use modulo operation to handle wrap-around indices
+    idx_shifted %= n
+
+    # Use advanced indexing to retrieve the shifted values
+    M = spec_sharp[idx_shifted]
+
+    # solve for the kernel K from M K = P
+    M_inv = np.linalg.pinv(M, rcond=rcond)
+    Kernel = M_inv.dot(spec_broad)
+
+    # reconstruct the convolved spectrum
+    reconstructed = np.dot(M, Kernel)
+
+    return reconstructed, Kernel
+
+
+def add_RBF_kernel(a, l, delta_wave, err, trunc_dist=4):
+    # from sksparse.cholmod import cholesky
+    # Hann window function to ensure sparsity
+    w_ij = (delta_wave < trunc_dist*l)
+
+    # Gaussian radial-basis function kernel
+    Sigma_ij = np.zeros_like(delta_wave)
+    Sigma_ij[w_ij] = a**2 * np.exp(-(delta_wave[w_ij])**2/(2*l**2))
+    
+    # Add the (scaled) Poisson noise
+    Sigma_ij += np.diag(err*2)
+
+    Sigma_ij_sparse = csc_matrix(Sigma_ij)
+
+    # cov_chol = cholesky(Sigma_ij_sparse)
+
+    return Sigma_ij_sparse
 
 def stack_ragged(array_list, axis=0):
     lengths = [np.shape(a)[axis] for a in array_list]

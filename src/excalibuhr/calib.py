@@ -1,5 +1,5 @@
 # File: src/excalibuhr/calib.py
-__all__ = ['Pipeline', 'CombineNights']
+__all__ = ['CriresPipeline', 'CombineNights']
 
 
 import os
