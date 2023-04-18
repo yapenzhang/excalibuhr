@@ -1984,16 +1984,19 @@ def SpecConvolve_GL(in_wlen, in_flux, out_res, gamma, in_res=1e6, verbose=False)
         return gamma / np.pi / (x**2 + gamma**2)
 
     sigma_LSF = np.sqrt(1./out_res**2-1./in_res**2)/(2.*np.sqrt(2.*np.log(2.)))
-    spacing = np.mean(2.*np.diff(in_wlen)/ \
-      (in_wlen[1:]+in_wlen[:-1]))
+    spacing = np.mean(2.*np.diff(in_wlen)/ (in_wlen[1:]+in_wlen[:-1]))
 
     # Calculate the sigma to be used in the gauss filter in pixels
     sigma_LSF_gauss_filter = sigma_LSF/spacing
     # print(sigma_LSF_gauss_filter, out_res, in_res)
+    
     xx = np.arange(-int(20*sigma_LSF_gauss_filter), int(20*sigma_LSF_gauss_filter+1), 1)
     win_G = G(xx, sigma_LSF_gauss_filter)
-    win_L = L(xx, gamma)
-    win_V = signal.convolve(win_L, win_G, mode='same') / sum(win_G)
+    if np.isclose(gamma, 0):
+        win_V = win_G
+    else:
+        win_L = L(xx, gamma)
+        win_V = signal.convolve(win_L, win_G, mode='same') / sum(win_G)
     flux_V = signal.convolve(in_flux, win_V, mode='same') / sum(win_V)
 
     return flux_V

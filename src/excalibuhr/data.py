@@ -24,15 +24,17 @@ class SPEC2D:
 
         """
         
-        if filename is None and wlen is not None:
+        if filename is not None:
+            self.wlen, self.flux, self.err = \
+                    np.genfromtxt(filename, skip_header=1, unpack=True)
+            self.reformat_data()
+        elif wlen is not None:
             self.wlen = wlen
             self.flux = flux
             self.err = err
             self.reformat_data()
         else:
-            self.wlen, self.flux, self.err = \
-                    np.genfromtxt(filename, skip_header=1, unpack=True)
-            self.reformat_data()
+            pass
 
 
     @property
