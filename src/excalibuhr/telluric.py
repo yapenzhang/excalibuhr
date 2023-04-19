@@ -23,11 +23,26 @@ def temp_quad_perturb(x, a):
     return quad
 
 
-def make_telluric_grid(savepath):
+def make_telluric_grid(savepath, 
+                       wave_range=[1850,2560],
+                       free_species=['H2O','CH4','CO2'],
+                       ):
 
     # Set the start and end wavelength, in nm
-    wavestart = 1850.0
-    waveend = 2560.0
+    wavestart = wave_range[0] 
+    waveend =  wave_range[1] 
+
+    nominal_ppmv = {
+        'H2O': 100.,
+        'CO2': 368.5, 
+        'O3': 3.9e-2, 
+        'N2O': 0.32, 
+        'CO': 0.14,
+        'CH4': 1.8,
+        'O2': 2.1e5,
+    }
+    all_species = nominal_ppmv.keys()
+    fixed_species = [s for s in all_species if s not in free_species]
 
     # Set parameter ranges of the grid
     h2o_range = np.array([0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]) 
@@ -37,7 +52,6 @@ def make_telluric_grid(savepath):
     # Make the model
     modeler = Modeler()
 
-    all_species = ['CO', 'N2O', 'CH4', 'CO2', 'H2O']
     # Read the atmopshere profile from Molecfit
     src_path = os.path.dirname(os.path.abspath(__file__))
     filename = os.path.join(src_path, '../../data/ATM_PROFILE_molecfit.fits')
@@ -47,137 +61,82 @@ def make_telluric_grid(savepath):
     temp = atm_profile['TEM']
     modeler.EditProfile("temperature", height, temp)
     modeler.EditProfile("pressure", height, press)
-    for species in all_species:
+    profile_change_species = ['CH4', 'CO2', 'H2O', 'O2', 'CO']
+    for species in profile_change_species:
         profile = atm_profile[species]
         modeler.EditProfile(species, height, profile)
 
+    grid = {}
     # Forward models with TelFit
     model = modeler.MakeModel(
                 angle=0.,
                 humidity=0.,
-                o3=0.039, 
+                o3=nominal_ppmv['O3'], 
                 ch4=0.,
                 co2=0., 
                 n2o=0., 
                 co=0., 
-                o2=0., no=0., so2=0., no2=0., nh3=0., hno3=0.,
+                o2=0., 
+                no=0., so2=0., no2=0., nh3=0., hno3=0.,
                 lat=tel_lat,
                 alt=tel_alt,
                 vac2air=False,
                 lowfreq=1e7/waveend,
                 highfreq=1e7/wavestart)
-    grid_o3 = model.y
-    wave = model.x
+    wave = model.x 
+    grid['O3'] = model.y
+    grid['WAVE'] = model.x
 
-    # plt.plot(wave, model.y)
-    # plt.show()
-
-    model = modeler.MakeModel(
-                angle=0.,
-                humidity=0.,
-                o3=0., 
-                ch4=0.,
-                co2=0., 
-                n2o=0.32, 
-                co=0., 
-                o2=0., no=0., so2=0., no2=0., nh3=0., hno3=0.,
-                lat=tel_lat,
-                alt=tel_alt,
-                wavegrid=wave,
-                vac2air=False,
-                lowfreq=1e7/waveend,
-                highfreq=1e7/wavestart)
-    grid_n2o = model.y
-
-    model = modeler.MakeModel(
-                angle=0.,
-                humidity=0.,
-                o3=0., 
-                ch4=0.,
-                co2=0., 
-                n2o=0., 
-                co=0.14, 
-                o2=0., no=0., so2=0., no2=0., nh3=0., hno3=0.,
-                lat=tel_lat,
-                alt=tel_alt,
-                wavegrid=wave,
-                vac2air=False,
-                lowfreq=1e7/waveend,
-                highfreq=1e7/wavestart)
-    grid_co = model.y
-
-
-    grid_t_ch4, grid_t_h2o, grid_t_co2 = [], [], []
-    for teff in teff_range:
-        modeler.EditProfile("temperature", height, temp*temp_quad_perturb(height, teff))
-        grid_ch4 = []
-        for ch4 in other_range:
+    for species in fixed_species:
+        if species != 'O3':
+            values = [nominal_ppmv[s]*float(s == species) for s in all_species]
             model = modeler.MakeModel(
+                    angle=0.,
+                    humidity=values[0],
+                    co2=values[1], 
+                    o3=values[2], 
+                    n2o=values[3], 
+                    co=values[4], 
+                    ch4=values[5],
+                    o2=values[6], 
+                    no=0., so2=0., no2=0., nh3=0., hno3=0.,
+                    lat=tel_lat,
+                    alt=tel_alt,
+                    wavegrid=wave,
+                    vac2air=False,
+                    lowfreq=1e7/waveend,
+                    highfreq=1e7/wavestart)
+            grid[species] = model.y
+    
+    for species in free_species:
+        grid_sp_t = []
+        for teff in teff_range:
+            grid_sp = []
+            modeler.EditProfile("temperature", height, temp*temp_quad_perturb(height, teff))
+            if species == 'H2O':
+                ppmv_range = h2o_range
+            else:
+                ppmv_range = other_range
+            for ppmv in ppmv_range:
+                values = [nominal_ppmv[s]*float(s == species)*ppmv for s in all_species]
+                model = modeler.MakeModel(
                         angle=0.,
-                        humidity=0.,
-                        o3=0., 
-                        ch4=1.8*ch4,
-                        co2=0., 
-                        n2o=0., 
-                        co=0., 
-                        o2=0., no=0., so2=0., no2=0., nh3=0., hno3=0.,
+                        humidity=values[0],
+                        co2=values[1], 
+                        o3=values[2], 
+                        n2o=values[3], 
+                        co=values[4], 
+                        ch4=values[5],
+                        o2=values[6], 
+                        no=0., so2=0., no2=0., nh3=0., hno3=0.,
                         lat=tel_lat,
                         alt=tel_alt,
-                        wavegrid=wave,
                         vac2air=False,
                         lowfreq=1e7/waveend,
                         highfreq=1e7/wavestart)
-            grid_ch4.append(model.y)
-        grid_t_ch4.append(grid_ch4)
+                grid_sp.append(model.y)
+            grid_sp_t.append(grid_sp)
+        grid[species] = grid_sp_t
 
-        grid_co2 = []
-        for co2 in other_range:
-            model = modeler.MakeModel(
-                        angle=0.,
-                        humidity=0.,
-                        o3=0., 
-                        ch4=0.,
-                        co2=368.5*co2, 
-                        n2o=0., 
-                        co=0., 
-                        o2=0., no=0., so2=0., no2=0., nh3=0., hno3=0.,
-                        lat=tel_lat,
-                        alt=tel_alt,
-                        wavegrid=wave,
-                        vac2air=False,
-                        lowfreq=1e7/waveend,
-                        highfreq=1e7/wavestart)
-            grid_co2.append(model.y)
-        grid_t_co2.append(grid_co2)
-
-        grid_h2o = []
-        for hum in h2o_range:
-            model = modeler.MakeModel(
-                        angle=0.,
-                        humidity=hum*100.,
-                        o3=0., 
-                        ch4=0.,
-                        co2=0., 
-                        n2o=0., 
-                        co=0., 
-                        o2=0., no=0., so2=0., no2=0., nh3=0., hno3=0.,
-                        lat=tel_lat,
-                        alt=tel_alt,
-                        wavegrid=wave,
-                        vac2air=False,
-                        lowfreq=1e7/waveend,
-                        highfreq=1e7/wavestart)
-            grid_h2o.append(model.y)
-        grid_t_h2o.append(grid_h2o)
-
-        
     filename = os.path.join(savepath, 'telfit_grid.fits')
-    su.wfits(filename, 
-            ext_list={"H2O": grid_t_h2o,
-                    "CH4": grid_t_ch4,
-                    "CO2": grid_t_co2,
-                    "N2O": grid_n2o,
-                    "CO": grid_co,
-                    "O3": grid_o3,
-                    "WAVE": wave
-            })
+    su.wfits(filename, ext_list=grid)
