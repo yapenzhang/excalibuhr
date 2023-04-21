@@ -27,6 +27,7 @@ import petitRADTRANS.poor_mans_nonequ_chem as pm
 from sksparse.cholmod import cholesky
 # import matplotlib.pyplot as plt 
 # signal.savgol_filter
+import corner
 import pylab as plt
 cmap = plt.get_cmap("tab10")
 
@@ -63,6 +64,29 @@ def getMM(species):
         return f.mass
     
     return f.isotope.massnumber
+
+def calc_elemental_ratio_posterior(a, b, params, samples):
+    tol = 1e-20
+    from molmass import Formula
+    abund_a, abund_b = [], []
+    for i, key in enumerate(params):
+        if key.split("_")[0] == 'logX':
+            species = ''.join(key.split("_")[1:])
+            if '36' in species:
+                species = '[13C]O'
+            f = Formula(species)
+            df = f.composition().dataframe()
+            if a in df.index:
+                abund_a.append(df.loc[a, 'Count']*1e1**samples[:,i])
+            if b in df.index:
+                if species == 'H2O':
+                    abund_b.append(df.loc[b, 'Count']*1e1**samples[:,i])
+                else:
+                    abund_b.append(df.loc[b, 'Count']*1e1**samples[:,i])
+    abund_a = np.sum(abund_a, axis=0)
+    abund_b = np.sum(abund_b, axis=0)
+
+    return abund_a/(abund_b+tol)
 
 def calc_elemental_ratio(a, b, abundances):
     tol = 1e-20
@@ -804,9 +828,9 @@ class Retrieval:
                             model_single[i] *= f_det
 
                 # add model uncertainties due to the inacurate molecular line list
-                if self.leave_out is not None and self.key_molecule_tolerance in self.params:
-                    cov += (self.params[self.key_molecule_tolerance].value * model_single)**2
-                if self.leave_out is not None and self.key_teff_tolerance in self.params:
+                if self.key_molecule_tolerance in self.params:
+                    cov += (self.params[self.key_molecule_tolerance].value * model_target)**2
+                if self.key_teff_tolerance in self.params:
                     cov += 1e1**self.params[self.key_teff_tolerance].value * self.temp[np.searchsorted(self.press, 1.)] / 3000.
 
 
@@ -941,25 +965,243 @@ class Retrieval:
             n_live_points = n_live_points)
         
 
-    def print_params_info(self, values):
-        name_params = [self.params[x].name for x in self.params if self.params[x].is_free]
-        for name, value in zip(name_params, values):
-            print(f"{name}: \t\t {value}")
+    def evaluation(self, 
+                   quantiles = [0.16,0.5,0.84], #[0.05,0.5,0.95],
+                   corner_plot=False, 
+                   params_corner=None,
+                   which_best='mean', 
+                   ):
+        self.debug = False
 
-    def best_fit_model(self, which='mean', leave_out=None):
-        self.debug = True
-        a = pymultinest.Analyzer(n_params=self.n_params, outputfiles_basename=self.prefix)
-        s = a.get_stats()
-        best_fit = s['modes'][0][which]
-        # self.print_params_info(best_fit[:self.n_params])
+        parameters = json.load(open(self.prefix + 'params.json'))
 
-        name_params = [self.params[x].name for x in self.params if self.params[x].is_free]
-        if leave_out is not None:
-            for i, key in enumerate(name_params):
-                if key == f'logX_{leave_out}':
-                    best_fit[i] = -20
-                    break 
+        analyzer = pymultinest.Analyzer(n_params=self.n_params, outputfiles_basename=self.prefix)
+        s = analyzer.get_stats()
+        
+        samples = np.genfromtxt(self.prefix+'post_equal_weights.dat')
 
-        fig, axes = self.loglike(best_fit[:self.n_params], self.n_params, self.n_params)
+        # add derived C/O and 12/13C ratio if not in the parameter list
+        if self.key_carbon_to_oxygen not in parameters:
+            c2o = calc_elemental_ratio_posterior('C','O', parameters, samples)
+            samples = np.concatenate((c2o[:,np.newaxis], samples), axis=1)
+            parameters = [self.key_carbon_to_oxygen] + parameters
+        if self.key_carbon_iso not in parameters:
+            c_iso = calc_elemental_ratio_posterior('C','13C', parameters, samples)
+            samples = np.concatenate((c_iso[:,np.newaxis], samples), axis=1)
+            parameters = [self.key_carbon_iso] + parameters
+            
+        
+        json.dump(s, open(self.prefix + 'stats.json', 'w'), indent=4)
 
-        return self.model_rebin, fig, axes
+        with open(self.prefix+'summary.txt', 'w') as f:
+            print('  marginal likelihood:', file=f)
+            print('    ln Z = %.1f +- %.1f' % (s['global evidence'], s['global evidence error']), file=f)
+            print('  parameters:', file=f)
+            param_quantiles = []
+            for k, x in enumerate(samples[:,:-1].T):
+                qs = self._quantile(x, quantiles)
+                param_quantiles.append(qs)
+                med = qs[1]
+                sigma = (qs[-1]-qs[0])/2.
+                if sigma == 0:
+                    i = 3
+                else:
+                    i = max(0, int(-np.floor(np.log10(sigma))) + 1)
+                fmt = '%%.%df' % i
+                fmts = '\t'.join(['    %-20s' + fmt + " +- " + fmt])
+                print(fmts % (parameters[k], med, sigma), file=f)
+
+        if params_corner is not None:
+            param_indices = []
+            for i, p in enumerate(parameters):
+                if p in params_corner:
+                    param_indices.append(i)
+        else:
+            param_indices = range(len(parameters))
+        samples_use = samples[:, param_indices]
+        param_labels = [parameters[i] for i in param_indices]
+        param_quantiles = np.array(param_quantiles)[param_indices]
+        param_range = [(4*(qs[0]-qs[1])+qs[1], 4*(qs[2]-qs[1])+qs[1]) for qs in param_quantiles] 
+
+        # corner plot
+        if corner_plot:
+            posterior_color = 'C0'
+            cmap_hue = plt.get_cmap("tab20c")
+
+            fig = plt.figure(figsize=(15,15))
+            fig = corner.corner(samples_use, 
+                                fig=fig, 
+                                labels=param_labels,
+                                range=param_range,
+                                show_titles=True, 
+                                title_fmt='.2f', 
+                                # use_math_text=True, 
+                                title_kwargs={'fontsize':9}, 
+                                # bins=20, 
+                                max_n_ticks=4, 
+                                quantiles=quantiles, 
+                                color=posterior_color, 
+                                hist_kwargs={'color':posterior_color}, 
+                                fill_contours=True, 
+                                )
+
+            param_envelope, envelope_temp, envelope_vmr = [], [], []
+            for m in s['marginals']:
+                param_p = []
+                for k in range(1,4):
+                    lo, hi = m[f'{k}sigma']
+                    param_p.append(lo)
+                    param_p.append(hi)
+                param_p.append(m['median'])
+                param_envelope.append(param_p)
+            param_envelope = np.array(param_envelope).T
+            for param_set in param_envelope:
+                # set parameters
+                i_p = 0 # parameter count
+                for pp in self.params:
+                    if self.params[pp].is_free:
+                        self.params[pp].set_value(param_set[i_p])
+                        i_p += 1
+                self.temp = self.PT_model()
+                self.abundances, self.MMW = self.chem_model()
+                envelope_temp.append(self.temp)
+                envelope_vmr.append(self.abundances)
+            
+            # plot the PT profile and envelope
+            ax_PT = fig.add_axes([0.52,0.7,0.2,0.2])
+            for i in range(3):
+                ax_PT.fill_betweenx(self.press, envelope_temp[i*2], envelope_temp[i*2+1],
+                                   facecolor=cmap_hue(i), zorder=10-i)
+            ax_PT.plot(envelope_temp[-1], self.press, color=posterior_color, zorder=11)
+            ax_PT.set_xlabel('Temperature (K)')
+            ax_PT.set_ylabel('Pressure (bar)')
+            ax_PT.set_yscale('log')
+            ax_PT.set_ylim([self.press[-1], self.press[0]])
+            ax_PT.set_xlim([envelope_temp[-3][0], envelope_temp[-2][-1]])
+
+            # Plot the VMR per species
+            ax_vmr = fig.add_axes([0.78,0.7,0.2,0.2])
+            for k, key in enumerate(self.line_species):
+                for i in range(3):
+                    ax_vmr.fill_betweenx(self.press, 
+                                         envelope_vmr[i*2][key]/getMM(key)*self.MMW, 
+                                         envelope_vmr[i*2+1][key]/getMM(key)*self.MMW,
+                                         facecolor=cmap_hue(k*4+i), zorder=10-i)
+                ax_vmr.plot(envelope_vmr[-1][key]/getMM(key)*self.MMW, self.press, color=cmap(k), label=key, zorder=11)
+            ax_vmr.set_xlabel('VMR')
+            ax_vmr.set_ylabel('Pressure (bar)')
+            ax_vmr.set_yscale('log')
+            ax_vmr.set_xscale('log')
+            ax_vmr.set_ylim([self.press[-1], self.press[0]])
+            ax_vmr.set_xlim([1e-8, 1e-1])
+            ax_vmr.legend(loc='best')
+
+            plt.savefig(self.prefix+'corner.pdf')
+
+        # plot best-fit model
+        best_fit_params = s['modes'][0][which_best]
+        self.loglike(best_fit_params[:self.n_params], self.n_params, self.n_params)
+        self.make_best_fit_plot()
+        
+
+    def make_best_fit_plot(self):
+        self._set_plot_style()
+        model = self.model_rebin
+        nrows = 0
+        for instrument in self.obs.keys():
+            if instrument != 'photometry':
+                nrows += self.obs[instrument].Nchip//3
+        fig, axes = plt.subplots(nrows=nrows*2, ncols=1, 
+                          figsize=(12,nrows*3), constrained_layout=True,
+                          gridspec_kw={"height_ratios": [3,1]*nrows})
+        for instrument in self.obs.keys():
+            if instrument != 'photometry':
+                for i in range(nrows):
+                    ax, ax_res = axes[2*i], axes[2*i+1]
+                    wmin, wmax = self.obs[instrument].wlen[i*3][0], self.obs[instrument].wlen[min(i*3+2, self.obs[instrument].wlen.shape[0]-1)][-1]
+                    ymin, ymax = 1, 0
+                    for j in range(min(3, self.obs[instrument].wlen.shape[0]-3*i)):
+                        x, y, y_err = self.obs[instrument].wlen[i*3+j], self.obs[instrument].flux[i*3+j], self.obs[instrument].err[i*3+j]
+                        y_model = model[instrument][i*3+j]
+                        ax.errorbar(x, y, y_err, color='k', alpha=0.8)
+                        ax.plot(x, y_model,  color='C1', alpha=0.8, zorder=10)
+                        ax_res.plot(x, y-y_model,  color='k', alpha=0.8)
+                        nans = np.isnan(y)
+                        vmin, vmax = np.percentile(y_model, (1, 99))
+                        ymin, ymax = min(vmin, ymin), max(vmax, ymax)
+                        rmin, rmax = np.percentile((y-y_model)[~nans], (1, 99))
+
+                    ax.set_xlim((wmin, wmax))
+                    ax_res.set_xlim((wmin, wmax))
+                    ax.set_ylim((ymin*0.9, ymax*1.1))
+                    ax_res.set_ylim((rmin*0.9, rmax*1.1))
+                    ax.set_xticklabels([])
+                    ax.set_ylabel(r'Flux')
+                    ax_res.set_ylabel(r'Residual')
+        axes[-1].set_xlabel('Wavelength (nm)')
+        plt.savefig(self.prefix+'best_fit_spec.pdf')
+        # plt.show()
+        plt.close(fig)
+
+
+    def _set_plot_style(self):
+        plt.rcParams.update(plt.rcParamsDefault)
+        plt.rcParams.update({
+            'font.size': 10,
+            "xtick.labelsize": 10,   
+            "ytick.labelsize": 10,   
+            "xtick.direction": 'in', 
+            "ytick.direction": 'in', 
+            'ytick.right': True,
+            'xtick.top': True,
+            "xtick.minor.visible": True,
+            "ytick.minor.visible": True,
+            # "xtick.major.size": 5,
+            # "xtick.minor.size": 2.5,
+            "lines.linewidth": 1.5,   
+            'image.origin': 'lower',
+            'image.cmap': 'cividis',
+            "savefig.dpi": 300,   
+            })
+
+    def _quantile(self, x, q, weights=None):
+        """
+        Compute (weighted) quantiles from an input set of samples.
+        Parameters
+        ----------
+        x : `~numpy.ndarray` with shape (nsamps,)
+            Input samples.
+        q : `~numpy.ndarray` with shape (nquantiles,)
+        The list of quantiles to compute from `[0., 1.]`.
+        weights : `~numpy.ndarray` with shape (nsamps,), optional
+            The associated weight from each sample.
+        Returns
+        -------
+        quantiles : `~numpy.ndarray` with shape (nquantiles,)
+            The weighted sample quantiles computed at `q`.
+        """
+
+        # Initial check.
+        x = np.atleast_1d(x)
+        q = np.atleast_1d(q)
+
+        # Quantile check.
+        if np.any(q < 0.0) or np.any(q > 1.0):
+            raise ValueError("Quantiles must be between 0. and 1.")
+
+        if weights is None:
+            # If no weights provided, this simply calls `np.percentile`.
+            return np.percentile(x, list(100.0 * q))
+        else:
+            # If weights are provided, compute the weighted quantiles.
+            weights = np.atleast_1d(weights)
+            if len(x) != len(weights):
+                raise ValueError("Dimension mismatch: len(weights) != len(x).")
+            idx = np.argsort(x)  # sort samples
+            sw = weights[idx]  # sort weights
+            cdf = np.cumsum(sw)[:-1]  # compute CDF
+            cdf /= cdf[-1]  # normalize CDF
+            cdf = np.append(0, cdf)  # ensure proper span
+            quantiles = np.interp(q, cdf, x[idx]).tolist()
+            return quantiles
+        

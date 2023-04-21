@@ -250,6 +250,7 @@ class SPEC2D:
         return self
 
     def _set_plot_style(self):
+        plt.rcParams.update(plt.rcParamsDefault)
         plt.rcParams.update({
             'font.size': 10,
             "xtick.labelsize": 10,   
