@@ -2,7 +2,7 @@ import os
 import sys
 import numpy as np 
 from astropy.io import fits
-from telfit import Modeler
+# from telfit import Modeler
 import excalibuhr.utils as su
 
 class TelluricGrid:
@@ -155,7 +155,7 @@ class TelluricGrid:
     def combine_grid(self):
         grid = {}
         file_tmp = []
-        for species in self.all_species + ['WAVE']:
+        for species in list(self.all_species) + ['WAVE']:
             filename = os.path.join(self.savepath, f'telfit_{species}.fits')
             dt = fits.getdata(filename)
             grid[species] = dt 
@@ -166,5 +166,9 @@ class TelluricGrid:
 
     def load_grid(self):
         filename = os.path.join(self.savepath, 'telfit_grid.fits')
-        grid = fits.getdata(filename)
+        hdul = fits.open(filename)
+        grid = {}
+        for i, hdu in enumerate(hdul):
+            if i > 0:
+                grid[hdu.name] = hdu.data
         return grid

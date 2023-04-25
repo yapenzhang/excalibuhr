@@ -30,6 +30,7 @@ from sksparse.cholmod import cholesky
 import corner
 import pylab as plt
 cmap = plt.get_cmap("tab10")
+cmap_hue = plt.get_cmap("tab20c")
 
 def getMM(species):
     """
@@ -65,8 +66,19 @@ def getMM(species):
     
     return f.isotope.massnumber
 
-def calc_elemental_ratio_posterior(a, b, params, samples):
+def calc_abundance_ratio_posterior(a, b, params, samples):
     tol = 1e-20
+    MMW = 2.33
+    elemental_solar = {
+        'H': 12,
+        'He': 10.914,
+        'C': 8.46,
+        'N': 7.83,
+        'O': 8.69,
+        'Na': 6.22,
+        'Ca': 6.30,
+        'Fe': 7.46,
+    }
     from molmass import Formula
     abund_a, abund_b = [], []
     for i, key in enumerate(params):
@@ -77,16 +89,22 @@ def calc_elemental_ratio_posterior(a, b, params, samples):
             f = Formula(species)
             df = f.composition().dataframe()
             if a in df.index:
-                abund_a.append(df.loc[a, 'Count']*1e1**samples[:,i])
+                abund_a.append(df.loc[a, 'Count']*1e1**samples[:,i]/getMM(species)*MMW)
             if b in df.index:
                 if species == 'H2O':
-                    abund_b.append(df.loc[b, 'Count']*1e1**samples[:,i])
+                    abund_b.append(df.loc[b, 'Count']*1e1**samples[:,i]/getMM(species)*MMW*1.)
                 else:
-                    abund_b.append(df.loc[b, 'Count']*1e1**samples[:,i])
+                    abund_b.append(df.loc[b, 'Count']*1e1**samples[:,i]/getMM(species)*MMW)
     abund_a = np.sum(abund_a, axis=0)
     abund_b = np.sum(abund_b, axis=0)
+    if b == 'H':
+        abund_b += 2. * 0.84
+        ratio = np.log10(abund_a/abund_b) - (elemental_solar[a] - 12)
+    else:
+        ratio = abund_a/(abund_b+tol)
+    return ratio
 
-    return abund_a/(abund_b+tol)
+
 
 def calc_elemental_ratio(a, b, abundances):
     tol = 1e-20
@@ -225,7 +243,7 @@ class Retrieval:
                 'key_airmass': 'airmass',
                 'key_carbon_to_oxygen': 'C/O',
                 'key_carbon_iso': '13/12C',
-                'key_metalicity': '[Fe/H]',
+                'key_metallicity': '[C/H]',
                 'key_gravity': 'logg',
                 'key_tellu_temp': 'tellu_temp',
                 'key_quench': 'log_P_quench',
@@ -388,7 +406,7 @@ class Retrieval:
 
         self.add_parameter(self.key_carbon_iso, prior=(-12, 0))
         self.add_parameter(self.key_carbon_to_oxygen, prior=(0.1, 1.5))
-        self.add_parameter(self.key_metalicity, prior=(-1.5, 1.5))
+        self.add_parameter(self.key_metallicity, prior=(-1.5, 1.5))
         self.add_parameter(self.key_quench, value=-10, 
                            prior=(np.log10(self.press[0]), np.log10(self.press[-1])))
         
@@ -397,7 +415,7 @@ class Retrieval:
     def equ_chem_model(self):
 
         COs = self.params[self.key_carbon_to_oxygen].value * np.ones_like(self.press)
-        FeHs = self.params[self.key_metalicity].value * np.ones_like(self.press)
+        FeHs = self.params[self.key_metallicity].value * np.ones_like(self.press)
         abund_interp = pm.interpol_abundances(
                     COs, FeHs, 
                     self.temp, self.press,
@@ -423,10 +441,19 @@ class Retrieval:
     
         
     
-    def forward_model_pRT(self, leave_out=None):
+    def forward_model_pRT(self, leave_out=None, contribution=False):
 
         # get temperarure profile
         self.temp = self.PT_model()
+
+        # if self.debug:
+        #     plt.plot(self.temp, self.press)
+        #     plt.ylim([self.press[-1],self.press[0]])
+        #     plt.yscale('log')
+        #     plt.xlabel('T (K)')
+        #     plt.ylabel('Pressure (bar)')
+        #     plt.show()
+        #     plt.clf()
 
         # get chemical abundances and mean molecular weight
         self.abundances, self.MMW = self.chem_model()
@@ -445,7 +472,7 @@ class Retrieval:
                         self.abundances,
                         1e1**self.params[self.key_gravity].value,
                         self.MMW,
-                        # contribution=contribution,
+                        contribution=contribution,
                         )
                 # convert flux f_nu to f_lambda in unit of W/cm**2/um
                 f_lambda = rt_object.flux*rt_object.freq**2./nc.c * 1e-7
@@ -456,39 +483,45 @@ class Retrieval:
                 model.append([wlen_nm, f_lambda])
             self.model_native[instrument] = model
 
-        # if self.debug:
-        #     plt.plot(self.temp, self.press)
-        #     plt.ylim([self.press[-1],self.press[0]])
-        #     plt.yscale('log')
-        #     plt.xlabel('T (K)')
-        #     plt.ylabel('Pressure (bar)')
-        #     plt.show()
-        #     plt.clf()
+        if contribution:
+            contr_em = rt_object.contr_em
+            contr = np.zeros(contr_em.shape[0])
+            for i,h in enumerate(contr_em):
+                integrand1 = wlen_nm*h*f_lambda
+                integrand2 = wlen_nm*f_lambda
+                integral1 = np.trapz(integrand1, wlen_nm)
+                integral2 = np.trapz(integrand2, wlen_nm)
+                contr[i] = integral1/integral2
+            return contr
+        
 
     def add_telluric_model(self, 
                            tellu_species=['H2O', 'CH4', 'CO2'],
                            tellu_grid_path=None,
                            ):
-        self.tellu_species = tellu_species
-        tellu_grid_path = self.out_dir
-        tellu_grid = TelluricGrid(tellu_grid_path,
-                    #  wave_range=,
-                     free_species=self.tellu_species)
-        self.tellu_grid = tellu_grid.load_grid()
-        self.humidity_range = tellu_grid.humidity_range
-        self.ppmv_range = tellu_grid.ppmv_range
-        self.temp_range = tellu_grid.temp_range
-        self.fixed_species = [s for s in tellu_grid.all_species if s not in tellu_grid.free_species]
+        if self.fit_telluric:
         
-        self.add_parameter(self.key_airmass, prior=(1., 3.))
-        self.add_parameter(self.key_tellu_temp, prior=(self.temp_range[0], self.temp_range[-1]))
-        
-        for species in tellu_species:
-            param_name = "tellu_" + species.split('_')[0]
-            if species == 'H2O':
-                self.add_parameter(param_name, prior=(self.humidity_range[0], self.humidity_range[-1]))
-            else:
-                self.add_parameter(param_name, prior=(self.ppmv_range[0], self.ppmv_range[-1]))
+            self.tellu_species = tellu_species
+            if tellu_grid_path is None:
+                tellu_grid_path = os.path.join(self.out_dir, '../')
+            tellu_grid = TelluricGrid(tellu_grid_path,
+                        #  wave_range=,
+                        free_species=self.tellu_species)
+            self.tellu_grid = tellu_grid.load_grid()
+            self.humidity_range = tellu_grid.humidity_range
+            self.ppmv_range = tellu_grid.ppmv_range
+            self.temp_range = tellu_grid.temp_range
+            self.fixed_species = [s for s in tellu_grid.all_species if s not in tellu_grid.free_species]
+            
+            self.add_parameter(self.key_airmass, prior=(1., 3.))
+            self.add_parameter(self.key_tellu_temp, prior=(self.temp_range[0], self.temp_range[-1]))
+            
+            for species in tellu_species:
+                param_name = "tellu_" + species.split('_')[0]
+                if species == 'H2O':
+                    self.add_parameter(param_name, prior=(self.humidity_range[0], self.humidity_range[-1]))
+                else:
+                    self.add_parameter(param_name, prior=(self.ppmv_range[0], self.ppmv_range[-1]))
 
 
     def forward_model_telluric(self):
@@ -507,10 +540,10 @@ class Retrieval:
         for species in self.fixed_species:
             y *= self.tellu_grid[species]
         tellu_native = y**(self.params[self.key_airmass].value)
-        self.model_tellu = interp1d(self.w_tellu_native, tellu_native, bounds_error=False, fill_value='extrapolate')
+        self.model_tellu = interp1d(self.tellu_grid['WAVE'], tellu_native, bounds_error=False, fill_value='extrapolate')
         
         # if self.debug:
-        #     plt.plot(self.w_tellu_native, tellu_native)
+        #     plt.plot(self.tellu_grid['WAVE'], tellu_native)
         #     plt.show()
 
     def plot_model_debug(self, model):
@@ -637,7 +670,7 @@ class Retrieval:
             # self.plot_model_debug(self.model_convolved)
             # self.plot_rebin_model_debug(self.model_rebin)
 
-    def add_poly_model(self): #or spline?
+    def add_poly_model(self): 
         if self.fit_poly:
             for instrument in self.obs.keys():
                 if instrument != 'photometry':
@@ -674,7 +707,7 @@ class Retrieval:
         #     self.plot_rebin_model_debug(self.model_rebin)
 
 
-    def add_GP(self, GP_chip_bin=None, prior_amp=(-6,-3), prior_tau=(-5,0)):
+    def add_GP(self, GP_chip_bin=None, prior_amp=(-6,-2), prior_tau=(-5,0)):
         if self.fit_GP:
             for instrument in self.obs.keys():
                 if instrument != 'photometry':
@@ -687,21 +720,28 @@ class Retrieval:
                             self.add_parameter(f"GP_{instrument}_tau_{i:02}", prior=prior_tau)
         
 
-    def calc_scaling(self, y_model, y_data, y_cov):
+    def calc_scaling(self, y_model, y_data, y_cov, rcond=None):
         if y_cov.ndim == 2:
             # sparse Cholesky decomposition
             cov_chol = cholesky(y_cov)
             # Scale the model flux to minimize the chi-squared
-            lhs = np.dot(y_model, cov_chol.solve_A(y_model))
-            rhs = np.dot(y_model, cov_chol.solve_A(y_data))
-            f_det = rhs/lhs
+            lhs = np.dot(y_model.T, cov_chol.solve_A(y_model))
+            rhs = np.dot(y_model.T, cov_chol.solve_A(y_data))
+            if y_model.ndim == 1:
+                f_det = rhs/lhs
+            else:
+                f_det, _, _, _ = np.linalg.lstsq(lhs, rhs, rcond=rcond)
             
         elif y_cov.ndim == 1:
             # Scale the model flux to minimize the chi-squared
-            lhs = np.dot(y_model, 1/y_cov * y_model)
-            rhs = np.dot(y_model, 1/y_cov * y_data)
-            f_det = rhs/lhs
-        return f_det
+            lhs = np.dot(y_model.T, 1/y_cov * y_model)
+            rhs = np.dot(y_model.T, 1/y_cov * y_data)
+            if y_model.ndim == 1:
+                f_det = rhs/lhs
+            else:
+                f_det, _, _, _ = np.linalg.lstsq(lhs, rhs, rcond=rcond)
+            
+        return f_det.T
     
     def calc_err_infaltion(self, y_model, y_data, y_cov):
         if y_cov.ndim == 2:
@@ -756,21 +796,23 @@ class Retrieval:
         log_likelihood, chi2_reduced, N = 0., 0., 0
 
         if self.leave_out is not None:
-            i_p = 0 # parameter count
-            for pp in self.params:
-                if self.params[pp].is_free:
-                    self.params[pp].set_value(cube[i_p])
-                    i_p += 1
+            model_reduced = []
+            for neglect_sp in self.leave_out:
+                i_p = 0 # parameter count
+                for pp in self.params:
+                    if self.params[pp].is_free:
+                        self.params[pp].set_value(cube[i_p])
+                        i_p += 1
 
-            self.forward_model_pRT(leave_out=self.leave_out)
-            if self.fit_telluric:
-                self.forward_model_telluric()
-            self.apply_rot_broaden_rv_shift()
-            self.apply_instrument_broaden()
-            self.apply_rebin_to_obs_wlen()
-            if self.fit_poly:
-                self.apply_poly_continuum()
-            model_reduced = copy.copy(self.model_rebin)
+                self.forward_model_pRT(leave_out=neglect_sp)
+                if self.fit_telluric:
+                    self.forward_model_telluric()
+                self.apply_rot_broaden_rv_shift()
+                self.apply_instrument_broaden()
+                self.apply_rebin_to_obs_wlen()
+                if self.fit_poly:
+                    self.apply_poly_continuum()
+                model_reduced.append(copy.copy(self.model_rebin))
             
         # draw parameter values from cube
         i_p = 0 # parameter count
@@ -802,8 +844,11 @@ class Retrieval:
                     N += 1
             else:
                 model_target = self.model_rebin[instrument]
+                model_single = []
                 if self.leave_out is not None:
-                    model_single = model_target - model_reduced[instrument]
+                    for ind_sp in range(len(self.leave_out)):
+                        model_single.append(model_target - model_reduced[ind_sp][instrument])
+                
                 obs_target = self.obs[instrument]._copy()
                 if self.fit_GP:
                     amp = [1e1**self.params[key].value for key in self.params \
@@ -817,21 +862,39 @@ class Retrieval:
                     cov = obs_target.cov
                 else:
                     cov = obs_target.err**2
+                
+                if self.fit_spline:
+                    _, M_spline = obs_target.make_spline_model(self.fit_spline)
+                    model_splined = M_spline * model_target[:, :, None]
 
-                f_dets = np.ones(obs_target.Nchip)
+                    f_dets = np.ones(model_splined.shape[:-1])
+                    for i in range(obs_target.Nchip):
+                        f_det = self.calc_scaling(model_splined[i], obs_target.flux[i], cov[i])
+                        f_dets[i] = f_det
+                        model_target[i] = np.dot(model_splined[i], f_det)
+                        # if self.leave_out is not None:
+                        #     model_single[i] = np.dot(model_single[i], f_det)
+
+
                 if self.fit_scaling:
+                    f_dets = np.ones(model_target.shape[:-1])
                     for i in range(obs_target.Nchip):
                         f_det = self.calc_scaling(model_target[i], obs_target.flux[i], cov[i])
                         f_dets[i] = f_det
                         model_target[i] *= f_det
                         if self.leave_out is not None:
-                            model_single[i] *= f_det
+                            for ind_sp in range(len(self.leave_out)):
+                                model_single[ind_sp][i] *= f_det
 
+                # print(cov)
                 # add model uncertainties due to the inacurate molecular line list
-                if self.key_molecule_tolerance in self.params:
-                    cov += (self.params[self.key_molecule_tolerance].value * model_target)**2
+                if "beta_0" in self.params:
+                    for ind_sp in range(len(self.leave_out)):
+                        key = f"beta_{ind_sp}"
+                        cov += (self.params[key].value * model_single[ind_sp])**2
+                # print(cov)
                 if self.key_teff_tolerance in self.params:
-                    cov += 1e1**self.params[self.key_teff_tolerance].value * self.temp[np.searchsorted(self.press, 1.)] / 3000.
+                    cov += 1e1**self.params[self.key_teff_tolerance].value #* self.temp[np.searchsorted(self.press, 1.)] / 3000.
 
 
                 betas = np.ones(obs_target.Nchip)
@@ -849,7 +912,7 @@ class Retrieval:
                     N += obs_target.flux.size
             
                 self.model_rebin[instrument] = model_target
-                self.model_reduce[instrument] = model_single
+                # self.model_reduce[instrument] = model_single
                 self.flux_scaling[instrument] = f_dets
                 self.err_infaltion[instrument] = betas
         
@@ -876,6 +939,7 @@ class Retrieval:
               fit_GP=False, 
               fit_poly=1, 
               fit_scaling=True, 
+              fit_spline=False,
               fit_err_inflation=False,
               fit_telluric=False, 
               tellu_grid_path=None,
@@ -894,6 +958,7 @@ class Retrieval:
         self.fit_GP = fit_GP
         self.fit_poly = fit_poly
         self.fit_scaling = fit_scaling
+        self.fit_spline = fit_spline
         self.fit_err_inflation = fit_err_inflation
         self.fit_telluric = fit_telluric
         self.fit_instrument_kernel = fit_instrument_kernel
@@ -916,8 +981,7 @@ class Retrieval:
         elif chemistry == 'equ':
             self.add_equ_chem_model()
         
-        if fit_telluric:
-            self.add_telluric_model(tellu_grid_path=tellu_grid_path)
+        self.add_telluric_model(tellu_grid_path=tellu_grid_path)
         
         self.add_instrument_kernel(Lorentzian_kernel)
         self.add_poly_model()
@@ -972,6 +1036,7 @@ class Retrieval:
                    which_best='mean', 
                    ):
         self.debug = False
+        self.main_color = 'C1'
 
         parameters = json.load(open(self.prefix + 'params.json'))
 
@@ -982,11 +1047,14 @@ class Retrieval:
 
         # add derived C/O and 12/13C ratio if not in the parameter list
         if self.key_carbon_to_oxygen not in parameters:
-            c2o = calc_elemental_ratio_posterior('C','O', parameters, samples)
+            c2h = calc_abundance_ratio_posterior('C','H', parameters, samples)
+            samples = np.concatenate((c2h[:,np.newaxis], samples), axis=1)
+            parameters = [self.key_metallicity] + parameters
+            c2o = calc_abundance_ratio_posterior('C','O', parameters, samples)
             samples = np.concatenate((c2o[:,np.newaxis], samples), axis=1)
             parameters = [self.key_carbon_to_oxygen] + parameters
         if self.key_carbon_iso not in parameters:
-            c_iso = calc_elemental_ratio_posterior('C','13C', parameters, samples)
+            c_iso = calc_abundance_ratio_posterior('C','13C', parameters, samples)
             samples = np.concatenate((c_iso[:,np.newaxis], samples), axis=1)
             parameters = [self.key_carbon_iso] + parameters
             
@@ -996,7 +1064,8 @@ class Retrieval:
         with open(self.prefix+'summary.txt', 'w') as f:
             print('  marginal likelihood:', file=f)
             print('    ln Z = %.1f +- %.1f' % (s['global evidence'], s['global evidence error']), file=f)
-            print('  parameters:', file=f)
+            print(' ', file=f)
+            print('  parameters \t values +- 1sigma:', file=f)
             param_quantiles = []
             for k, x in enumerate(samples[:,:-1].T):
                 qs = self._quantile(x, quantiles)
@@ -1025,8 +1094,6 @@ class Retrieval:
 
         # corner plot
         if corner_plot:
-            posterior_color = 'C0'
-            cmap_hue = plt.get_cmap("tab20c")
 
             fig = plt.figure(figsize=(15,15))
             fig = corner.corner(samples_use, 
@@ -1040,8 +1107,8 @@ class Retrieval:
                                 # bins=20, 
                                 max_n_ticks=4, 
                                 quantiles=quantiles, 
-                                color=posterior_color, 
-                                hist_kwargs={'color':posterior_color}, 
+                                color=self.main_color, 
+                                hist_kwargs={'color':self.main_color}, 
                                 fill_contours=True, 
                                 )
 
@@ -1069,32 +1136,11 @@ class Retrieval:
             
             # plot the PT profile and envelope
             ax_PT = fig.add_axes([0.52,0.7,0.2,0.2])
-            for i in range(3):
-                ax_PT.fill_betweenx(self.press, envelope_temp[i*2], envelope_temp[i*2+1],
-                                   facecolor=cmap_hue(i), zorder=10-i)
-            ax_PT.plot(envelope_temp[-1], self.press, color=posterior_color, zorder=11)
-            ax_PT.set_xlabel('Temperature (K)')
-            ax_PT.set_ylabel('Pressure (bar)')
-            ax_PT.set_yscale('log')
-            ax_PT.set_ylim([self.press[-1], self.press[0]])
-            ax_PT.set_xlim([envelope_temp[-3][0], envelope_temp[-2][-1]])
+            self.make_PT_plot(ax_PT, envelope_temp)
 
             # Plot the VMR per species
             ax_vmr = fig.add_axes([0.78,0.7,0.2,0.2])
-            for k, key in enumerate(self.line_species):
-                for i in range(3):
-                    ax_vmr.fill_betweenx(self.press, 
-                                         envelope_vmr[i*2][key]/getMM(key)*self.MMW, 
-                                         envelope_vmr[i*2+1][key]/getMM(key)*self.MMW,
-                                         facecolor=cmap_hue(k*4+i), zorder=10-i)
-                ax_vmr.plot(envelope_vmr[-1][key]/getMM(key)*self.MMW, self.press, color=cmap(k), label=key, zorder=11)
-            ax_vmr.set_xlabel('VMR')
-            ax_vmr.set_ylabel('Pressure (bar)')
-            ax_vmr.set_yscale('log')
-            ax_vmr.set_xscale('log')
-            ax_vmr.set_ylim([self.press[-1], self.press[0]])
-            ax_vmr.set_xlim([1e-8, 1e-1])
-            ax_vmr.legend(loc='best')
+            self.make_VMR_plot(ax_vmr, envelope_vmr)
 
             plt.savefig(self.prefix+'corner.pdf')
 
@@ -1103,6 +1149,42 @@ class Retrieval:
         self.loglike(best_fit_params[:self.n_params], self.n_params, self.n_params)
         self.make_best_fit_plot()
         
+
+    def make_PT_plot(self, ax_PT, envelope_temp):
+        for i in range(3):
+            ax_PT.fill_betweenx(self.press, envelope_temp[i*2], envelope_temp[i*2+1],
+                                facecolor=cmap_hue(i), zorder=10-i)
+        ax_PT.plot(envelope_temp[-1], self.press, color=self.main_color, zorder=11)
+        ax_PT.set_xlabel('Temperature (K)')
+        ax_PT.set_ylabel('Pressure (bar)')
+        ax_PT.set_yscale('log')
+        ax_PT.set_ylim([self.press[-1], self.press[0]])
+        ax_PT.set_xlim([envelope_temp[-3][0], envelope_temp[-2][-1]])
+
+        contri = self.forward_model_pRT(contribution=True)
+        ax_contri = ax_PT.twiny()
+        ax_contri.set_yscale('log')
+        ax_contri.plot(contri, self.press, ':k', zorder=-11)
+        ax_contri.set_xlim(0,np.max(contri))
+        ax_contri.tick_params(axis='x', which='both', top=False, labeltop=False)
+
+
+    def make_VMR_plot(self, ax_vmr, envelope_vmr):
+        for k, key in enumerate(self.line_species):
+            for i in range(3):
+                ax_vmr.fill_betweenx(self.press, 
+                                        envelope_vmr[i*2][key]/getMM(key)*self.MMW, 
+                                        envelope_vmr[i*2+1][key]/getMM(key)*self.MMW,
+                                        facecolor=cmap_hue(k*4+i), zorder=10-i)
+            ax_vmr.plot(envelope_vmr[-1][key]/getMM(key)*self.MMW, self.press, color=cmap(k), label=key, zorder=11)
+        ax_vmr.set_xlabel('VMR')
+        ax_vmr.set_ylabel('Pressure (bar)')
+        ax_vmr.set_yscale('log')
+        ax_vmr.set_xscale('log')
+        ax_vmr.set_ylim([self.press[-1], self.press[0]])
+        ax_vmr.set_xlim([1e-8, 1e-1])
+        ax_vmr.legend(loc='best')
+
 
     def make_best_fit_plot(self):
         self._set_plot_style()
@@ -1124,7 +1206,7 @@ class Retrieval:
                         x, y, y_err = self.obs[instrument].wlen[i*3+j], self.obs[instrument].flux[i*3+j], self.obs[instrument].err[i*3+j]
                         y_model = model[instrument][i*3+j]
                         ax.errorbar(x, y, y_err, color='k', alpha=0.8)
-                        ax.plot(x, y_model,  color='C1', alpha=0.8, zorder=10)
+                        ax.plot(x, y_model,  color=self.main_color, alpha=0.8, zorder=10)
                         ax_res.plot(x, y-y_model,  color='k', alpha=0.8)
                         nans = np.isnan(y)
                         vmin, vmax = np.percentile(y_model, (1, 99))
@@ -1140,7 +1222,6 @@ class Retrieval:
                     ax_res.set_ylabel(r'Residual')
         axes[-1].set_xlabel('Wavelength (nm)')
         plt.savefig(self.prefix+'best_fit_spec.pdf')
-        # plt.show()
         plt.close(fig)
 
 

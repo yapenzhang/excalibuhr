@@ -146,6 +146,11 @@ class SPEC2D:
                                       self.err[i], trunc_dist=trunc_dist)
             self.cov.append(cov)
 
+    def make_spline_model(self, N_knots):
+        x_knots = np.array([np.linspace(self.wlen[i][0], self.wlen[i][-1], N_knots) for i in range(self.Nchip)])
+        M_spline = su.get_spline_model(x_knots, self.wlen)
+        splined = M_spline * self.flux[:, :, None]
+        return splined, M_spline
     
     def match_LSF(self, wlen_sharp, flux_sharp, chip_bin=3, kernel_size=50):
         spec_reconst = []
