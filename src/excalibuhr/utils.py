@@ -855,7 +855,8 @@ def spectral_rectify_bin(im, badpix, trace, slit, debug=False):
             row_sub = row - yy[0]
             # calculate the area of each pixel covered by the slanted slit
             if np.floor(xx_slit[row_sub,col]) == np.floor(xx_slit[row_sub+1,col]):
-                s2 = (np.floor(xx_slit[row_sub,col]+1) - xx_slit[row_sub,col] + np.floor(xx_slit[row_sub+1,col]+1) - xx_slit[row_sub+1,col])/2.
+                s2 = (np.floor(xx_slit[row_sub,col]+1) - xx_slit[row_sub,col] + \
+                      np.floor(xx_slit[row_sub+1,col]+1) - xx_slit[row_sub+1,col])/2.
                 s3 = 1. - s2
                 s1 = 0.
             else:
@@ -1419,7 +1420,6 @@ def extract_spec(det, det_err, badpix, trace, slit_meta, blaze, spec_star,
     yy_trace = trace_polyval(xx_grid, trace)
     trace_lower, trace_upper = yy_trace
 
-    # pix_scale = 0.056
     flux, err, D, P, V, chi2 = [],[],[],[],[],[]
     for o, (yy_upper, yy_lower, slope) in enumerate(zip(trace_upper, trace_lower, slit_meta)):
         # Crop out the order from the frame

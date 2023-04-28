@@ -4,6 +4,7 @@ __all__ = ['CriresPipeline', 'CombineNights']
 
 import os
 import glob
+import time
 import shutil
 import warnings
 from pathlib import Path
@@ -18,6 +19,17 @@ import excalibuhr.utils as su
 from excalibuhr.data import SPEC2D
 
 import matplotlib.pyplot as plt 
+
+
+def print_runtime(func):
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = func(*args, **kwargs)
+        end_time = time.time()
+        print(f"\n {func.__name__} runtime: {(end_time - start_time):.1f} s \n")
+        return result
+    return wrapper
+
 
 class CriresPipeline:
 
@@ -387,7 +399,7 @@ class CriresPipeline:
                     ax.plot(xx, yy_upper, 'r')
                     ax.plot(xx, yy_lower, 'r')
                     ax.text(xx[len(xx)//10], np.mean(yy_upper+yy_lower)/2., 
-                            f'Order {o}', va='middle', color='white')
+                            f'Order {o}', va='center', color='white')
             if not slit is None:
                 trace = tw[i]
                 yy_trace = su.trace_polyval(xx, trace)
@@ -486,7 +498,7 @@ class CriresPipeline:
         # plt.show()
         plt.close(fig)
 
-
+    @print_runtime
     def cal_dark(self, clip: int = 5, collapse: str = 'median') -> None:
         """
         Method for combining dark frames according to DIT.
@@ -562,6 +574,7 @@ class CriresPipeline:
                   r"% of pixels identified as bad")
 
     
+    @print_runtime
     def cal_flat_raw(self, clip: int = 5, collapse: str = 'median') -> None:
         """
         Method for combining raw flat frames according to wavelngth setting.
@@ -693,6 +706,7 @@ class CriresPipeline:
 
 
 
+    @print_runtime
     def cal_flat_trace(self, debug=False) -> None:
         """
         Method for identifying traces of spectral order in `MASTER FLAT`.
@@ -746,6 +760,7 @@ class CriresPipeline:
                             flat, tw=trace)
             
 
+    @print_runtime
     def cal_slit_curve(self, debug=False) -> None:
         """
         Method for tracing slit curvature in the `FPET` calibration frame.
@@ -854,6 +869,7 @@ class CriresPipeline:
             self._add_to_calib(f'INIT_WLEN_{item_wlen}.fits', "INIT_WLEN")
             
 
+    @print_runtime
     def cal_flat_norm(self, debug=False):
         """
         Method for creating normalized flat field and 
@@ -931,6 +947,7 @@ class CriresPipeline:
         
             
 
+    @print_runtime
     def obs_nodding(self):
         """
         Method for processing nodding frames. Apply AB pair subtraction,
@@ -1006,10 +1023,10 @@ class CriresPipeline:
                            & (self.calib_info[self.key_wlen] == item_wlen)
                 indices_tw = (self.calib_info[self.key_caltype] == "TRACE_TW") \
                            & (self.calib_info[self.key_wlen] == item_wlen)
-                indices_blaze = (self.calib_info[self.key_caltype] == "BLAZE") \
-                               & (self.calib_info[self.key_wlen] == item_wlen)
-                indices_slit = (self.calib_info[self.key_caltype] == "SLIT_TILT") \
-                            & (self.calib_info[self.key_wlen] == item_wlen)
+                # indices_blaze = (self.calib_info[self.key_caltype] == "BLAZE") \
+                #                & (self.calib_info[self.key_wlen] == item_wlen)
+                # indices_slit = (self.calib_info[self.key_caltype] == "SLIT_TILT") \
+                #             & (self.calib_info[self.key_wlen] == item_wlen)
 
                 file = self.calib_info[indices_flat][self.key_filename].iloc[0]
                 flat = fits.getdata(os.path.join(self.calpath, file))
@@ -1165,6 +1182,7 @@ class CriresPipeline:
                         f"{object}_NODDING_FRAME_{item_wlen}", frame_bkg_cor)
     
 
+    @print_runtime
     def obs_nodding_combine(self, clip=3):
         """
         Method for combining multiple nodding exposures to single A or B farme.
@@ -1265,10 +1283,13 @@ class CriresPipeline:
                 print(f"On-target time for {object} with wavelength setting {item_wlen}: {INT_total:.2f} hrs \n") 
 
 
+    @print_runtime
     def obs_extract(self, caltype='NODDING_COMBINED', object=None,
                           peak_frac=None, companion_sep=None, 
                           bkg_subtract=False, 
-                          aper_prim=15, aper_comp=10, debug=False):    
+                          aper_prim=15, aper_comp=10, 
+                          interpolation=True,
+                          debug=False):    
         """
         Method for extracting. Apply AB pair subtraction,
         readout artifacts correction, and flat fielding.
@@ -1316,7 +1337,7 @@ class CriresPipeline:
 
         # Loop over each target
         for object in unique_target:
-            print(f"Processing target: {object}")
+            print(f"Processing target: {object} \n")
 
             indices_obj = indices & \
                     (self.product_info[self.key_target_name] == object)
@@ -1328,7 +1349,7 @@ class CriresPipeline:
 
             # Loop over each WLEN setting
             for item_wlen in unique_wlen:
-                print(f"Wavelength setting: {item_wlen}")
+                # print(f"Wavelength setting: {item_wlen}")
                 
                 indices_wlen = indices_obj & \
                             (self.product_info[self.key_wlen] == item_wlen)
@@ -1359,7 +1380,8 @@ class CriresPipeline:
                     job = pool.apply_async(self._process_extraction, 
                                         args=(file, bpm, tw, slit, blaze, 
                                             peak_frac, aper_prim, aper_comp, 
-                                            companion_sep, bkg_subtract, debug))
+                                            companion_sep, bkg_subtract, 
+                                            interpolation, debug))
                     pool_jobs.append(job)
         
         for job in pool_jobs:
@@ -1367,7 +1389,8 @@ class CriresPipeline:
 
     def _process_extraction(self, file, bpm, tw, slit, blaze, 
                             peak_frac, aper_prim, aper_comp, 
-                            companion_sep,bkg_subtract, debug):
+                            companion_sep,bkg_subtract, 
+                            interpolation, debug):
         with fits.open(os.path.join(self.outpath, file)) as hdu:
             hdr = hdu[0].header
             dt = hdu["FLUX"].data
@@ -1386,7 +1409,7 @@ class CriresPipeline:
                         su.extract_spec, False,
                         dt, dt_err, bpm, tw, slit, blaze, blaze, 
                         self.gain, NDIT=ndit,
-                        cen0=f0,
+                        cen0=f0, interpolation=interpolation,
                         aper_half=aper_prim, debug=debug)
         flux_pri, err_pri, D, P, V, id_order, chi2_r = result
 
@@ -1455,6 +1478,7 @@ class CriresPipeline:
         chi2 = data['chi2']
         return D, P, V, id_det, id_order, chi2
 
+    @print_runtime
     def refine_wlen_solution(self, run_skycalc=True, 
                             data_type='Extr1D_PRIMARY', 
                             object=None,
@@ -1583,7 +1607,6 @@ class CriresPipeline:
 
             if len(unique_target) == 0:
                 continue
-
             # Loop over each target
             for object in unique_target:
                 
@@ -1610,9 +1633,11 @@ class CriresPipeline:
                         indices_wave = \
                             (self.calib_info[self.key_caltype] == "INIT_WLEN") \
                           & (self.calib_info[self.key_wlen] == item_wlen)
-
-                    file = self.product_info[indices_wave][self.key_filename].iloc[0]
-                    wlen = fits.getdata(os.path.join(self.outpath, file))
+                        file = self.calib_info[indices_wave][self.key_filename].iloc[0]
+                        wlen = fits.getdata(os.path.join(self.calpath, file))
+                    else:
+                        file = self.product_info[indices_wave][self.key_filename].iloc[0]
+                        wlen = fits.getdata(os.path.join(self.outpath, file))
                     wlens.append(wlen)
 
                     dt, dt_err = [], []
@@ -1651,7 +1676,7 @@ class CriresPipeline:
                 snr_mid = np.mean((specs/errs)[wlens.shape[0]//2])
                 
                 print(f"Saved target {object} {l} with wavelength coverage {unique_wlen}; ",
-                      f"average S/N @ {w_mid:.0f} nm ~ {snr_mid:.0f}.")
+                      f"average S/N @ {w_mid:.0f} nm ~ {snr_mid:.0f}. \n")
 
 
     def run_skycalc(self, pwv: float = 5) -> None:
@@ -1768,6 +1793,7 @@ class CriresPipeline:
         self._add_to_calib('TRANSM_SPEC.fits', "TELLU_SKYCALC")
 
 
+    @print_runtime
     def run_molecfit(self, data_type=None, object=None,
                         wmin=None, wmax=None, verbose=False) -> None:
         """
@@ -1823,6 +1849,7 @@ class CriresPipeline:
                     target_name=science_file.split('/')[-1], verbose=True)
 
 
+    @print_runtime
     def apply_telluric_correction(self):
         """
         Method for apply telluric correction to other science frames

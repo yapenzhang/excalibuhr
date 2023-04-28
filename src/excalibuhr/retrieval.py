@@ -246,10 +246,11 @@ class Retrieval:
                 'key_metallicity': '[C/H]',
                 'key_gravity': 'logg',
                 'key_tellu_temp': 'tellu_temp',
+                'key_t_bottom': "t_00",
                 'key_quench': 'log_P_quench',
                 'key_molecule_tolerance': 'beta',
-                'key_teff_tolerance': 'gamma',
-                'key_t_bottom': "t_00",
+                'key_teff_tolerance': 'tol',
+                'key_penalty_param': "gamma",
             }
         for par in attr_keys.keys():
             setattr(self, par, attr_keys[par])
@@ -344,11 +345,53 @@ class Retrieval:
         knots_t = [self.params[x].value for x in t_names]
         knots_p = np.logspace(np.log10(self.press[0]),np.log10(self.press[-1]), len(knots_t))
         t_spline = splrep(np.log10(knots_p), knots_t, k=1)
+        knots, coeffs, _ = t_spline
         tret = splev(np.log10(p_ret), t_spline, der=0)
         t_smooth = gaussian_filter(tret, 1.5)
+
+        if self.PT_penalty_order:
+
+            if self.key_penalty_param in self.params:
+                gamma = self.params[self.key_penalty_param].value
         
+            # Compute the log-likelihood penalty based on the wiggliness
+            # (Inverted) weight matrices, scaling the penalty of small/large segments
+            inv_W_1 = np.diag(1/(1/3 * np.array([knots[i+3]-knots[i] \
+                                                for i in range(1, len(knots)-4)]))
+                            )
+            inv_W_2 = np.diag(1/(1/2 * np.array([knots[i+2]-knots[i] \
+                                                for i in range(2, len(knots)-4)]))
+                            )
+            inv_W_3 = np.diag(1/(1/1 * np.array([knots[i+1]-knots[i] \
+                                                for i in range(3, len(knots)-4)]))
+                            )
+
+            # Fundamental difference matrix
+            delta = np.zeros((len(inv_W_1), len(inv_W_1)+1))
+            delta[:,:-1] += np.diag([-1]*len(inv_W_1))
+            delta[:,1:]  += np.diag([+1]*len(inv_W_1))
+
+            # 1st, 2nd, 3rd order general difference matrices
+            D_1 = np.dot(inv_W_1, delta)
+            D_2 = np.dot(inv_W_2, np.dot(delta[1:,1:], D_1))
+            D_3 = np.dot(inv_W_3, np.dot(delta[2:,2:], D_2))
+            
+            # General difference penalty, computed with L2-norm
+            if self.PT_penalty_order == 1:
+                gen_diff_penalty = np.nansum(np.dot(D_1, coeffs[:-4])**2)
+            elif self.PT_penalty_order == 2:
+                gen_diff_penalty = np.nansum(np.dot(D_2, coeffs[:-4])**2)
+            elif self.PT_penalty_order == 3:
+                gen_diff_penalty = np.nansum(np.dot(D_3, coeffs[:-4])**2)
+
+            self.ln_L_penalty = -(1/2*gen_diff_penalty/gamma + \
+                                1/2*np.log(2*np.pi*gamma)
+                                )
+        else:
+            self.ln_L_penalty = 0.
+
         return t_smooth
-    
+
 
     def add_free_chem_model(self):
 
@@ -743,7 +786,7 @@ class Retrieval:
             
         return f_det.T
     
-    def calc_err_infaltion(self, y_model, y_data, y_cov):
+    def calc_err_inflation(self, y_model, y_data, y_cov):
         if y_cov.ndim == 2:
             cov_chol = cholesky(y_cov)
             chi_squared = np.dot((y_data-y_model), cov_chol.solve_A(y_data-y_model))
@@ -875,7 +918,7 @@ class Retrieval:
                         # if self.leave_out is not None:
                         #     model_single[i] = np.dot(model_single[i], f_det)
 
-
+                # plt.figure()
                 if self.fit_scaling:
                     f_dets = np.ones(model_target.shape[:-1])
                     for i in range(obs_target.Nchip):
@@ -886,13 +929,15 @@ class Retrieval:
                             for ind_sp in range(len(self.leave_out)):
                                 model_single[ind_sp][i] *= f_det
 
-                # print(cov)
+                #                 plt.plot(obs_target.wlen[i], model_single[ind_sp][i], alpha=0.8,color=cmap(ind_sp))
+                #         plt.plot(obs_target.wlen[i], model_target[i], alpha=0.8,color='k')
+                # plt.show()
+
                 # add model uncertainties due to the inacurate molecular line list
                 if "beta_0" in self.params:
                     for ind_sp in range(len(self.leave_out)):
                         key = f"beta_{ind_sp}"
                         cov += (self.params[key].value * model_single[ind_sp])**2
-                # print(cov)
                 if self.key_teff_tolerance in self.params:
                     cov += 1e1**self.params[self.key_teff_tolerance].value #* self.temp[np.searchsorted(self.press, 1.)] / 3000.
 
@@ -900,7 +945,7 @@ class Retrieval:
                 betas = np.ones(obs_target.Nchip)
                 if self.fit_err_inflation:
                     for i in range(obs_target.Nchip):
-                        beta = self.calc_err_infaltion(model_target[i], obs_target.flux[i], cov[i])
+                        beta = self.calc_err_inflation(model_target[i], obs_target.flux[i], cov[i])
                         cov[i] *= beta**2
                         betas[i] = beta
                 
@@ -916,13 +961,16 @@ class Retrieval:
                 self.flux_scaling[instrument] = f_dets
                 self.err_infaltion[instrument] = betas
         
+        self.ln_L = log_likelihood + self.ln_L_penalty
+
         if self.debug:
             print("Chi2_r: ", chi2_reduced/(N-self.n_params))
+            print(self.ln_L, self.ln_L_penalty, log_likelihood)
             # print(self.flux_scaling, self.err_infaltion)
             # self.plot_rebin_model_debug(self.model_rebin)
             # self.plot_rebin_model_debug(self.model_reduce)
-
-        return log_likelihood
+        
+        return self.ln_L
 
 
     def setup(self, 
@@ -943,6 +991,7 @@ class Retrieval:
               fit_err_inflation=False,
               fit_telluric=False, 
               tellu_grid_path=None,
+              PT_penalty_orde=3,
               ):
 
         if press is None:
@@ -963,6 +1012,7 @@ class Retrieval:
         self.fit_telluric = fit_telluric
         self.fit_instrument_kernel = fit_instrument_kernel
         self.leave_out = leave_out
+        self.PT_penalty_order = PT_penalty_order
 
         self.add_observation(obs)
         assert self.obs, "No input observations provided"
@@ -1143,6 +1193,7 @@ class Retrieval:
             self.make_VMR_plot(ax_vmr, envelope_vmr)
 
             plt.savefig(self.prefix+'corner.pdf')
+            plt.close(fig)
 
         # plot best-fit model
         best_fit_params = s['modes'][0][which_best]
