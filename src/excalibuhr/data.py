@@ -146,6 +146,14 @@ class SPEC2D:
                                       self.err[i], trunc_dist=trunc_dist)
             self.cov.append(cov)
 
+    def make_covariance_local(self, amp, mu, sigma, trunc_dist=4):
+        
+        for a, m, s in zip(amp, mu, sigma):
+            # check which chip the local feature belongs to
+            indices = np.searchsorted(self.wlen[:,0], m)[0]
+            cov_local = su.add_local_kernel(a, m, s, self.wlen[indices], trunc_dist=trunc_dist)
+            self.cov[indices] += cov_local
+    
     def make_spline_model(self, N_knots):
         x_knots = np.array([np.linspace(self.wlen[i][0], self.wlen[i][-1], N_knots) for i in range(self.Nchip)])
         M_spline = su.get_spline_model(x_knots, self.wlen)

@@ -2170,6 +2170,19 @@ def add_RBF_kernel(a, l, delta_wave, err, trunc_dist=4):
 
     return Sigma_ij_sparse
 
+def add_local_kernel(amp, mu, sigma, wlen, trunc_dist=4):
+
+    # calc wavelength distance to the local feature 
+    r_ij = np.sqrt((wlen[:,None] - mu)**2 + (wlen[None,:] - mu)**2)
+    # Hann window function to ensure sparsity
+    w_ij = (r_ij < trunc_dist*sigma)
+    
+    sigma_ij = np.zeros_like(diff)
+    sigma_ij[w_ij] = amp**2 * np.exp(-r_ij**2/2./sigma**2)
+
+    sigma_ij_sparse = csc_matrix(sigma_ij)
+
+    return sigma_ij_sparse
 
 def get_spline_model(x_knots, x_samples, spline_degree=3):
     """

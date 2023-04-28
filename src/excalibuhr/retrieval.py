@@ -750,7 +750,7 @@ class Retrieval:
         #     self.plot_rebin_model_debug(self.model_rebin)
 
 
-    def add_GP(self, GP_chip_bin=None, prior_amp=(-6,-2), prior_tau=(-5,0)):
+    def add_GP(self, GP_chip_bin=None, prior_amp=(-6,-2), prior_tau=(-5,-1)):
         if self.fit_GP:
             for instrument in self.obs.keys():
                 if instrument != 'photometry':
@@ -900,8 +900,19 @@ class Retrieval:
                     tau = [1e1**self.params[key].value for key in self.params \
                                         if "tau" in key.split("_") and \
                                         instrument in key.split("_")]
-
+                    
                     obs_target.make_covariance(amp, tau)
+                    
+                    amp_loc = [1e1**self.params[key].value for key in self.params \
+                                        if "amploc" in key.split("_")]
+                    sigma_loc = [1e1**self.params[key].value for key in self.params \
+                                        if "sigloc" in key.split("_")]
+                    mu_loc = [1e1**self.params[key].value for key in self.params \
+                                        if "muloc" in key.split("_")]
+
+                    if mu_loc:
+                        obs_target.make_covariance_local(amp_loc, mu_loc, sigma_loc)
+                    
                     cov = obs_target.cov
                 else:
                     cov = obs_target.err**2
@@ -991,7 +1002,7 @@ class Retrieval:
               fit_err_inflation=False,
               fit_telluric=False, 
               tellu_grid_path=None,
-              PT_penalty_orde=3,
+              PT_penalty_order=0,
               ):
 
         if press is None:
