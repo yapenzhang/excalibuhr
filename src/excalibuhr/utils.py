@@ -2162,7 +2162,7 @@ def add_RBF_kernel(a, l, delta_wave, err, trunc_dist=4):
     Sigma_ij[w_ij] = a**2 * np.exp(-(delta_wave[w_ij])**2/(2*l**2))
     
     # Add the (scaled) Poisson noise
-    Sigma_ij += np.diag(err*2)
+    Sigma_ij += np.diag(err**2)
 
     Sigma_ij_sparse = csc_matrix(Sigma_ij)
 
@@ -2177,8 +2177,8 @@ def add_local_kernel(amp, mu, sigma, wlen, trunc_dist=4):
     # Hann window function to ensure sparsity
     w_ij = (r_ij < trunc_dist*sigma)
     
-    sigma_ij = np.zeros_like(diff)
-    sigma_ij[w_ij] = amp**2 * np.exp(-r_ij**2/2./sigma**2)
+    sigma_ij = np.zeros_like(r_ij)
+    sigma_ij[w_ij] = amp**2 * np.exp(-r_ij[w_ij]**2/2./sigma**2)
 
     sigma_ij_sparse = csc_matrix(sigma_ij)
 

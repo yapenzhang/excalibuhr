@@ -145,12 +145,13 @@ class SPEC2D:
             cov = su.add_RBF_kernel(amp[i], length[i], delta_wave[i], 
                                       self.err[i], trunc_dist=trunc_dist)
             self.cov.append(cov)
+            
 
     def make_covariance_local(self, amp, mu, sigma, trunc_dist=4):
         
         for a, m, s in zip(amp, mu, sigma):
             # check which chip the local feature belongs to
-            indices = np.searchsorted(self.wlen[:,0], m)[0]
+            indices = np.searchsorted(self.wlen[:,0], m)-1
             cov_local = su.add_local_kernel(a, m, s, self.wlen[indices], trunc_dist=trunc_dist)
             self.cov[indices] += cov_local
     

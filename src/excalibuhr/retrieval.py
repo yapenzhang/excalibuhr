@@ -229,7 +229,7 @@ class Retrieval:
         self.out_dir = out_dir
         self.prefix = self.out_dir+'/'+self.retrieval_name+'_'
         if not os.path.exists(self.out_dir):
-            os.path.mkdir(self.out_dir)
+            os.mkdir(self.out_dir)
         self.obs = {} 
         self.params = {}
         self.model_tellu = lambda x: np.ones_like(x)
@@ -352,7 +352,9 @@ class Retrieval:
         if self.PT_penalty_order:
 
             if self.key_penalty_param in self.params:
-                gamma = self.params[self.key_penalty_param].value
+                gamma = 1e1**self.params[self.key_penalty_param].value
+            else: 
+                raise Exception("PT penalty parameter not set.")
         
             # Compute the log-likelihood penalty based on the wiggliness
             # (Inverted) weight matrices, scaling the penalty of small/large segments
@@ -750,18 +752,27 @@ class Retrieval:
         #     self.plot_rebin_model_debug(self.model_rebin)
 
 
-    def add_GP(self, GP_chip_bin=None, prior_amp=(-6,-2), prior_tau=(-5,-1)):
+    def add_GP(self, mu_local_GP=None, dmu=0.3,
+               GP_chip_bin=None, 
+               prior_amp_global=(-4,-1), prior_tau_global=(-0.5,1),
+               prior_amp_local=(-4,-1), prior_tau_local=(-1,0.),
+               ):
         if self.fit_GP:
             for instrument in self.obs.keys():
                 if instrument != 'photometry':
                     if GP_chip_bin is None: #use one kernel for all orders
-                        self.add_parameter(f"GP_{instrument}_amp", prior=prior_amp)
-                        self.add_parameter(f"GP_{instrument}_tau", prior=prior_tau)
+                        self.add_parameter(f"GP_{instrument}_amp", prior=prior_amp_global)
+                        self.add_parameter(f"GP_{instrument}_tau", prior=prior_tau_global)
                     else: #different kernel for each chip
                         for i in range(0, self.obs[instrument].Nchip, GP_chip_bin):
-                            self.add_parameter(f"GP_{instrument}_amp_{i:02}", prior=prior_amp)
-                            self.add_parameter(f"GP_{instrument}_tau_{i:02}", prior=prior_tau)
-        
+                            self.add_parameter(f"GP_{instrument}_amp_{i:02}", prior=prior_amp_global)
+                            self.add_parameter(f"GP_{instrument}_tau_{i:02}", prior=prior_tau_global)
+            if mu_local_GP is not None:
+                for k, mu in enumerate(mu_local_GP):
+                    self.add_parameter(f"muloc_{k:02}", prior=(mu-dmu, mu+dmu))
+                    self.add_parameter(f"amploc_{k:02}", prior=prior_amp_local)
+                    self.add_parameter(f"sigloc_{k:02}", prior=prior_tau_local)
+
 
     def calc_scaling(self, y_model, y_data, y_cov, rcond=None):
         if y_cov.ndim == 2:
@@ -836,7 +847,7 @@ class Retrieval:
 
 
     def loglike(self, cube, ndim, nparams):
-        log_likelihood, chi2_reduced, N = 0., 0., 0
+        log_likelihood, chi2_reduced = 0., 0.
 
         if self.leave_out is not None:
             model_reduced = []
@@ -907,13 +918,14 @@ class Retrieval:
                                         if "amploc" in key.split("_")]
                     sigma_loc = [1e1**self.params[key].value for key in self.params \
                                         if "sigloc" in key.split("_")]
-                    mu_loc = [1e1**self.params[key].value for key in self.params \
+                    mu_loc = [self.params[key].value for key in self.params \
                                         if "muloc" in key.split("_")]
 
                     if mu_loc:
                         obs_target.make_covariance_local(amp_loc, mu_loc, sigma_loc)
                     
                     cov = obs_target.cov
+                    
                 else:
                     cov = obs_target.err**2
                 
@@ -933,6 +945,8 @@ class Retrieval:
                 if self.fit_scaling:
                     f_dets = np.ones(model_target.shape[:-1])
                     for i in range(obs_target.Nchip):
+                        # plt.imshow(cov[i].toarray())
+                        # plt.show()
                         f_det = self.calc_scaling(model_target[i], obs_target.flux[i], cov[i])
                         f_dets[i] = f_det
                         model_target[i] *= f_det
@@ -964,8 +978,7 @@ class Retrieval:
                 for i in range(obs_target.Nchip):
                     log_l, chi2 = self.calc_logL(model_target[i], obs_target.flux[i], cov[i])
                     log_likelihood += log_l
-                    chi2_reduced += chi2
-                    N += obs_target.flux.size
+                    chi2_reduced += chi2/obs_target.flux.size
             
                 self.model_rebin[instrument] = model_target
                 # self.model_reduce[instrument] = model_single
@@ -975,9 +988,9 @@ class Retrieval:
         self.ln_L = log_likelihood + self.ln_L_penalty
 
         if self.debug:
-            print("Chi2_r: ", chi2_reduced/(N-self.n_params))
+            print("Chi2_r: ", chi2_reduced)
             print(self.ln_L, self.ln_L_penalty, log_likelihood)
-            # print(self.flux_scaling, self.err_infaltion)
+            print(self.flux_scaling, self.err_infaltion)
             # self.plot_rebin_model_debug(self.model_rebin)
             # self.plot_rebin_model_debug(self.model_reduce)
         
@@ -1003,6 +1016,7 @@ class Retrieval:
               fit_telluric=False, 
               tellu_grid_path=None,
               PT_penalty_order=0,
+              mu_local_GP=None,
               ):
 
         if press is None:
@@ -1046,7 +1060,7 @@ class Retrieval:
         
         self.add_instrument_kernel(Lorentzian_kernel)
         self.add_poly_model()
-        self.add_GP()
+        self.add_GP(mu_local_GP=mu_local_GP)
         
         self.set_parameter_priors(param_prior)
 
@@ -1096,7 +1110,7 @@ class Retrieval:
                    params_corner=None,
                    which_best='mean', 
                    ):
-        self.debug = False
+        self.debug = True
         self.main_color = 'C1'
 
         parameters = json.load(open(self.prefix + 'params.json'))
@@ -1284,6 +1298,7 @@ class Retrieval:
                     ax_res.set_ylabel(r'Residual')
         axes[-1].set_xlabel('Wavelength (nm)')
         plt.savefig(self.prefix+'best_fit_spec.pdf')
+        plt.show()
         plt.close(fig)
 
 
