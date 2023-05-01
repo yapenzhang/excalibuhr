@@ -1,70 +1,68 @@
 import os
+os.environ["OMP_NUM_THREADS"] = "1"
 import sys
 import copy
-os.environ["OMP_NUM_THREADS"] = "1"
 import json
+import pickle
 import warnings
 import numpy as np
-import pickle
 import urllib.request
 from scipy.interpolate import interp1d, splrep, splev, RegularGridInterpolator#, CubicSpline
-from scipy import signal
 from scipy.ndimage import gaussian_filter
 # from numpy.polynomial import polynomial as Poly
 from numpy.polynomial import chebyshev as Chev
 from astropy.io import fits
 from PyAstronomy import pyasl
 import pymultinest
+import corner
 import excalibuhr.utils as su 
 from excalibuhr.data import SPEC2D
 from excalibuhr.telluric import TelluricGrid
 from petitRADTRANS import Radtrans
 from petitRADTRANS import nat_cst as nc
 from petitRADTRANS.retrieval import rebin_give_width as rgw
+from petitRADTRANS.retrieval.util import getMM, calc_MMW
 import petitRADTRANS.poor_mans_nonequ_chem as pm
 # from petitRADTRANS.retrieval import cloud_cond as fc
 # from typeguard import typechecked
 from sksparse.cholmod import cholesky
-# import matplotlib.pyplot as plt 
-# signal.savgol_filter
-import corner
-import pylab as plt
+import matplotlib.pyplot as plt 
 cmap = plt.get_cmap("tab10")
 cmap_hue = plt.get_cmap("tab20c")
 
-def getMM(species):
-    """
-    Get the molecular mass of a given species.
+# def getMM(species):
+#     """
+#     Get the molecular mass of a given species.
 
-    This function uses the molmass package to
-    calculate the mass number for the standard
-    isotope of an input species. If all_iso
-    is part of the input, it will return the
-    mean molar mass.
+#     This function uses the molmass package to
+#     calculate the mass number for the standard
+#     isotope of an input species. If all_iso
+#     is part of the input, it will return the
+#     mean molar mass.
 
-    Args:
-        species : string
-            The chemical formula of the compound. ie C2H2 or H2O
-    Returns:
-        The molar mass of the compound in atomic mass units.
-    """
-    from molmass import Formula
+#     Args:
+#         species : string
+#             The chemical formula of the compound. ie C2H2 or H2O
+#     Returns:
+#         The molar mass of the compound in atomic mass units.
+#     """
+#     from molmass import Formula
 
-    e_molar_mass = 5.4857990888e-4  # (g.mol-1) e- molar mass (source: NIST CODATA)
+#     e_molar_mass = 5.4857990888e-4  # (g.mol-1) e- molar mass (source: NIST CODATA)
 
-    if species == 'e-':
-        return e_molar_mass
-    elif species == 'H-':
-        return Formula('H').mass + e_molar_mass
+#     if species == 'e-':
+#         return e_molar_mass
+#     elif species == 'H-':
+#         return Formula('H').mass + e_molar_mass
 
-    name = species.split("_")[0]
-    name = name.split(',')[0]
-    f = Formula(name)
+#     name = species.split("_")[0]
+#     name = name.split(',')[0]
+#     f = Formula(name)
 
-    if "all_iso" in species:
-        return f.mass
+#     if "all_iso" in species:
+#         return f.mass
     
-    return f.isotope.massnumber
+#     return f.isotope.massnumber
 
 def calc_abundance_ratio_posterior(a, b, params, samples):
     tol = 1e-20
@@ -133,38 +131,100 @@ def calc_mass_to_mol_frac(abundances, MMW):
         mol_fraction[key] = abundances[key] / mass * MMW
     return mol_fraction
 
-def calc_MMW(abundances):
-    """
-    calc_MMW
-    Calculate the mean molecular weight in each layer.
+# def calc_MMW(abundances):
+#     """
+#     calc_MMW
+#     Calculate the mean molecular weight in each layer.
 
-    Args:
-        abundances : dict
-            dictionary of abundance arrays, each array must have the shape of the pressure array used in pRT,
-            and contain the abundance at each layer in the atmosphere.
-    """
-    mmw = sys.float_info.min  # prevent division by 0
+#     Args:
+#         abundances : dict
+#             dictionary of abundance arrays, each array must have the shape of the pressure array used in pRT,
+#             and contain the abundance at each layer in the atmosphere.
+#     """
+#     mmw = sys.float_info.min  # prevent division by 0
 
-    for key in abundances.keys():
-        # exo_k resolution
-        spec = key.split("_")[0]
-        mmw += abundances[key] / getMM(spec)
+#     for key in abundances.keys():
+#         # exo_k resolution
+#         spec = key.split("_")[0]
+#         mmw += abundances[key] / getMM(spec)
 
-    return 1.0 / mmw
+#     return 1.0 / mmw
 
 class Parameter:
 
-    def __init__(self, name, value=None, prior=(0,1), is_free=True):
+    def __init__(self, name, value=None, prior=(0,1), is_free=True, prior_type='U'):
         self.name = name
         self.is_free = is_free
         self.value = value
         self.prior = prior
+        self.prior_type = prior_type
 
     def set_value(self, value):
         self.value = value
 
     def set_prior(self, prior):
         self.prior = prior
+
+
+class Prior:
+    """
+    Taken from MultiNEST priors.f90
+    Usage e.g.:
+    from priors import Priors
+    pri=Priors()
+    cube[0]=pri.UniformPrior(cube[0],1.0,199.0)
+    cube[0]=pri.GeneralPrior(cube[0],'LOG',1.0,100.0)
+    etc.
+    """
+
+    def __init__(self):
+        pass
+
+    def GeneralPrior(self,r,PriorType,x1,x2):
+        if PriorType=='DELTA':
+            return self.DeltaFunctionPrior(r,x1,x2)
+        elif PriorType=='U':
+            return self.UniformPrior(r,x1,x2)
+        elif PriorType=='LOG':
+            return self.LogPrior(r,x1,x2)
+        elif PriorType=='GAUSS':
+            return self.GaussianPrior(r,x1,x2)
+        elif PriorType=='GAMMA':
+            return self.InvGammaPrior(r,x1,x2)
+        else:
+            raise Exception('Unrecognised prior')
+
+    def DeltaFunctionPrior(self,r,x1,x2):
+        """Uniform[0:1]  ->  Delta[x1]"""
+        return x1
+
+    def UniformPrior(self,r,x1,x2):
+        """Uniform[0:1]  ->  Uniform[x1:x2]"""
+        return x1+r*(x2-x1)
+
+    def LogPrior(self,r,x1,x2):
+        """Uniform[0:1]  ->  LogUniform[x1:x2]"""
+        from math import log10
+        if (r <= 0.0):
+                return -1.0e32
+        else:
+            lx1=log10(x1); lx2=log10(x2)
+            return 10.0**(lx1+r*(lx2-lx1))
+
+    def GaussianPrior(self,r,mu,sigma):
+        """Uniform[0:1]  ->  Gaussian[mean=mu,variance=sigma**2]"""
+        from math import sqrt
+        from scipy.special import erfcinv
+        if (r <= 1.0e-16 or (1.0-r) <= 1.0e-16):
+            return -1.0e32
+        else:
+            return mu+sigma*sqrt(2.0)*erfcinv(2.0*(1.0-r))
+    
+    def InvGammaPrior(self,r,alpha,beta):
+        """Uniform[0:1]  ->  InvGamma[]"""
+        from scipy.stats import invgamma
+        rvs = invgamma(alpha, scale=beta)
+        return rvs.ppf(r)
 
 
 class Photometry:
@@ -233,6 +293,7 @@ class Retrieval:
         self.obs = {} 
         self.params = {}
         self.model_tellu = lambda x: np.ones_like(x)
+        self.debug = False
 
         attr_keys = {
                 'key_radius': 'radius',
@@ -338,16 +399,27 @@ class Retrieval:
 
 
     def free_PT_model(self):
+        # p_ret = np.copy(self.press)
+        # t_names = [x for x in self.params if x.split('_')[0]=='t']
+        # t_names.sort(reverse=True)
+        # knots_t = [self.params[x].value for x in t_names]
+        # knots_p = np.logspace(np.log10(self.press[0]),np.log10(self.press[-1]), len(knots_t))
+        # # interpolation and penalty in logT - logP space
+        # t_spline = splrep(np.log10(knots_p), np.log10(knots_t), k=3)
+        # knots, coeffs, _ = t_spline
+        # tret = splev(np.log10(p_ret), t_spline, der=0)
+        # t_smooth = 1e1** tret
 
         p_ret = np.copy(self.press)
         t_names = [x for x in self.params if x.split('_')[0]=='t']
         t_names.sort(reverse=True)
         knots_t = [self.params[x].value for x in t_names]
         knots_p = np.logspace(np.log10(self.press[0]),np.log10(self.press[-1]), len(knots_t))
-        t_spline = splrep(np.log10(knots_p), knots_t, k=1)
+        # interpolation and penalty in logT - logP space
+        t_spline = splrep(np.log10(knots_p), np.log10(knots_t), k=1)
         knots, coeffs, _ = t_spline
         tret = splev(np.log10(p_ret), t_spline, der=0)
-        t_smooth = gaussian_filter(tret, 1.5)
+        t_smooth = 1e1** gaussian_filter(tret, 1.5)
 
         if self.PT_penalty_order:
 
@@ -754,8 +826,8 @@ class Retrieval:
 
     def add_GP(self, mu_local_GP=None, dmu=0.3,
                GP_chip_bin=None, 
-               prior_amp_global=(-4,-1), prior_tau_global=(-0.5,1),
-               prior_amp_local=(-4,-1), prior_tau_local=(-1,0.),
+               prior_amp_global=(-4,0), prior_tau_global=(-1,1),
+               prior_amp_local=(-4,0), prior_tau_local=(-2,0.),
                ):
         if self.fit_GP:
             for instrument in self.obs.keys():
@@ -827,13 +899,16 @@ class Retrieval:
 
 
     def prior(self, cube, ndim, nparams):
+        pri=Prior()
         i = 0
         indices = []
         for key in self.params:
             if self.params[key].is_free:
                 a, b = self.params[key].prior
-                cube[i] = a+(b-a)*cube[i]
-                if key == 't_00':
+                # cube[i] = a+(b-a)*cube[i]
+                cube[i]=pri.GeneralPrior(cube[i], self.params[key].prior_type, a, b)
+                # deal with the free temperature parameters
+                if key == self.key_t_bottom:
                     t_i = cube[i]
                 elif key.split("_")[0] == 't':
                     indices.append(i)
@@ -852,11 +927,7 @@ class Retrieval:
         if self.leave_out is not None:
             model_reduced = []
             for neglect_sp in self.leave_out:
-                i_p = 0 # parameter count
-                for pp in self.params:
-                    if self.params[pp].is_free:
-                        self.params[pp].set_value(cube[i_p])
-                        i_p += 1
+                self.set_parameter_values(cube)
 
                 self.forward_model_pRT(leave_out=neglect_sp)
                 if self.fit_telluric:
@@ -869,13 +940,7 @@ class Retrieval:
                 model_reduced.append(copy.copy(self.model_rebin))
             
         # draw parameter values from cube
-        i_p = 0 # parameter count
-        for pp in self.params:
-            if self.params[pp].is_free:
-                self.params[pp].set_value(cube[i_p])
-                i_p += 1
-                if self.debug:
-                    print(f"{i_p} \t {pp} \t {self.params[pp].value}")
+        self.set_parameter_values(cube)
 
         self.forward_model_pRT()
         if self.fit_telluric:
@@ -1000,7 +1065,7 @@ class Retrieval:
     def setup(self, 
               obs,
               line_species,
-              param_prior,
+              param_prior={},
               press=None,
               N_t_knots=None, 
               chemistry='free',
@@ -1020,7 +1085,7 @@ class Retrieval:
               ):
 
         if press is None:
-            self.press = np.logspace(-5,1,50)
+            self.press = np.logspace(-4,2,50)
         else:
             self.press = press
 
@@ -1064,7 +1129,7 @@ class Retrieval:
         
         self.set_parameter_priors(param_prior)
 
-        # count number of params
+        # save parameter names and count number of params
         parameters = []
         for x in self.params:
             if self.params[x].is_free:
@@ -1087,6 +1152,16 @@ class Retrieval:
                     self.add_parameter(key, value=param_prior[key], is_free=False)
                 else:
                     self.add_parameter(key, prior=param_prior[key])
+
+    def set_parameter_values(self, params):
+        # set parameters
+        i_p = 0 # parameter count
+        for pp in self.params:
+            if self.params[pp].is_free:
+                self.params[pp].set_value(params[i_p])
+                i_p += 1
+                if self.debug:
+                    print(f"{i_p} \t {pp} \t {self.params[pp].value}")
 
 
     def run(self, n_live_points=500, debug=False):
@@ -1199,11 +1274,7 @@ class Retrieval:
             param_envelope = np.array(param_envelope).T
             for param_set in param_envelope:
                 # set parameters
-                i_p = 0 # parameter count
-                for pp in self.params:
-                    if self.params[pp].is_free:
-                        self.params[pp].set_value(param_set[i_p])
-                        i_p += 1
+                self.set_parameter_values(param_set)
                 self.temp = self.PT_model()
                 self.abundances, self.MMW = self.chem_model()
                 envelope_temp.append(self.temp)
@@ -1220,11 +1291,34 @@ class Retrieval:
             plt.savefig(self.prefix+'corner.pdf')
             plt.close(fig)
 
-        # plot best-fit model
         best_fit_params = s['modes'][0][which_best]
         self.loglike(best_fit_params[:self.n_params], self.n_params, self.n_params)
-        self.make_best_fit_plot()
+        # plot and save best-fit model
+        for instrument in self.obs.keys():
+            if instrument != 'photometry':
+                self.make_best_fit_plot(self.obs[instrument], 
+                                        self.model_rebin[instrument],
+                                        self.prefix + f'{instrument}_best_fit_spec.pdf')
+                model = SPEC2D(self.obs[instrument].wlen, self.model_rebin[instrument])
+                model.save_spec1d(self.prefix + f'{instrument}_best_fit_spec.dat')
         
+
+    def average_post_model(self, N, instrument='crires'):
+        samples = np.genfromtxt(self.prefix+'post_equal_weights.dat')
+        indices = np.random.choice(range(samples.shape[0]), N)
+        samples_use = samples[indices,:-1]
+        sample_model = []
+
+        for param_set in samples_use:
+            self.loglike(param_set, self.n_params, self.n_params)
+            sample_model.append(self.model_rebin[instrument])
+
+        avg_model = np.mean(sample_model, axis=0)
+        model_object = SPEC2D(self.obs[instrument].wlen, avg_model)
+        self.obs[instrument].outliers(model_object)
+        # residual.plot_spec1d('comb_model.pdf')
+        
+
 
     def make_PT_plot(self, ax_PT, envelope_temp):
         for i in range(3):
@@ -1262,43 +1356,45 @@ class Retrieval:
         ax_vmr.legend(loc='best')
 
 
-    def make_best_fit_plot(self):
+    def make_best_fit_plot(self, obs, models, savename, labels=['model'], show=False):
         self._set_plot_style()
-        model = self.model_rebin
-        nrows = 0
-        for instrument in self.obs.keys():
-            if instrument != 'photometry':
-                nrows += self.obs[instrument].Nchip//3
+        nrows = obs.Nchip//3
         fig, axes = plt.subplots(nrows=nrows*2, ncols=1, 
                           figsize=(12,nrows*3), constrained_layout=True,
                           gridspec_kw={"height_ratios": [3,1]*nrows})
-        for instrument in self.obs.keys():
-            if instrument != 'photometry':
-                for i in range(nrows):
-                    ax, ax_res = axes[2*i], axes[2*i+1]
-                    wmin, wmax = self.obs[instrument].wlen[i*3][0], self.obs[instrument].wlen[min(i*3+2, self.obs[instrument].wlen.shape[0]-1)][-1]
-                    ymin, ymax = 1, 0
-                    for j in range(min(3, self.obs[instrument].wlen.shape[0]-3*i)):
-                        x, y, y_err = self.obs[instrument].wlen[i*3+j], self.obs[instrument].flux[i*3+j], self.obs[instrument].err[i*3+j]
-                        y_model = model[instrument][i*3+j]
-                        ax.errorbar(x, y, y_err, color='k', alpha=0.8)
-                        ax.plot(x, y_model,  color=self.main_color, alpha=0.8, zorder=10)
-                        ax_res.plot(x, y-y_model,  color='k', alpha=0.8)
-                        nans = np.isnan(y)
-                        vmin, vmax = np.percentile(y_model, (1, 99))
-                        ymin, ymax = min(vmin, ymin), max(vmax, ymax)
-                        rmin, rmax = np.percentile((y-y_model)[~nans], (1, 99))
 
-                    ax.set_xlim((wmin, wmax))
-                    ax_res.set_xlim((wmin, wmax))
-                    ax.set_ylim((ymin*0.9, ymax*1.1))
-                    ax_res.set_ylim((rmin*0.9, rmax*1.1))
-                    ax.set_xticklabels([])
-                    ax.set_ylabel(r'Flux')
-                    ax_res.set_ylabel(r'Residual')
+        for i in range(nrows):
+            ax, ax_res = axes[2*i], axes[2*i+1]
+            wmin, wmax = obs.wlen[i*3][0], obs.wlen[min(i*3+2, obs.wlen.shape[0]-1)][-1]
+            ymin, ymax = 1, 0
+            for j in range(min(3, obs.wlen.shape[0]-3*i)):
+                x, y, y_err = obs.wlen[i*3+j], obs.flux[i*3+j], obs.err[i*3+j]
+                ax.errorbar(x, y, y_err, color='k', alpha=0.8)
+                if not isinstance(models, list):
+                    models = [models]
+                for k, model in enumerate(models):
+                    y_model = model[i*3+j]
+                    ax.plot(x, y_model,  color=cmap(k), 
+                            label=labels[k],
+                            alpha=0.8, zorder=10)
+                    ax_res.plot(x, y-y_model,  color=cmap(k), alpha=0.8)
+                nans = np.isnan(y)
+                vmin, vmax = np.percentile(y_model, (1, 99))
+                ymin, ymax = min(vmin, ymin), max(vmax, ymax)
+                rmin, rmax = np.percentile((y-y_model)[~nans], (1, 99))
+
+            ax.set_xlim((wmin, wmax))
+            ax_res.set_xlim((wmin, wmax))
+            ax.set_ylim((ymin*0.9, ymax*1.1))
+            ax_res.set_ylim((rmin*0.9, rmax*1.1))
+            ax.set_xticklabels([])
+            ax.set_ylabel(r'Flux')
+            ax_res.set_ylabel(r'Residual')
+        axes[0].legend()
         axes[-1].set_xlabel('Wavelength (nm)')
-        plt.savefig(self.prefix+'best_fit_spec.pdf')
-        plt.show()
+        plt.savefig(savename)
+        if show:
+            plt.show()
         plt.close(fig)
 
 

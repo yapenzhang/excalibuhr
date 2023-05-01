@@ -2,8 +2,9 @@
 import numpy as np 
 import matplotlib.pyplot as plt 
 from astropy.io import fits
+from astropy import stats
 from scipy.interpolate import interp1d
-from scipy import ndimage
+from scipy import ndimage, signal
 import excalibuhr.utils as su 
 import copy 
 
@@ -210,9 +211,8 @@ class SPEC2D:
 
 
     def continuum_normalization(self, order=3, debug=False):
-        Nchips = self.wlen.shape[0]
         spec = self._copy()
-        for i in range(Nchips):
+        for i in range(self.Nchip):
             if order == 0:
                 nans = np.isnan(self.flux[i])
                 _, continuum = np.percentile(self.flux[i][~nans], (1, 99))
@@ -228,12 +228,25 @@ class SPEC2D:
         return spec
 
     def high_pass_filter(self, sigma=201):
-        Nchips = self.wlen.shape[0]
+        #signal.savgol_filter
         spec = self._copy()
-        for i in range(Nchips):
+        for i in range(self.Nchip):
             spec.flux[i] /= ndimage.gaussian_filter(self.flux[i], sigma=sigma)
             spec.err[i] /= ndimage.gaussian_filter(self.flux[i], sigma=sigma)
         return spec
+
+
+    def outliers(self, spec_model, clip=3):
+        res = self._copy(flux=self.flux-spec_model.flux)
+        for i in range(self.Nchip):
+            filtered = stats.sigma_clip(res.flux[i], sigma=clip)
+            outlier_mask = filtered.mask
+            plt.plot(self.wlen[i], res.flux[i], 'k')
+            for w in self.wlen[i][outlier_mask]:
+                plt.axvline(w, ls=':', color='r', alpha=0.7)
+        plt.show()
+
+
 
 
     def noise_stat(self, spec_model, Nbins=20):
@@ -250,14 +263,14 @@ class SPEC2D:
                                 for i in range(1, Nbins)])
         return ybinned, rbinned, rbinned_err
 
+
     def doppler_shift_dw(self, dw):
         return self._copy(wlen=self.wlen+dw)
 
     def wlen_calibration(self, transm_spec, debug=False):
-        Nchips = self.wlen.shape[0]
         self.wlen = su.wlen_solution(self.flux, self.err, self.wlen, transm_spec, debug=debug)
         if debug:
-            for i in range(Nchips):
+            for i in range(self.Nchip):
                 plt.plot(self.wlen[i], self.flux[i], 'k', alpha=0.8)
             plt.plot(transm_spec[:,0], transm_spec[:,1], 'b', alpha=0.8)
             plt.show()
@@ -286,11 +299,14 @@ class SPEC2D:
 
     def save_spec1d(self, savename):
         unraveled = []
-        for dt in [self.wlen, self.flux, self.err]:
+        if self.err is None:
+            arr = [self.wlen, self.flux]
+        else:
+            arr = [self.wlen, self.flux, self.err]
+        for dt in arr:
             unraveled.append(dt.flatten())
-        wlen, spec, err = unraveled
         header = "Wlen(nm) Flux Flux_err"
-        np.savetxt(savename, np.c_[wlen, spec, err], header=header)
+        np.savetxt(savename, np.transpose(unraveled), header=header)
 
 
     def plot_spec1d(self, savename, show=False):
@@ -300,6 +316,8 @@ class SPEC2D:
             nrows += 1
         fig, axes = plt.subplots(nrows=nrows, ncols=1, 
                         figsize=(12,nrows), constrained_layout=True)
+        if nrows == 1:
+            axes = [axes]
         for i in range(nrows):
             ax = axes[i]
             wmin, wmax = self.wlen[i*3][0], self.wlen[min(i*3+2, self.wlen.shape[0]-1)][-1]
