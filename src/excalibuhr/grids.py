@@ -1,11 +1,17 @@
 import os
 import sys
+import glob
 import numpy as np 
 from astropy.io import fits
 # from telfit import Modeler
 import excalibuhr.utils as su
+from scipy.interpolate import RegularGridInterpolator
 
 class TelluricGrid:
+    """
+    Telluric transmission spectra grid generated with TelFit
+    https://telfit.readthedocs.io/en/latest/
+    """
 
     def __init__(self,
                 savepath, 
@@ -40,6 +46,13 @@ class TelluricGrid:
         self.ppmv_range = np.array([0.9, 0.95, 1.0, 1.05, 1.1])
         self.temp_range = np.arange(-0.0012, 0.00121, 4e-4)
 
+        try:
+            self.load_grid()
+        except:
+            self.make_grid()
+            self.combine_grid()
+            self.load_grid()
+
 
     def temp_quad_perturb(self, x, a):
         """
@@ -54,7 +67,8 @@ class TelluricGrid:
         return quad
 
 
-    def make_telluric_grid(self):
+    def make_grid(self):
+        print("Generate telluric grid spectra...")
 
         # Make the model
         modeler = Modeler()
@@ -166,9 +180,122 @@ class TelluricGrid:
 
     def load_grid(self):
         filename = os.path.join(self.savepath, 'telfit_grid.fits')
+        print(f"Load telluric grid spectra from {filename}...")
         hdul = fits.open(filename)
         grid = {}
         for i, hdu in enumerate(hdul):
             if i > 0:
                 grid[hdu.name] = hdu.data
-        return grid
+        self.grid = grid
+    
+
+
+class StellarGrid:
+    """
+    MARCS stellar LTE model grid downloaded from
+    https://marcs.oreme.org/
+    """
+
+    def __init__(self, gridpath=None):
+
+        if gridpath is None:
+            gridpath = os.path.dirname(os.path.abspath(__file__))
+            gridpath = os.path.join(gridpath, '../', '../', 'data')
+
+        self.gridpath = gridpath
+
+        # Set parameter ranges of the grid
+        self.teff_grid = np.arange(2500, 4000, 100)
+        self.logg_grid = np.array([3.0, 3.5, 4.0, 4.5, 5.0])
+        self.metal_grid = np.array([0, 0.25, 0.5, 0.75, 1.0])
+
+        try:
+            self.load_grid()
+        except:
+            self.make_grid()
+            self.load_grid()
+
+
+    def make_grid(self):
+        print("Generate stellar grid profiles...")
+        nlayer = 56
+        ncolumn = 4 #t, p, h2o, co
+        marcs_grid = np.zeros((len(self.teff_grid), 
+                               len(self.logg_grid), 
+                               len(self.metal_grid), 
+                               ncolumn, nlayer))
+        for i, teff in enumerate(self.teff_grid):
+            for j, logg in enumerate(self.logg_grid):
+                for k, z in enumerate(self.metal_grid):
+                    filename = f'p{teff:.0f}_g+{logg:.1f}_m0.0_t00_st_z+{z:.2f}_a+0.00_c+0.00_n+0.00_o+0.00_r+0.00_s+0.00.mod'
+                    filename = os.path.join(self.gridpath, filename)
+                    if not os.path.exists(filename):
+                        raise Exception("Marcs models not found.")
+                    pt = np.genfromtxt(filename, skip_header=25, skip_footer=229)
+                    molec = np.genfromtxt(filename, skip_header=140, skip_footer=114)
+                    t = pt[:,4]
+                    p = pt[:,6]*1e-6
+                    # vmr_H2 = 1e1**molec[:,4]*1e-6/p
+                    vmr_H2O = 1e1**molec[:,6]*1e-6/p
+                    vmr_CO = 1e1**molec[:,9]*1e-6/p
+                    marcs_grid[i,j,k,:] = [t, p, vmr_H2O, vmr_CO]
+
+        np.save(os.path.join(self.gridpath,'marcs_grid'), marcs_grid)
+
+    def load_grid(self):
+        filename = os.path.join(self.gridpath, '*_grid.npy')
+        file = glob.glob(filename)
+        print(f"Load stellar grid profiles from {filename}...")
+        self.grid = np.load(file[0])
+        
+    def interp_grid(self):
+        interp = RegularGridInterpolator(
+                    (self.teff_grid, self.logg_grid, self.metal_grid), 
+                    self.grid, bounds_error=False, fill_value=None)
+        return interp
+    
+
+class LimbDarkGrid:
+
+    """
+    Limb darkening coefficients downloaded from
+    https://cdsarc.cds.unistra.fr/viz-bin/cat/J/A+A/546/A14
+    """
+    def __init__(self, gridpath=None):
+
+        if gridpath is None:
+            gridpath = os.path.dirname(os.path.abspath(__file__))
+            gridpath = os.path.join(gridpath, '../', '../', 'data')
+        
+        self.gridpath = gridpath
+
+        # Set parameter ranges of the grid
+        self.teff_grid = np.arange(1500, 4700, 100)
+        self.logg_grid = np.array([2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5])
+
+        try:
+            self.load_grid()
+        except:
+            self.make_grid()
+            self.load_grid()
+
+
+    def make_grid(self):
+        try:
+            dt = np.genfromtxt(os.path.join(self.gridpath, 'limb_dark_coeff.dat'), 
+                           skip_header=10761) # Ks band
+        except:
+            raise Exception("Limb darkening coeff file not found.")
+        us = dt[:,4].reshape(len(self.teff_grid), len(self.logg_grid))
+        np.save(os.path.join(self.gridpath,'limb_dark_coeff_u'), us)
+
+    def load_grid(self):
+        filename = os.path.join(self.gridpath, '*_coeff_u.npy')
+        file = glob.glob(filename)
+        print(f"Load stellar limb darkening grid from {file}...")
+        self.grid = np.load(file[0])
+        
+    def interp_grid(self):
+        interp = RegularGridInterpolator((self.teff_grid, self.logg_grid), 
+                            self.grid, bounds_error=False, fill_value=None)
+        return interp

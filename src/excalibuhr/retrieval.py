@@ -17,7 +17,7 @@ import pymultinest
 import corner
 import excalibuhr.utils as su 
 from excalibuhr.data import SPEC2D
-from excalibuhr.telluric import TelluricGrid
+from excalibuhr.grids import TelluricGrid, StellarGrid, LimbDarkGrid
 from petitRADTRANS import Radtrans
 from petitRADTRANS import nat_cst as nc
 from petitRADTRANS.retrieval import rebin_give_width as rgw
@@ -306,12 +306,16 @@ class Retrieval:
                 'key_carbon_iso': '13/12C',
                 'key_metallicity': '[C/H]',
                 'key_gravity': 'logg',
+                'key_teff': 'T_eff',
                 'key_tellu_temp': 'tellu_temp',
                 'key_t_bottom': "t_00",
                 'key_quench': 'log_P_quench',
                 'key_molecule_tolerance': 'beta',
                 'key_teff_tolerance': 'tol',
                 'key_penalty_param': "gamma",
+                'key_spot_coverage': "f_spot",
+                # 'key_spot_coverage': ""
+                'key_teff_spot': 'T_spot',
             }
         for par in attr_keys.keys():
             setattr(self, par, attr_keys[par])
@@ -365,7 +369,6 @@ class Retrieval:
                             lbl_opacity_sampling=lbl_opacity_sampling,
                             do_scat_emis=do_scat_emis,
                         )
-                    rt_object.setup_opa_structure(self.press)
                     self.pRT_object[instrument].append(rt_object)
             else:
                 data_object = self.obs[instrument]
@@ -385,41 +388,43 @@ class Retrieval:
                             lbl_opacity_sampling=lbl_opacity_sampling,
                             do_scat_emis=do_scat_emis,
                         )
-                    rt_object.setup_opa_structure(self.press)
                     self.pRT_object[instrument].append(rt_object)
         
     
 
-    def add_free_PT_model(self):
+    def add_free_PT_model(self, N_t_knots):
 
-        for i in range(self.N_t_knots):
+        for i in range(N_t_knots):
             self.add_parameter(f't_{i:02}')
+        
+        if self.PT_penalty_order:
+            self.add_parameter(self.key_penalty_param, prior=(-2,9))
 
         self.PT_model = self.free_PT_model
 
 
     def free_PT_model(self):
-        # p_ret = np.copy(self.press)
-        # t_names = [x for x in self.params if x.split('_')[0]=='t']
-        # t_names.sort(reverse=True)
-        # knots_t = [self.params[x].value for x in t_names]
-        # knots_p = np.logspace(np.log10(self.press[0]),np.log10(self.press[-1]), len(knots_t))
-        # # interpolation and penalty in logT - logP space
-        # t_spline = splrep(np.log10(knots_p), np.log10(knots_t), k=3)
-        # knots, coeffs, _ = t_spline
-        # tret = splev(np.log10(p_ret), t_spline, der=0)
-        # t_smooth = 1e1** tret
-
         p_ret = np.copy(self.press)
         t_names = [x for x in self.params if x.split('_')[0]=='t']
         t_names.sort(reverse=True)
         knots_t = [self.params[x].value for x in t_names]
         knots_p = np.logspace(np.log10(self.press[0]),np.log10(self.press[-1]), len(knots_t))
         # interpolation and penalty in logT - logP space
-        t_spline = splrep(np.log10(knots_p), np.log10(knots_t), k=1)
+        t_spline = splrep(np.log10(knots_p), np.log10(knots_t), k=3)
         knots, coeffs, _ = t_spline
         tret = splev(np.log10(p_ret), t_spline, der=0)
-        t_smooth = 1e1** gaussian_filter(tret, 1.5)
+        self.temp = 1e1 ** tret
+
+        # p_ret = np.copy(self.press)
+        # t_names = [x for x in self.params if x.split('_')[0]=='t']
+        # t_names.sort(reverse=True)
+        # knots_t = [self.params[x].value for x in t_names]
+        # knots_p = np.logspace(np.log10(self.press[0]),np.log10(self.press[-1]), len(knots_t))
+        # t_spline = splrep(np.log10(knots_p), knots_t, k=1)
+        # knots, coeffs, _ = t_spline
+        # tret = splev(np.log10(p_ret), t_spline, der=0)
+        # t_smooth = gaussian_filter(tret, 1.5)
+        # self.temp = t_smooth
 
         if self.PT_penalty_order:
 
@@ -464,8 +469,54 @@ class Retrieval:
         else:
             self.ln_L_penalty = 0.
 
-        return t_smooth
+        return self.press, self.temp
 
+
+    def add_grid_PT_model(self,
+                          grid_path=None,
+                          inhomo=False,
+                          ):
+        self.PT_model = self.grid_PT_model
+
+        self.stellar_grid = StellarGrid(grid_path)
+        self.limb_dark_grid = LimbDarkGrid(grid_path)
+
+        teff_grid = self.stellar_grid.teff_grid
+        logg_grid = self.stellar_grid.logg_grid
+        metal_grid = self.stellar_grid.metal_grid
+
+        self.add_parameter(self.key_teff, prior=(teff_grid[0], teff_grid[-1]))
+        self.add_parameter(self.key_gravity, prior=(logg_grid[0], logg_grid[-1]))
+        self.add_parameter(self.key_metallicity, prior=(metal_grid[0], metal_grid[-1]))
+
+        if inhomo:
+            self.add_parameter(self.key_teff_spot, prior=(0.8, 1.))
+            self.add_parameter(self.key_spot_coverage, prior=(0, 0.5))
+
+
+    def grid_PT_model(self):
+
+        grid_param = np.array([self.params[self.key_teff].value, 
+                               self.params[self.key_gravity].value,
+                               self.params[self.key_metallicity].value,])
+        self.temp = self.stellar_grid.interp_grid()(grid_param)[0,0]
+        self.press = self.stellar_grid.interp_grid()(grid_param)[0,1]
+
+        # interpolation of limb darkening
+        self.limb = self.limb_dark_grid.interp_grid()(grid_param[:2])[0]
+        self.ln_L_penalty = 0.
+
+        if self.key_teff_spot in self.params:
+            grid_param = np.array([self.params[self.key_teff_spot].value, 
+                                    self.params[self.key_gravity].value,
+                                    self.params[self.key_metallicity].value,])
+            temp =  self.stellar_grid.interp_grid()(grid_param)[0,0]
+            press = self.stellar_grid.interp_grid()(grid_param)[0,1]
+
+            return [self.press, press], [self.temp, temp]
+
+        else:
+            return self.press, self.temp
 
     def add_free_chem_model(self):
 
@@ -561,10 +612,11 @@ class Retrieval:
     def forward_model_pRT(self, leave_out=None, contribution=False):
 
         # get temperarure profile
-        self.temp = self.PT_model()
+        press, temp = self.PT_model()
 
         # if self.debug:
         #     plt.plot(self.temp, self.press)
+        #     plt.plot(temp[1], press[1])
         #     plt.ylim([self.press[-1],self.press[0]])
         #     plt.yscale('log')
         #     plt.xlabel('T (K)')
@@ -585,14 +637,31 @@ class Retrieval:
         for instrument in self.obs.keys():
             model = []
             for rt_object in self.pRT_object[instrument]:
-                rt_object.calc_flux(self.temp,
-                        self.abundances,
-                        1e1**self.params[self.key_gravity].value,
-                        self.MMW,
-                        contribution=contribution,
-                        )
-                # convert flux f_nu to f_lambda in unit of W/cm**2/um
-                f_lambda = rt_object.flux*rt_object.freq**2./nc.c * 1e-7
+                # if calculate inhomogeneous model due to stellar spots,
+                # linear combine models according to the coverage parameter
+                if self.key_spot_coverage in self.params:
+                    f_spot = self.params[self.key_spot_coverage].value
+                    f_lambda = []
+                    for pressure, temperature in zip(press, temp):
+                        rt_object.setup_opa_structure(pressure)
+                        rt_object.calc_flux(temperature,
+                                self.abundances,
+                                1e1**self.params[self.key_gravity].value,
+                                self.MMW,
+                                contribution=contribution,
+                                )
+                        f_lambda.append(rt_object.flux*rt_object.freq**2./nc.c * 1e-7)
+                    f_lambda = np.average(f_lambda, axis=0, weights=[1.-f_spot, f_spot])
+                else:
+                    rt_object.setup_opa_structure(self.press)
+                    rt_object.calc_flux(self.temp,
+                            self.abundances,
+                            1e1**self.params[self.key_gravity].value,
+                            self.MMW,
+                            contribution=contribution,
+                            )
+                    # convert flux f_nu to f_lambda in unit of W/cm**2/um
+                    f_lambda = rt_object.flux*rt_object.freq**2./nc.c * 1e-7
                 wlen_nm = nc.c/rt_object.freq/1e-7
                 if self.key_radius in self.params:
                     f_lambda *= (self.params[self.key_radius].value * nc.r_jup \
@@ -610,35 +679,41 @@ class Retrieval:
                 integral2 = np.trapz(integrand2, wlen_nm)
                 contr[i] = integral1/integral2
             return contr
-        
+
 
     def add_telluric_model(self, 
                            tellu_species=['H2O', 'CH4', 'CO2'],
-                           tellu_grid_path=None,
+                           grid_path='../',
                            ):
         if self.fit_telluric:
         
             self.tellu_species = tellu_species
-            if tellu_grid_path is None:
-                tellu_grid_path = os.path.join(self.out_dir, '../')
-            tellu_grid = TelluricGrid(tellu_grid_path,
-                        #  wave_range=,
-                        free_species=self.tellu_species)
-            self.tellu_grid = tellu_grid.load_grid()
+
+            tellu_grid = TelluricGrid(
+                            os.path.join(self.out_dir, grid_path),
+                            free_species=self.tellu_species)
+            
+            self.tellu_grid = tellu_grid.grid
             self.humidity_range = tellu_grid.humidity_range
             self.ppmv_range = tellu_grid.ppmv_range
             self.temp_range = tellu_grid.temp_range
             self.fixed_species = [s for s in tellu_grid.all_species if s not in tellu_grid.free_species]
             
             self.add_parameter(self.key_airmass, prior=(1., 3.))
-            self.add_parameter(self.key_tellu_temp, prior=(self.temp_range[0], self.temp_range[-1]))
+            self.add_parameter(self.key_tellu_temp, 
+                               prior=(self.temp_range[0], 
+                                      self.temp_range[-1]))
             
             for species in tellu_species:
                 param_name = "tellu_" + species.split('_')[0]
                 if species == 'H2O':
-                    self.add_parameter(param_name, prior=(self.humidity_range[0], self.humidity_range[-1]))
+                    self.add_parameter(param_name, 
+                                       prior=(self.humidity_range[0], 
+                                              self.humidity_range[-1]))
                 else:
-                    self.add_parameter(param_name, prior=(self.ppmv_range[0], self.ppmv_range[-1]))
+                    self.add_parameter(param_name, 
+                                       prior=(self.ppmv_range[0], 
+                                              self.ppmv_range[-1]))
 
 
     def forward_model_telluric(self):
@@ -651,13 +726,16 @@ class Retrieval:
             else:
                 rel_range = self.ppmv_range
             y *= RegularGridInterpolator((self.temp_range, rel_range), 
-                        self.tellu_grid[species], bounds_error=False, fill_value=None)(
-                        [self.params[self.key_tellu_temp].value, self.params[param_name].value])[0]
+                                self.tellu_grid[species], 
+                                bounds_error=False, fill_value=None)(
+                                [self.params[self.key_tellu_temp].value, 
+                                 self.params[param_name].value])[0]
             y[y<0.] = 0.
         for species in self.fixed_species:
             y *= self.tellu_grid[species]
         tellu_native = y**(self.params[self.key_airmass].value)
-        self.model_tellu = interp1d(self.tellu_grid['WAVE'], tellu_native, bounds_error=False, fill_value='extrapolate')
+        self.model_tellu = interp1d(self.tellu_grid['WAVE'], tellu_native, 
+                                    bounds_error=False, fill_value='extrapolate')
         
         # if self.debug:
         #     plt.plot(self.tellu_grid['WAVE'], tellu_native)
@@ -695,12 +773,12 @@ class Retrieval:
         axes[1].set_xlabel('Wavelength (nm)')
         plt.show()
         plt.close(fig)
-        # return fig, axes
-
 
     
 
     def apply_rot_broaden_rv_shift(self):
+        if self.key_limb_dark_u in self.params:
+            self.limb = self.params[self.key_limb_dark_u].value
         self.model_spin = {}
         for instrument in self.obs.keys():
             model = self.model_native[instrument]
@@ -711,7 +789,7 @@ class Retrieval:
                 wlen_up = np.linspace(wave_tmp[0], wave_tmp[-1], len(wave_tmp)*20)
 
                 flux_take = interp1d(wave_shift, flux_tmp, bounds_error=False, fill_value='extrapolate')(wlen_up)
-                flux_spin = pyasl.fastRotBroad(wlen_up, flux_take, self.params[self.key_limb_dark_u].value, self.params[self.key_spin].value)
+                flux_spin = pyasl.fastRotBroad(wlen_up, flux_take, self.limb, self.params[self.key_spin].value)
                 model_tmp.append([wlen_up, flux_spin])
             self.model_spin[instrument] = model_tmp
         
@@ -797,7 +875,6 @@ class Retrieval:
         
 
     def apply_poly_continuum(self):
-        # self.model_cont = {}
         for instrument in self.obs.keys():
             if instrument != 'photometry':
                 model_target = self.model_rebin[instrument]
@@ -805,7 +882,6 @@ class Retrieval:
                 model_tmp = []
                 for i, y_model in enumerate(model_target):
                     x = obs_target.wlen[i]
-                    # y = obs_target.flux[i]
 
                     if self.fit_poly:
                         # correct for the slope or higher order poly of the continuum
@@ -814,10 +890,8 @@ class Retrieval:
                             poly.append(self.params[f'poly_{instrument}_{o}_{i:02}'].value)
                         y_poly = Chev.chebval((x - np.mean(x))/(np.mean(x)-x[0]), poly)
                         y_model *= y_poly
-                        # plt.plot(x, y_poly)
 
                     model_tmp.append(y_model)
-                # plt.show()
                 self.model_rebin[instrument] = np.array(model_tmp)
 
         # if self.debug:
@@ -907,18 +981,25 @@ class Retrieval:
                 a, b = self.params[key].prior
                 # cube[i] = a+(b-a)*cube[i]
                 cube[i]=pri.GeneralPrior(cube[i], self.params[key].prior_type, a, b)
-                # deal with the free temperature parameters
+                # find indices of the free temperature parameters
                 if key == self.key_t_bottom:
                     t_i = cube[i]
                 elif key.split("_")[0] == 't':
                     indices.append(i)
+                elif key == self.key_teff:
+                    t_eff = cube[i]
+                elif key == self.key_teff_spot:
+                    indice_t_spot = i
                 i += 1
 
-        if self.PT_is_free:
+
+        if self.key_t_bottom in self.params:
             # enforce decreasing temperatures from bottom to top layers 
             for k in indices:
                 t_i = t_i * cube[k] #(1.-0.5*cube[k])
                 cube[k] = t_i
+        if self.key_teff_spot in self.params:
+            cube[indice_t_spot] = t_eff * cube[indice_t_spot]
 
 
     def loglike(self, cube, ndim, nparams):
@@ -1068,6 +1149,7 @@ class Retrieval:
               param_prior={},
               press=None,
               N_t_knots=None, 
+              PT_profile='free',
               chemistry='free',
               line_species_ck=None,
               fit_instrument_kernel=True,
@@ -1077,11 +1159,13 @@ class Retrieval:
               fit_poly=1, 
               fit_scaling=True, 
               fit_spline=False,
-              fit_err_inflation=False,
+              fit_err_inflation=True,
               fit_telluric=False, 
-              tellu_grid_path=None,
+              tellu_grid_path='../',
+              stellar_grid_path=None,
               PT_penalty_order=0,
               mu_local_GP=None,
+              inhomogeneous=False,
               ):
 
         if press is None:
@@ -1110,18 +1194,19 @@ class Retrieval:
         print("Creating pRT objects for input data...")
         self.add_pRT_objects()
 
-        if N_t_knots is not None:
-            self.N_t_knots = N_t_knots
-            self.PT_is_free = True
-            self.add_free_PT_model()
+        if PT_profile == 'free':
+            self.add_free_PT_model(N_t_knots)
+        elif PT_profile == 'grid':
+            self.add_grid_PT_model(inhomo=inhomogeneous,
+                                   grid_path=stellar_grid_path)
+
 
         if chemistry == 'free':
             self.add_free_chem_model()
-            self.chem_is_free = True
         elif chemistry == 'equ':
             self.add_equ_chem_model()
         
-        self.add_telluric_model(tellu_grid_path=tellu_grid_path)
+        self.add_telluric_model(grid_path=tellu_grid_path)
         
         self.add_instrument_kernel(Lorentzian_kernel)
         self.add_poly_model()
