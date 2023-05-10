@@ -919,6 +919,27 @@ class Retrieval:
                     self.add_parameter(f"amploc_{k:02}", prior=prior_amp_local)
                     self.add_parameter(f"sigloc_{k:02}", prior=prior_tau_local)
 
+    def calc_covariance(self, obs_target):
+        amp = [1e1**self.params[key].value for key in self.params \
+                                        if "amp" in key.split("_")]
+        tau = [1e1**self.params[key].value for key in self.params \
+                            if "tau" in key.split("_")]
+        
+        obs_target.make_covariance(amp, tau)
+        
+        amp_loc = [1e1**self.params[key].value for key in self.params \
+                            if "amploc" in key.split("_")]
+        sigma_loc = [1e1**self.params[key].value for key in self.params \
+                            if "sigloc" in key.split("_")]
+        mu_loc = [self.params[key].value for key in self.params \
+                            if "muloc" in key.split("_")]
+
+        if mu_loc:
+            obs_target.make_covariance_local(amp_loc, mu_loc, sigma_loc)
+        
+        cov = obs_target.cov
+        return cov
+
 
     def calc_scaling(self, y_model, y_data, y_cov, rcond=None):
         if y_cov.ndim == 2:
@@ -1033,7 +1054,7 @@ class Retrieval:
             self.apply_poly_continuum()
 
 
-        self.flux_scaling, self.err_infaltion, self.model_reduce = {}, {}, {}
+        self.flux_scaling, self.err_infaltion, self.model_single = {}, {}, {}
         for instrument in self.obs.keys():
             if instrument == 'photometry':
                 for model_target, obs_target in zip(self.model_rebin[instrument], self.obs[instrument]):
@@ -1048,30 +1069,11 @@ class Retrieval:
                 if self.leave_out is not None:
                     for ind_sp in range(len(self.leave_out)):
                         model_single.append(model_target - model_reduced[ind_sp][instrument])
-                
+
                 obs_target = self.obs[instrument]._copy()
                 if self.fit_GP:
-                    amp = [1e1**self.params[key].value for key in self.params \
-                                        if "amp" in key.split("_") and \
-                                        instrument in key.split("_")]
-                    tau = [1e1**self.params[key].value for key in self.params \
-                                        if "tau" in key.split("_") and \
-                                        instrument in key.split("_")]
-                    
-                    obs_target.make_covariance(amp, tau)
-                    
-                    amp_loc = [1e1**self.params[key].value for key in self.params \
-                                        if "amploc" in key.split("_")]
-                    sigma_loc = [1e1**self.params[key].value for key in self.params \
-                                        if "sigloc" in key.split("_")]
-                    mu_loc = [self.params[key].value for key in self.params \
-                                        if "muloc" in key.split("_")]
+                    cov = self.calc_covariance(obs_target)
 
-                    if mu_loc:
-                        obs_target.make_covariance_local(amp_loc, mu_loc, sigma_loc)
-                    
-                    cov = obs_target.cov
-                    
                 else:
                     cov = obs_target.err**2
                 
@@ -1087,7 +1089,6 @@ class Retrieval:
                         # if self.leave_out is not None:
                         #     model_single[i] = np.dot(model_single[i], f_det)
 
-                # plt.figure()
                 if self.fit_scaling:
                     f_dets = np.ones(model_target.shape[:-1])
                     for i in range(obs_target.Nchip):
@@ -1127,9 +1128,10 @@ class Retrieval:
                     chi2_reduced += chi2/obs_target.flux.size
             
                 self.model_rebin[instrument] = model_target
-                # self.model_reduce[instrument] = model_single
                 self.flux_scaling[instrument] = f_dets
                 self.err_infaltion[instrument] = betas
+                if self.leave_out is not None:
+                    self.model_single[instrument] = model_single
         
         self.ln_L = log_likelihood + self.ln_L_penalty
 
@@ -1360,7 +1362,7 @@ class Retrieval:
             for param_set in param_envelope:
                 # set parameters
                 self.set_parameter_values(param_set)
-                self.temp = self.PT_model()
+                self.PT_model()
                 self.abundances, self.MMW = self.chem_model()
                 envelope_temp.append(self.temp)
                 envelope_vmr.append(self.abundances)
@@ -1387,6 +1389,16 @@ class Retrieval:
                 model = SPEC2D(self.obs[instrument].wlen, self.model_rebin[instrument])
                 model.save_spec1d(self.prefix + f'{instrument}_best_fit_spec.dat')
         
+        best_fit_params = s['modes'][0][which_best]
+        self.leave_out = ['H2O','CO_36']
+        self.loglike(best_fit_params[:self.n_params], self.n_params, self.n_params)
+        # plot ccf of residuals 
+        for instrument in self.obs.keys():
+            if instrument != 'photometry':
+                self.make_ccf_plot(self.obs[instrument], self.model_rebin[instrument], 
+                                    self.model_single[instrument],
+                                    self.prefix + f'{instrument}_res_ccf.pdf')
+
 
     def average_post_model(self, N, instrument='crires'):
         samples = np.genfromtxt(self.prefix+'post_equal_weights.dat')
@@ -1428,9 +1440,9 @@ class Retrieval:
         for k, key in enumerate(self.line_species):
             for i in range(3):
                 ax_vmr.fill_betweenx(self.press, 
-                                        envelope_vmr[i*2][key]/getMM(key)*self.MMW, 
-                                        envelope_vmr[i*2+1][key]/getMM(key)*self.MMW,
-                                        facecolor=cmap_hue(k*4+i), zorder=10-i)
+                                    envelope_vmr[i*2][key]/getMM(key)*self.MMW, 
+                                    envelope_vmr[i*2+1][key]/getMM(key)*self.MMW,
+                                    facecolor=cmap_hue(k*4+i), zorder=10-i)
             ax_vmr.plot(envelope_vmr[-1][key]/getMM(key)*self.MMW, self.press, color=cmap(k), label=key, zorder=11)
         ax_vmr.set_xlabel('VMR')
         ax_vmr.set_ylabel('Pressure (bar)')
@@ -1441,10 +1453,10 @@ class Retrieval:
         ax_vmr.legend(loc='best')
 
 
-    def make_best_fit_plot(self, obs, models, savename, labels=['model'], show=False):
+    def make_best_fit_plot(self, obs, models, savename, labels=['model']):
         self._set_plot_style()
         nrows = obs.Nchip//3
-        fig, axes = plt.subplots(nrows=nrows*2, ncols=1, 
+        fig, axes = plt.subplots(nrows=nrows*2, ncols=1, sharex=True,
                           figsize=(12,nrows*3), constrained_layout=True,
                           gridspec_kw={"height_ratios": [3,1]*nrows})
 
@@ -1452,9 +1464,21 @@ class Retrieval:
             ax, ax_res = axes[2*i], axes[2*i+1]
             wmin, wmax = obs.wlen[i*3][0], obs.wlen[min(i*3+2, obs.wlen.shape[0]-1)][-1]
             ymin, ymax = 1, 0
+            if self.fit_GP:
+                covs = self.calc_covariance(obs)
+
             for j in range(min(3, obs.wlen.shape[0]-3*i)):
                 x, y, y_err = obs.wlen[i*3+j], obs.flux[i*3+j], obs.err[i*3+j]
-                ax.errorbar(x, y, y_err, color='k', alpha=0.8)
+                if self.fit_GP:
+                    cov = covs[i*3+j].toarray()
+                    mask = (cov==0.)
+                    y_err = np.array([np.sqrt(np.std(cov[r][~mask[r]])) for r in range(len(cov))])
+
+                ax.errorbar(x, y, y_err, color='k', alpha=0.8, capsize=0.5)
+                ax_res.fill_between(x, -3*y_err, 3*y_err, color=cmap(7), alpha=0.2)
+                ax_res.fill_between(x, -y_err, y_err, color=cmap(7), alpha=0.4)
+
+
                 if not isinstance(models, list):
                     models = [models]
                 for k, model in enumerate(models):
@@ -1466,7 +1490,7 @@ class Retrieval:
                 nans = np.isnan(y)
                 vmin, vmax = np.percentile(y_model, (1, 99))
                 ymin, ymax = min(vmin, ymin), max(vmax, ymax)
-                rmin, rmax = np.percentile((y-y_model)[~nans], (1, 99))
+                rmin, rmax = np.percentile((y-y_model)[~nans], (0.1, 99.9))
 
             ax.set_xlim((wmin, wmax))
             ax_res.set_xlim((wmin, wmax))
@@ -1478,8 +1502,104 @@ class Retrieval:
         axes[0].legend()
         axes[-1].set_xlabel('Wavelength (nm)')
         plt.savefig(savename)
-        if show:
-            plt.show()
+        # plt.show()
+        plt.close(fig)
+
+
+    def make_ccf_plot(self, obs, model, model_single, savename):
+        self._set_plot_style()
+        nrows = obs.Nchip//3
+        fig, axes = plt.subplots(nrows=nrows, ncols=2, 
+                          figsize=(14,nrows*3), constrained_layout=True,
+                          gridspec_kw={"width_ratios": [5,1]},
+                          )
+        if nrows==1:
+            axes = axes[np.newaxis,:]
+
+        for k, y_singles in enumerate(model_single):
+            ccf = []
+            for i in range(nrows):
+                wmin, wmax = obs.wlen[i*3][0], obs.wlen[min(i*3+2, obs.Nchip-1)][-1]
+
+                x, y = obs.wlen[i*3:i*3+3].flatten(), obs.flux[i*3:i*3+3].flatten()
+                # y_err = obs.err[i*3:i*3+3].flatten()
+                y_model, y_single = model[i*3:i*3+3].flatten(), y_singles[i*3:i*3+3].flatten()
+                v, ccf_order = su.CCF_doppler(x, y-y_model+y_single, 
+                                              x, y_single-np.mean(y_single), 
+                                              800, 1)
+                ccf.append(ccf_order)
+                in_range = (v > -400) & (v<-400)
+                if self.leave_out[k] == 'CO_36':
+                    for j in range(min(3, obs.Nchip-3*i)):
+                        axes[i,0].plot(obs.wlen[i*3+j], 
+                                       obs.flux[i*3+j]-model[i*3+j]+y_singles[i*3+j], 
+                                       color='k', alpha=0.8)
+                axes[i,0].plot(x, y_single, color=cmap(k), alpha=0.8)
+                axes[i,1].plot(v, ccf_order/np.std(ccf_order[~in_range]), 
+                               color=cmap(k), alpha=0.8, label=self.leave_out[k])
+                axes[i,1].set_xlabel('Velocity (km/s)')
+                axes[i,1].set_ylabel('CCF')
+
+                nans = np.isnan(y)
+                rmin, rmax = np.percentile((y-y_model)[~nans], (1, 99))
+
+                axes[i,0].set_xlim((wmin, wmax))
+                axes[i,0].set_ylim((rmin*1.5, rmax*1.5))
+                axes[i,0].set_xlabel('Wavelength (nm)')
+                axes[i,0].set_ylabel(r'Residual')
+                axes[i,1].legend()
+
+        plt.savefig(savename)
+        plt.show()
+        plt.close(fig)
+
+
+    def make_ccf_plot_by_detector(self, obs, model, model_single, savename):
+        self._set_plot_style()
+        nrows = obs.Nchip//3
+        fig = plt.figure(constrained_layout=True, figsize=(14,5))
+        gs = fig.add_gridspec(nrows=nrows*2,ncols=4,height_ratios=[2,1]*nrows)
+        ax_ccf_sum = fig.add_subplot(gs[:,-1])
+        ax, ax_ccf = [], []
+        for i in range(nrows):
+            ax.append(fig.add_subplot(gs[2*i,:3]))
+            for j in range(min(3, obs.Nchip-3*i)):
+                ax_ccf.append(fig.add_subplot(gs[2*i+1,j]))
+
+        ccf_species = []
+        for k, y_singles in enumerate(model_single):
+            ccf = []
+            for i in range(nrows):
+                wmin, wmax = obs.wlen[i*3][0], obs.wlen[min(i*3+2, obs.Nchip-1)][-1]
+
+                for j in range(min(3, obs.Nchip-3*i)):
+                    x, y, y_err = obs.wlen[i*3+j], obs.flux[i*3+j], obs.err[i*3+j]
+                    y_model, y_single = model[i*3+j], y_singles[i*3+j]
+                    v, ccf_order = su.CCF_doppler(x, y-y_model+y_single, x, y_single-np.mean(y_single), 1000, 1)
+                    ccf.append(ccf_order)
+                    in_range = (v > -500) & (v<-500)
+                    if self.leave_out[k] == 'CO_36':
+                        ax[i].plot(x, y-y_model+y_single, color='k', alpha=0.8)
+                    ax[i].plot(x, y_single, color=cmap(k), alpha=0.8)
+                    ax_ccf[i*3+j].plot(v, ccf_order/np.std(ccf_order[~in_range]), color=cmap(k), alpha=0.8)
+                    ax_ccf[i*3+j].set_xlabel('Velocity (km/s)')
+                    ax_ccf[i*3+j].set_ylabel('CCF')
+
+
+                    nans = np.isnan(y)
+                    rmin, rmax = np.percentile((y-y_model)[~nans], (1, 99))
+
+                ax[i].set_xlim((wmin, wmax))
+                ax[i].set_ylim((rmin*1.5, rmax*1.5))
+                ax[i].set_xlabel('Wavelength (nm)')
+                ax[i].set_ylabel(r'Residual')
+
+            ccf_species= np.sum(ccf, axis=0)
+            ax_ccf_sum.plot(v, ccf_species/np.std(ccf_species[~in_range]), label=self.leave_out[k])
+        ax_ccf_sum.legend()
+
+        plt.savefig(savename)
+        plt.show()
         plt.close(fig)
 
 
@@ -1497,7 +1617,7 @@ class Retrieval:
             "ytick.minor.visible": True,
             # "xtick.major.size": 5,
             # "xtick.minor.size": 2.5,
-            "lines.linewidth": 1.5,   
+            "lines.linewidth": 1.,   
             'image.origin': 'lower',
             'image.cmap': 'cividis',
             "savefig.dpi": 300,   

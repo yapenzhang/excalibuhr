@@ -11,6 +11,8 @@ import copy
 class SPEC2D:
     """
     Object for spectral data in 2D shape (N_chip x N_pixel)
+    It contains the wavelength, flux, and error arrays. 
+    It has several methods for manipulating and analyzing the data.
     """
 
     def __init__(self, wlen=None, flux=None, err=None,
@@ -22,11 +24,30 @@ class SPEC2D:
         
         fmt: string
             
-
         """
         
         if filename is not None:
-            self.wlen, self.flux, self.err = \
+            ext = filename.split('.')[-1]
+            if ext == "fits":
+                if fmt == "ext3":
+                    with fits.open(filename) as hdu:
+                        self.header = hdu[0].header
+                        self.flux = hdu['FLUX'].data
+                        self.err = hdu['FLUX_ERR'].data
+                        self.wlen = hdu['WAVE'].data
+                elif fmt == "molecfit":
+                    w, f, f_err = [], [], []
+                    with fits.open(filename) as hdu:
+                        self.header = hdu[0].header
+                        for i in range(1, len(hdu)):
+                            w.append(hdu[i].data['WAVE'])
+                            f.append(hdu[i].data['FLUX'])
+                            f_err.append(hdu[i].data['FLUX_ERR'])
+                    self.flux = np.array(f)
+                    self.err = np.array(f_err)
+                    self.wlen = np.array(w)
+            else:
+                self.wlen, self.flux, self.err = \
                     np.genfromtxt(filename, skip_header=1, unpack=True)
             self.reformat_data()
         elif wlen is not None:
@@ -34,17 +55,7 @@ class SPEC2D:
             self.flux = flux
             self.err = err
             self.reformat_data()
-        else:
-            pass
 
-
-    @property
-    def header(self):
-        return self._header
-
-    @header.setter
-    def header(self, value):
-        self._header = value
 
     def reformat_data(self):
         if not isinstance(self.wlen, np.ndarray):

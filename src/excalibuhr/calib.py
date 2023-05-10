@@ -34,8 +34,7 @@ def print_runtime(func):
 class CriresPipeline:
 
     def __init__(self, workpath: str, night: str, clean_start: bool = False,
-                 num_processes: int = 4,
-                 **header_keys: dict) -> None:
+                 num_processes: int = 4) -> None:
         """
         Parameters
         ----------
@@ -66,8 +65,7 @@ class CriresPipeline:
         
         self.workpath = os.path.abspath(workpath)
         self.night = night
-        self.key_caltype = 'CAL TYPE'
-        # self.header_keys = header_keys
+        self.num_processes = num_processes
         self.nightpath = os.path.join(self.workpath, self.night)
         self.rawpath = os.path.join(self.workpath, self.night, "raw")
         self.calpath = os.path.join(self.workpath, self.night, "cal")
@@ -75,9 +73,10 @@ class CriresPipeline:
         self.calib_file = os.path.join(self.nightpath, "calib_info.txt") 
         self.header_file = os.path.join(self.nightpath, "header_info.txt")
         self.product_file = os.path.join(self.nightpath, "product_info.txt")
-        self.gain=[2.15, 2.19, 2.0]
-        self.pix_scale=0.056 #arcsec
-        self.num_processes = num_processes
+        self.gain = [2.15, 2.19, 2.0]
+        self.pix_scale = 0.056 #arcsec
+        self.trace_offset = 0
+
         print(f"Data reduction folder: {self.nightpath}")
 
         self.header_keys = {
@@ -96,16 +95,17 @@ class CriresPipeline:
                     'key_slitlen': 'ESO INS SLIT1 LEN',
                     'key_slitwid': 'ESO INS SLIT1 NAME',
                     'key_jitter': 'ESO SEQ JITTERVAL',
-                    # 'key_nabcycle': 'ESO SEQ NABCYCLES',
                     # 'key_nodthrow': 'ESO SEQ NODTHROW',
                     'key_wave_min': 'ESO INS WLEN BEGIN', 
                     'key_wave_max': 'ESO INS WLEN END', 
                     'key_wave_cen': 'ESO INS WLEN CENY', 
+                    'key_caltype': 'CAL TYPE',
                             }
         for par in self.header_keys.keys():
             setattr(self, par, self.header_keys[par])
 
         # self.detlin_path = 'cr2res_cal_detlin_coeffs.fits'
+
         # Create the directories if they do not exist
         if not os.path.exists(os.path.join(self.workpath, self.night)):
             os.makedirs(os.path.join(self.workpath, self.night))
@@ -402,15 +402,11 @@ class CriresPipeline:
                             f'Order {o}', va='center', color='white')
             if not slit is None:
                 trace = tw[i]
-                yy_trace = su.trace_polyval(xx, trace)
-                trace_lower, trace_upper = yy_trace
                 slit_meta, x_fpets = slit[i], x_fpet[i]
-                # slit_poly = su.slit_polyval(x_fpets, slit_meta)
-                for (yy_upper, yy_lower, slope, x_peak) in \
-                            zip(trace_upper, trace_lower, slit_meta, x_fpets):                    
-                    yy = np.arange(int(yy_lower.min()), int(yy_upper.max()+1))
+                im_subs, yy_indices, xx_shifts = su.im_order_cut(im, trace, slit_meta)
+                for (yy, x_model, x_peak) in zip(yy_indices, xx_shifts, x_fpets):
                     for x in x_peak:
-                        xs = x - slope*(yy-(yy[0]+yy[-1])/2.)
+                        xs = x - x_model
                         ax.plot(xs, yy, ':r', zorder=9)
             ax.set_title(f"Detector {i}", size='large', fontweight='bold')
 
@@ -424,7 +420,7 @@ class CriresPipeline:
         flux = np.array(flux)
         Ndet, Norder, Nx = flux.shape
         self._set_plot_style()
-        fig, axes = plt.subplots(nrows=Norder, ncols=Ndet, 
+        fig, axes = plt.subplots(nrows=Norder, ncols=Ndet, sharey='row',
                         figsize=(6*Ndet,1.5*Norder), constrained_layout=True)
         for d in range(Ndet):
             for i in range(Norder):
@@ -748,6 +744,7 @@ class CriresPipeline:
             trace = self._loop_over_detector(
                             su.order_trace, True, flat, bpm, 
                             slitlen=hdr[self.key_slitlen]/self.pix_scale,
+                            offset=self.trace_offset,
                             debug=debug)
 
             print("\n Output files:")
@@ -1563,7 +1560,7 @@ class CriresPipeline:
             dt, dt_err = su.combine_frames(dt, dt_err, collapse='sum')
 
             wlen_cal = self._loop_over_detector(su.wlen_solution, True,
-                        dt, dt_err, wlen_init, transm_spec=tellu,
+                        dt, wlen_init, transm_spec=tellu,
                         debug=debug)
 
             print("\n Output files:")
