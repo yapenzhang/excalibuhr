@@ -718,17 +718,17 @@ def measure_Gaussian_center(y, peaks, width):
 
     center = np.zeros(len(peaks))
     for i in range(len(peaks)):
-        y_use = y[peaks[i]-width:peaks[i]+width+1]
-        x_use = xx[peaks[i]-width:peaks[i]+width+1]
+        y_use = y[int(peaks[i]-width):int(peaks[i]+width+1)]
+        x_use = xx[int(peaks[i]-width):int(peaks[i]+width+1)]
         gg_init.mean_0 = peaks[i]
-        gg_init.amplitude_0 = y[peaks[i]]
+        gg_init.amplitude_0 = y[int(peaks[i])]
         gg_fit = fitter(gg_init, x_use, y_use)
         cen = gg_fit.mean_0.value
         center[i] = cen
         # print(gg_fit)
-        # plt.plot(xx, ccf[i])
+        # plt.plot(xx, y)
         # plt.plot(xx, gg_fit(xx))
-        # plt.axvline(cens[i], color='r')
+        # plt.axvline(cen, color='r')
         # plt.axvline(peaks[i], color='y')
         # plt.show()
     return center
@@ -1297,7 +1297,7 @@ def readout_artifact(det, det_err, badpix, trace, Nborder=10, sigma=3, debug=Fal
 
 
 def remove_starlight(D_full, V_full, spec_star, cen0_p, cen1_p, 
-                    aper0=50, aper1=10, aper2=20, sub_factor=32, 
+                    aper0=40, aper1=10, sub_factor=32, 
                     gain=2.0, NDIT=1., debug=False):
     """
     [EXPERIMENTAL!] Remove starlight contamination at the position of 
@@ -1350,39 +1350,40 @@ def remove_starlight(D_full, V_full, spec_star, cen0_p, cen1_p,
                             sub_factor))
     D_sub = np.nanmedian(D, axis=2)
 
-    # estimate center of the PSF peak
-    # aper2: the window (half width) to determine the line center;
-    #        better to be large but, not too large to avoid the companion
-    profile = np.nanmedian(-D_sub, axis=1)
-    p = np.argmax(profile)
-    cen0_n = np.sum(spatial_x[int(p-aper2):int(p+aper2)] * \
-                    profile[int(p-aper2):int(p+aper2)]) / \
-                    np.sum(profile[int(p-aper2):int(p+aper2)]) 
-    cen1_n = cen0_n - cen0_p + cen1_p
+    # measure the center of the PSF peak
+    cen0_n = np.argmax(np.nanmedian(-D_sub, axis=1))
+    cen1_n = int(cen0_n - cen0_p + cen1_p)
     profile = np.nanmedian(D_sub, axis=1)
-    p = np.argmax(profile)
-    cen0_p = np.sum(spatial_x[int(p-aper2):int(p+aper2)] * \
-                    profile[int(p-aper2):int(p+aper2)]) / \
-                    np.sum(profile[int(p-aper2):int(p+aper2)]) 
+    cen0_p = measure_Gaussian_center(profile, np.array([cen0_p]), width=5)
 
     # aper0: mask the negative primary trace
     # aper1: mask the negative secondary trace and the primary line core
-    mask =  ((spatial_x>cen1_n-aper1) & (spatial_x<cen1_n+aper1)) | \
-            ((spatial_x>cen0_n-aper0) & (spatial_x<cen0_n+aper0))  
+    mask =  (((spatial_x>cen1_n-aper1) & (spatial_x<cen1_n+aper1)) | \
+            ((spatial_x>cen0_n-aper0) & (spatial_x<cen0_n+aper0))) | \
+            ((spatial_x>cen0_p-aper1) & (spatial_x<cen0_p+aper1)) 
     
     # check at which side the secondary is located
     if cen1_p - cen0_p > 0: 
-        m = (~mask) & (spatial_x-cen0_p-aper1<0)
+        m = (~mask) & (spatial_x-cen0_p<0)
     else:
-        m = (~mask) & (spatial_x-cen0_p-aper1>0)
+        m = (~mask) & (spatial_x-cen0_p>0)
+    
     
     # flip PSF to the oposite side
     xx = 2.*cen0_p - spatial_x[m]
     D_sub = D_sub[m]
-    # print(cen0_p, cen1_p)
+
+    # plt.plot(spatial_x, profile)
+    # # plt.plot(spatial_x[mask], profile[mask])
+    # plt.plot(spatial_x[m], profile[m])
+    # plt.plot(xx, profile[m])
+    # plt.show()
 
     for w in range(len(x_sub)):
         poly = Poly.polyfit(xx, D_sub[:,w], 5)
+        # plt.plot(xx, D_sub[:,w])
+        # plt.plot(xx, Poly.polyval(xx, poly))
+        # plt.show()
         polys.append(poly)
 
     polys = np.array(polys)
@@ -1414,6 +1415,8 @@ def remove_starlight(D_full, V_full, spec_star, cen0_p, cen1_p,
     if debug:
         plt.plot(profile)
         plt.plot(profile_model)
+        plt.show()
+        plt.imshow(D_full, vmin=-10, vmax=20, aspect='auto')
         plt.show()
         plt.imshow(D_full-bkg, vmin=-10, vmax=20, aspect='auto')
         plt.show()
@@ -1481,7 +1484,7 @@ def extract_spec(det, det_err, badpix, trace, slit, blaze, spec_star,
         im = spectral_rectify_resample(det, badpix, trace, slit, debug=False)
         im_err = spectral_rectify_resample(det_err, badpix, trace, slit, debug=False)
     
-    if extract_2d:
+    if extract_2d or bkg_subtract:
         filter_mode = 'median'
         dt_rect = trace_rectify_interp([im, im_err], trace, debug=False) 
         im, im_err = dt_rect
@@ -1511,11 +1514,12 @@ def extract_spec(det, det_err, badpix, trace, slit, blaze, spec_star,
             im_sub, im_err_sub = remove_starlight(im_sub, im_err_sub**2, 
                             spec_star[o]/blaze[o], cen0, cen0-companion_sep, 
                             gain=gain, debug=debug)
+            aper_half = 5
 
         # Pixel-location of target
         obj_cen = cen0
         if companion_sep is not None:
-            obj_cen = cen0-companion_sep
+            obj_cen = cen0 - companion_sep
         
         # Extract a 1D spectrum using the optimal extraction algorithm
         f_opt, f_err, D_sub, P_sub, V_sub, chi2_r = optimal_extraction(
@@ -1524,6 +1528,7 @@ def extract_spec(det, det_err, badpix, trace, slit, blaze, spec_star,
                                 aper_half=aper_half, 
                                 filter_mode=filter_mode,
                                 gain=gain, NDIT=NDIT, debug=debug) 
+
         flux.append(f_opt/blaze[o])
         err.append(f_err/blaze[o])
         D.append(D_sub)
@@ -1580,6 +1585,7 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
     V = V_full[:,obj_cen-aper_half:obj_cen+aper_half+1] # Variance
     bpm = bpm_full[:,obj_cen-aper_half:obj_cen+aper_half+1]
 
+    
     if D.size == 0:
         # print("Trace falls outside of the detector")
         return np.zeros(D.shape[0]), np.zeros(D.shape[0]), \
@@ -1623,7 +1629,7 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
                 y_smooth = ndimage.median_filter(y[mask], filter_width)
                 P[:,x] = interp1d(wave_x[mask], y_smooth, kind='linear', 
                                     bounds_error=False, 
-                                    fill_value=np.nanmeapplydian(y_smooth))(wave_x)
+                                    fill_value=np.nanmedian(y_smooth))(wave_x)
                 # plt.plot(wave_x[mask], y[mask])
                 # plt.plot(wave_x[mask], y_smooth)
                 # plt.plot(wave_x, P[:,x])
@@ -1645,9 +1651,6 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
     # Normalize the spatial profile per wavelength channel
     for w in wave_x:
         P[w] /= np.sum(P[w])
-    # if debug:
-    #     plt.imshow(P, aspect='auto')
-    #     plt.show()
 
     # determine the extraction aperture by including 95% flux
     cdf = np.cumsum(psf)     
@@ -1656,8 +1659,12 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
     D[:, extr_aper_not] = 0.
     V[:, extr_aper_not] = 1./etol
     P[:, extr_aper_not] = etol
+    P[P==0] = etol
     # if debug:
     #     plt.plot(cdf)
+    #     plt.show()
+    # if debug:
+    #     plt.imshow(P, aspect='auto')
     #     plt.show()
 
     # mask bad pixels
@@ -1735,6 +1742,7 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
         var = 1. / (np.sum(M_bp*P*P/V_new, axis=1)+etol)
     
     return f_opt, np.sqrt(var), D.T, P.T, np.sqrt(V_new).T, chi2_r
+
 
 
 def wlen_solution(fluxes, w_init, transm_spec=None, 

@@ -332,7 +332,7 @@ class SPEC2D:
         for i in range(nrows):
             ax = axes[i]
             wmin, wmax = self.wlen[i*3][0], self.wlen[min(i*3+2, self.wlen.shape[0]-1)][-1]
-            ymin, ymax = 1, 0
+            ymin, ymax = 1e8, 0
             for j in range(min(3, self.wlen.shape[0]-3*i)):
                 x, y = self.wlen[i*3+j], self.flux[i*3+j]
                 ax.plot(x, y, 'k')
@@ -341,9 +341,9 @@ class SPEC2D:
                 ymin = min(vmin, ymin)
                 ymax = max(vmax, ymax)
             ax.set_xlim((wmin, wmax))
-            ax.set_ylim((vmin, vmax))
+            ax.set_ylim((0.8*vmin, 1.2*vmax))
         axes[-1].set_xlabel('Wavelength (nm)')
-        axes[-1].set_ylabel('Flux')
+        axes[nrows//2].set_ylabel('Flux')
         plt.savefig(savename)
         if show:
             plt.show()

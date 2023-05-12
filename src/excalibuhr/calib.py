@@ -106,6 +106,19 @@ class CriresPipeline:
 
         # self.detlin_path = 'cr2res_cal_detlin_coeffs.fits'
 
+        # in case redo the entire reduction 
+        if clean_start:
+            if os.path.isfile(self.header_file):
+                os.remove(self.header_file)
+            if os.path.isfile(self.calib_file):
+                os.remove(self.calib_file)
+            if os.path.isfile(self.product_file):
+                os.remove(self.product_file)
+            if os.path.exists(self.calpath):
+                shutil.rmtree(self.calpath)
+            if os.path.exists(self.outpath):
+                shutil.rmtree(self.outpath)
+
         # Create the directories if they do not exist
         if not os.path.exists(os.path.join(self.workpath, self.night)):
             os.makedirs(os.path.join(self.workpath, self.night))
@@ -119,14 +132,6 @@ class CriresPipeline:
         if not os.path.exists(self.rawpath):
             os.makedirs(self.rawpath)
 
-        # in case redo the entire reduction 
-        if clean_start:
-            if os.path.isfile(self.header_file):
-                os.remove(self.header_file)
-            if os.path.isfile(self.calib_file):
-                os.remove(self.calib_file)
-            if os.path.isfile(self.product_file):
-                os.remove(self.product_file)
 
         # If present, read the info files
         if os.path.isfile(self.header_file):
@@ -422,12 +427,15 @@ class CriresPipeline:
         self._set_plot_style()
         fig, axes = plt.subplots(nrows=Norder, ncols=Ndet, sharey='row',
                         figsize=(6*Ndet,1.5*Norder), constrained_layout=True)
-        for d in range(Ndet):
-            for i in range(Norder):
+        for i in range(Norder):
+            ymin, ymax = 1e8, 0
+            for d in range(Ndet):
                 ax = axes[Norder-1-i, d]
                 y = flux[d, i]
                 nans = np.isnan(y)
-                vmin, vmax = np.percentile(y[~nans], (5, 95))
+                vmin, vmax = np.percentile(y[~nans], (1, 99))
+                ymin = min(vmin, ymin)
+                ymax = max(vmax, ymax)
                 if wlen is None:
                     ax.plot(y, 'k')
                     ax.set_xlim((0, Nx))
@@ -442,9 +450,11 @@ class CriresPipeline:
                                 transm_spec[:,1][indices]*vmax, 
                                 color='orange',
                                 label='Telluric template')
-                if vmin != vmax:    
-                    ax.set_ylim((0.7*vmin, 1.1*vmax))
-            axes[0,d].set_title(f"Detector {d}", size='large', fontweight='bold')
+            ax.set_ylim((0.8*ymin, 1.1*ymax))
+        
+        for d in range(Ndet):    
+            axes[0,d].set_title(f"Detector {d}", size='large', 
+                                fontweight='bold')
         
         for i in range(Norder):
             ax = axes[Norder-1-i,-1]
@@ -474,14 +484,16 @@ class CriresPipeline:
         fig, axes = plt.subplots(nrows=Norder*2, ncols=Ndet, 
                         figsize=(2*Norder, 14), sharex=True, sharey=True,  
                         constrained_layout=True)
+        D_det = np.split(D, id_det)
+        P_det = np.split(P, id_det)
         for i in range(Ndet):
-            D_det = np.split(D, id_det)
-            P_det = np.split(P, id_det)
             D_order = np.split(D_det[i], id_order[i])
             P_order = np.split(P_det[i], id_order[i])
+            rows_crop = 0
             for o in range(0, 2*Norder, 2):
                 ax_d, ax_m = axes[Norder*2-o-2, i], axes[Norder*2-o-1, i] 
                 data, model = D_order[o//2], P_order[o//2]
+                rows_crop = max(data.shape[0], rows_crop)
                 if data.size != 0:
                     nans = np.isnan(data)
                     vmin, vmax = np.percentile(data[~nans], (5, 95))
@@ -490,9 +502,11 @@ class CriresPipeline:
                 ax_d.set_title(r"Order {0}, $\chi_r^2$: {1:.2f}".format(
                                         o//2, chi2[i, o//2]))
             axes[-1,i].set_xlabel(f"Detector {i}", size='large', fontweight='bold')
+        axes[0,0].set_ylim((0, rows_crop))
         plt.savefig(savename+'.png')
         # plt.show()
         plt.close(fig)
+
 
     @print_runtime
     def cal_dark(self, clip: int = 5, collapse: str = 'median') -> None:
@@ -1163,16 +1177,17 @@ class CriresPipeline:
             frame_bkg_cor, err_bkg_cor = su.flat_fielding(
                                 frame_bkg_cor, err_bkg_cor, flat)
             
+            file_s = file.split('_')[-1]
             file_name = os.path.join(self.noddingpath, 
                             "Nodding_"+ object.replace(" ", "") + \
-                            f"_{item_wlen}_{file}")
+                            f"_{item_wlen}_{file_s}")
             su.wfits(file_name, ext_list={"FLUX": frame_bkg_cor, 
                                 "FLUX_ERR": err_bkg_cor}, header=hdr)
 
-            print(f"\nProcessed file {file} at nod position {pos}")
+            print(f"\nProcessed file {file_s} at nod position {pos}")
             self._add_to_product("./obs_nodding/Nodding_" + \
                                 object.replace(" ", "") + \
-                                f"_{item_wlen}_{file}", 
+                                f"_{item_wlen}_{file_s}", 
                                 "NODDING_FRAME")
             
             self._plot_det_image(file_name, 
@@ -1285,6 +1300,7 @@ class CriresPipeline:
                           peak_frac=None, companion_sep=None, 
                           bkg_subtract=False, 
                           aper_prim=15, aper_comp=10, 
+                          extract_2d=False,
                           interpolation=True,
                           debug=False):    
         """
@@ -1377,7 +1393,8 @@ class CriresPipeline:
                     job = pool.apply_async(self._process_extraction, 
                                         args=(file, bpm, tw, slit, blaze, 
                                             peak_frac, aper_prim, aper_comp, 
-                                            companion_sep, bkg_subtract, 
+                                            companion_sep, bkg_subtract,
+                                            extract_2d, 
                                             interpolation, debug))
                     pool_jobs.append(job)
         
@@ -1387,6 +1404,7 @@ class CriresPipeline:
     def _process_extraction(self, file, bpm, tw, slit, blaze, 
                             peak_frac, aper_prim, aper_comp, 
                             companion_sep,bkg_subtract, 
+                            extract_2d,
                             interpolation, debug):
         with fits.open(os.path.join(self.outpath, file)) as hdu:
             hdr = hdu[0].header
@@ -1405,7 +1423,7 @@ class CriresPipeline:
         result = self._loop_over_detector(
                         su.extract_spec, False,
                         dt, dt_err, bpm, tw, slit, blaze, blaze, 
-                        self.gain, NDIT=ndit,
+                        self.gain, NDIT=ndit, extract_2d=extract_2d,
                         cen0=f0, interpolation=interpolation,
                         aper_half=aper_prim, debug=debug)
         flux_pri, err_pri, D, P, V, id_order, chi2_r = result
@@ -1419,12 +1437,13 @@ class CriresPipeline:
         self._add_to_product('/'.join(paths), "Extr1D_PRIMARY")
         self._plot_spec_by_order(filename, flux_pri)
         
-        paths = file.split('/')
-        paths[-1] = 'Extr2D_PRIMARY_' + paths[-1][:-5]
-        filename2d = os.path.join(self.outpath, '/'.join(paths))
-        self._save_extr2D(filename2d, D, P, V, id_order, chi2_r)
-        self._add_to_product('/'.join(paths)+'.npz', "Extr2D_PRIMARY")
-        self._plot_extr_model(filename2d)
+        if extract_2d:
+            paths = file.split('/')
+            paths[-1] = 'Extr2D_PRIMARY_' + paths[-1][:-5]
+            filename2d = os.path.join(self.outpath, '/'.join(paths))
+            self._plot_extr_model(filename2d)
+            self._save_extr2D(filename2d, D, P, V, id_order, chi2_r)
+            self._add_to_product('/'.join(paths)+'.npz', "Extr2D_PRIMARY")
 
         if not companion_sep is None:
 
@@ -1433,7 +1452,7 @@ class CriresPipeline:
                             su.extract_spec, False,
                             dt, dt_err, bpm, tw, slit, blaze, flux_pri,
                             self.gain, NDIT=ndit,
-                            cen0=f0, 
+                            cen0=f0, extract_2d=extract_2d, 
                             companion_sep=companion_sep/self.pix_scale,
                             aper_half=aper_comp, 
                             bkg_subtract=bkg_subtract,
@@ -1573,7 +1592,7 @@ class CriresPipeline:
                                     transm_spec=tellu)
         
 
-    def save_extracted_data(self):
+    def save_extracted_data(self, combine=False):
         """
         Method for saving extracted spectra and calibrated wavelength.
         to the folder `obs_calibrated`. And save the flattened array to
@@ -1638,42 +1657,63 @@ class CriresPipeline:
                     wlens.append(wlen)
 
                     dt, dt_err = [], []
-                    # mean-combine A and B spectra
                     for file in self.product_info[indices_wlen][self.key_filename]:
                         with fits.open(os.path.join(self.outpath, file)) as hdu:
                             hdr = hdu[0].header
                             dt.append(hdu["FLUX"].data)
                             dt_err.append(hdu["FLUX_ERR"].data)
-                    master, master_err = su.combine_frames(
-                                    dt, dt_err, collapse='mean')
-                    specs.append(master)
-                    errs.append(master_err)
+                    nframe = len(dt)
+                    if combine:
+                        # mean-combine each individual frames
+                        dt, dt_err = su.combine_frames(dt, dt_err, collapse='mean')
+                    specs.append(dt)
+                    errs.append(dt_err)
+                
+                wlens = np.array(wlens)
+                npixel = wlens.shape[-1]
+                wlens = np.reshape(wlens, (-1, npixel))
+                wmin = wlens[:,0] 
+                indice_sort = np.argsort(wmin)
+                wlens = wlens[indice_sort]
 
-                # reshape spectra in 2D shape: (N_chips, N_pixel)
-                specs = np.reshape(specs, (-1, np.array(wlens).shape[-1]))
-                errs = np.reshape(errs, (-1, np.array(wlens).shape[-1]))
-                wlens = np.reshape(wlens, (-1, np.array(wlens).shape[-1]))
+                if combine:
+                    # reshape spectra in 2D shape: (N_chips, N_pixel)
+                    spec_series = np.reshape(specs, (-1, npixel))[indice_sort]
+                    err_series = np.reshape(errs, (-1, npixel))[indice_sort]
+                    
+                    snr_mid = np.mean((spec_series/err_series)[wlens.shape[0]//2])
+
+                else:
+                    # reshape spectra in 3D shape: (N_frames, N_chips, N_pixel)
+                    spec_series, err_series = [], []
+                    specs, errs = np.array(specs), np.array(errs)
+                    for i in range(nframe):
+                        spec_series.append(np.reshape(specs[:,i,:,:,:], (-1, npixel))[indice_sort])
+                        err_series.append(np.reshape(errs[:,i,:,:,:], (-1, npixel))[indice_sort])
+                    spec_series = np.array(spec_series)
+                    err_series = np.array(err_series)
+                    snr_mid = np.mean((spec_series/err_series)[:,wlens.shape[0]//2,:])
 
                 l = label.split('_')[-1]
                 file_name = os.path.join(self.corrpath, 
                             object.replace(" ", "") +\
                             f'_{l}_CRIRES_SPEC2D.fits')
-                su.wfits(file_name, ext_list={"FLUX": specs, "FLUX_ERR":errs,
-                                            "WAVE": wlens}, header=hdr)
+                su.wfits(file_name, ext_list={"FLUX": spec_series, 
+                                              "FLUX_ERR": err_series,
+                                              "WAVE": wlens}, 
+                                    header=hdr)
                 self._add_to_product("./obs_calibrated/" +\
                                     object.replace(" ", "") +\
                                     f'_{l}_CRIRES_SPEC2D.fits', 
                                      f"SPEC_{l}")
 
-                result = SPEC2D(wlen=wlens, flux=specs, err=errs)
-                result.plot_spec1d(file_name[:-4]+'png')
-                result.save_spec1d(file_name[:-4]+'dat')
-
-                w_mid = np.mean(wlens[wlens.shape[0]//2])
-                snr_mid = np.mean((specs/errs)[wlens.shape[0]//2])
-                
                 print(f"Saved target {object} {l} with wavelength coverage {unique_wlen}; ",
-                      f"average S/N @ {w_mid:.0f} nm ~ {snr_mid:.0f}. \n")
+                      f"average S/N ~ {snr_mid:.0f}. \n")
+
+                if combine:
+                    result = SPEC2D(wlen=wlens, flux=spec_series, err=err_series)
+                    result.save_spec1d(file_name[:-4]+'dat')
+                    result.plot_spec1d(file_name[:-4]+'png')
 
 
     def run_skycalc(self, pwv: float = 5) -> None:
@@ -1693,21 +1733,19 @@ class CriresPipeline:
             None
         """
 
-        self._print_section("Run SkyCalc")
+        self._print_section("Obtain telluric transmission with SkyCalc")
 
         # Indices with SCIENCE frames
         indices = self.header_info[self.key_catg] == "SCIENCE"
 
         # Setup SkyCalc object
-        print("SkyCalc settings:")
-
         sky_calc = skycalc_ipy.SkyCalc()
 
         wlen_id = self.header_info[indices][self.key_wlen].iloc[0]
         slit_width = self.header_info[indices][self.key_slitwid].iloc[0]
-        mjd_start = self.header_info[indices][self.key_mjd].iloc[0]
-        ra_mean = np.mean(self.header_info[self.key_ra][indices])
-        dec_mean = np.mean(self.header_info[self.key_dec][indices])
+        # mjd_start = self.header_info[indices][self.key_mjd].iloc[0]
+        # ra_mean = np.mean(self.header_info[self.key_ra][indices])
+        # dec_mean = np.mean(self.header_info[self.key_dec][indices])
 
         # sky_calc.get_almanac_data(
         #     ra=ra_mean,
@@ -1718,9 +1756,9 @@ class CriresPipeline:
         #     update_values=True,
         # )
 
-        print(f"  - MJD = {mjd_start:.2f}")
-        print(f"  - RA (deg) = {ra_mean:.2f}")
-        print(f"  - Dec (deg) = {dec_mean:.2f}")
+        # print(f"  - MJD = {mjd_start:.2f}")
+        # print(f"  - RA (deg) = {ra_mean:.2f}")
+        # print(f"  - Dec (deg) = {dec_mean:.2f}")
 
         # See https://skycalc-ipy.readthedocs.io/en/latest/GettingStarted.html
         sky_calc["msolflux"] = 130
@@ -1901,8 +1939,12 @@ class CriresPipeline:
             print(f"Telluric corrected spectra saved to {self.corrpath}")
 
 
-    def run_recipes(self, companion_sep=None, bkg_subtract=False, 
+    def run_recipes(self, combine=False,
+                    companion_sep=None, 
+                    bkg_subtract=False, 
                     aper_prim=20, aper_comp=10,
+                    std_object=None,
+                    extract_2d=False,
                     run_molecfit=False, wmin=None, wmax=None) -> None:
         """
         Method for running the full chain of recipes.
@@ -1926,18 +1968,30 @@ class CriresPipeline:
         self.cal_slit_curve()
         self.cal_flat_norm()
         self.obs_nodding()
-        self.obs_nodding_combine()
+
+        if combine:
+            self.obs_nodding_combine()
+            input_type = 'NODDING_COMBINED'
+        else:
+            input_type = 'NODDING_FRAME'
+
         self.obs_extract(
-                         aper_prim=aper_prim,
-                         aper_comp=aper_comp,
-                         companion_sep=companion_sep, 
-                         bkg_subtract=bkg_subtract
-                         )
-        self.refine_wlen_solution()
-        self.save_extracted_data()
+                        caltype=input_type,
+                        aper_prim=aper_prim,
+                        aper_comp=aper_comp,
+                        companion_sep=companion_sep, 
+                        bkg_subtract=bkg_subtract,
+                        extract_2d=extract_2d,
+                        )
+        
+        self.refine_wlen_solution(object=std_object)
+
+        self.save_extracted_data(combine=combine)
+
         if run_molecfit:
             self.run_molecfit(wmin=wmin, wmax=wmax)
             self.apply_telluric_correction()
+
 
     def preprocessing(self) -> None:
         """
@@ -1962,7 +2016,7 @@ class CriresPipeline:
         self.cal_slit_curve()
         self.cal_flat_norm()
         self.obs_nodding()
-        self.obs_nodding_combine()
+        # self.obs_nodding_combine()
     
 
 
