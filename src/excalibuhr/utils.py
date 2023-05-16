@@ -369,7 +369,7 @@ def order_trace(det, badpix, slitlen, sub_factor=64,
         the length of slit in pixels
     sub_factor: int
         binning factor along the dispersion axis
-    N_shift: int
+    offset: int
         shifting all the traces by a number of pixels.
         This is only necessary in starnge certain datasets 
         where the order edges are not monotonous.
@@ -398,9 +398,9 @@ def order_trace(det, badpix, slitlen, sub_factor=64,
     # (i.e. image gradient) to detect the trace edge
     im_grad = np.abs(im_bin[1:,:]-im_bin[:-1,:])
 
-    # Set insignificant signal (<3sigma) to 0, only peaks are left 
+    # Set insignificant signal (<2sigma) to 0, only peaks are left 
     cont_std = np.nanstd(im_grad, axis=0)
-    im_grad[(im_grad < cont_std*3)] = 0
+    im_grad[(im_grad < cont_std*2)] = 0
     im_grad = np.nan_to_num(im_grad.data)
 
     xx_loc, upper, lower   = [], [], []
@@ -408,17 +408,16 @@ def order_trace(det, badpix, slitlen, sub_factor=64,
     for i in range(im_grad.shape[1]):
 
         # Find the peaks and separate upper and lower traces
-        yy = im_grad[:,int(i)]
+        yy = im_grad[:,i]
         # indices = signal.argrelmax(yy)[0]
         indices, _ = signal.find_peaks(yy, distance=10) 
 
-        ind_distace = np.diff(indices)
-        if ind_distace[0]<0.9*slitlen:
-            lows = indices[1::2]
-            # lows = indices[:-1][ind_distace>order_length_min]
-        else:
-            lows = indices[::2]
-        ups = indices[np.searchsorted(indices, lows)+1]
+        ind_distance = np.diff(indices)
+        # print(ind_distance>0.9*slitlen, indices)
+        upper_first = np.where(ind_distance > 0.8*slitlen)[0][-1] + 1
+        ups_ind = np.arange(upper_first, 0.5, -2, dtype=int)[::-1]
+        ups = indices[ups_ind]
+        lows = indices[ups_ind-1]
 
         # Find the y-coordinates of the edges, weighted by the 
         # significance of the signal (i.e. center-of-mass)
@@ -441,8 +440,8 @@ def order_trace(det, badpix, slitlen, sub_factor=64,
 
         # x and y coordinates of the trace edges
         xx_loc.append(xx_bin[i])
-        lower.append(cens_low+1)
-        upper.append(cens_up+1)
+        lower.append(cens_low)
+        upper.append(cens_up)
 
     upper = np.array(upper).T
     lower = np.array(lower).T
@@ -710,13 +709,13 @@ def order_trace(det, badpix, slitlen, sub_factor=64,
  
 def measure_Gaussian_center(y, peaks, width):
     xx = np.arange(len(y))
+    center = np.zeros(len(peaks))
     peaks = peaks[(peaks<(len(xx)-width)) & (peaks>(width))]
 
     gg_init = models.Gaussian1D(amplitude=1, mean=0, stddev=1.) \
                 + models.Const1D(amplitude=0)
     fitter = fitting.LevMarLSQFitter()
 
-    center = np.zeros(len(peaks))
     for i in range(len(peaks)):
         y_use = y[int(peaks[i]-width):int(peaks[i]+width+1)]
         x_use = xx[int(peaks[i]-width):int(peaks[i]+width+1)]
@@ -731,6 +730,7 @@ def measure_Gaussian_center(y, peaks, width):
         # plt.axvline(cen, color='r')
         # plt.axvline(peaks[i], color='y')
         # plt.show()
+
     return center
 
 def slit_curve(det, badpix, trace, wlen_min, wlen_max, debug=False):

@@ -92,6 +92,7 @@ class CriresPipeline:
                     'key_wlen': 'ESO INS WLEN ID',
                     'key_nodpos': 'ESO SEQ NODPOS',
                     'key_nexp_per_nod': 'ESO SEQ NEXPO',
+                    'key_nabcycle': 'ESO SEQ NABCYCLES',
                     'key_slitlen': 'ESO INS SLIT1 LEN',
                     'key_slitwid': 'ESO INS SLIT1 NAME',
                     'key_jitter': 'ESO SEQ JITTERVAL',
@@ -100,7 +101,7 @@ class CriresPipeline:
                     'key_wave_max': 'ESO INS WLEN END', 
                     'key_wave_cen': 'ESO INS WLEN CENY', 
                     'key_caltype': 'CAL TYPE',
-                    'key_airmass': 'ESO TEL AIRM END'
+                    'key_airmass': 'ESO TEL AIRM END',
                             }
         for par in self.header_keys.keys():
             setattr(self, par, self.header_keys[par])
@@ -1065,13 +1066,13 @@ class CriresPipeline:
                     nod_a_count = sum(indices_nod_A)
                     nod_b_count = sum(indices_nod_B)
 
-                    try:
+                    if np.isfinite(self.header_info[indices_nod_A][self.key_nexp_per_nod].iloc[0]):
                         self.Nexp_per_nod = int(self.header_info[indices_nod_A]\
                                       [self.key_nexp_per_nod].iloc[0])
-                    except:
+                    else:
                         # Some headers missing the NEXP key
                         self.Nexp_per_nod = int(nod_a_count//self.header_info[indices_nod_A][self.key_nabcycle].iloc[0])
-                    
+
                     if nod_a_count == nod_b_count:
                         print(f"Number of AB pairs: {nod_a_count}")
                     else:
@@ -1186,7 +1187,7 @@ class CriresPipeline:
             su.wfits(file_name, ext_list={"FLUX": frame_bkg_cor, 
                                 "FLUX_ERR": err_bkg_cor}, header=hdr)
 
-            print(f"\nProcessed file {file_s} at nod position {pos}")
+            print(f"\nProcessed file {file_s[:-5]} at nod position {pos}")
             self._add_to_product("./obs_nodding/Nodding_" + \
                                 object.replace(" ", "") + \
                                 f"_{item_wlen}_{file_s}", 
@@ -1443,9 +1444,9 @@ class CriresPipeline:
             paths = file.split('/')
             paths[-1] = 'Extr2D_PRIMARY_' + paths[-1][:-5]
             filename2d = os.path.join(self.outpath, '/'.join(paths))
-            self._plot_extr_model(filename2d)
             self._save_extr2D(filename2d, D, P, V, id_order, chi2_r)
             self._add_to_product('/'.join(paths)+'.npz', "Extr2D_PRIMARY")
+            self._plot_extr_model(filename2d)
 
         if not companion_sep is None:
 
