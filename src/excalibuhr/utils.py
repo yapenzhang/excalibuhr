@@ -1744,7 +1744,6 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
     return f_opt, np.sqrt(var), D.T, P.T, np.sqrt(V_new).T, chi2_r
 
 
-
 def wlen_solution(fluxes, w_init, transm_spec=None, 
                 p0_range=0.5, p1_range=0.05, p2_range=0.01,
                 cont_smooth_len=101,
@@ -1868,6 +1867,115 @@ def wlen_solution(fluxes, w_init, transm_spec=None,
         wlens.append(wlen_cal)
 
     return wlens
+
+
+def wlen_solution_crires(fluxes, w_init, transm_spec=None, 
+                p0_range=0.5, p1_range=0.05, p2_range=0.01,
+                cont_smooth_len=101,
+                debug=False):
+    """
+    Method for refining wavelength solution using a quadratic 
+    polynomial correction Poly(p0, p1, p2). The optimization 
+    is achieved by maximizing cross-correlation functions 
+    between the spectrum and a telluric transmission model on 
+    a order-by-order basis.
+
+    Parameters
+    ----------
+
+    fluxes: array
+        flux of observed spectrum in each spectral order
+    w_init: array
+        initial wavelengths of each spectral order
+    p0_range: float
+        the absolute range of the 0th polynomial coefficient
+    p1_range: float
+        the absolute range of the 1th polynomial coefficient
+    p2_range: float
+        the absolute range of the 2th polynomial coefficient
+    cont_smooth_len: int
+        the window length used in the high-pass filter to remove 
+        the continuum of observed spectrum
+    debug : bool
+        if True, print the best fit polynomial coefficients.
+
+    Returns
+    -------
+    wlens: array
+        the refined wavelength solution
+        
+    """
+
+    # Prepare a function to interpolate the skycalc transmission
+    template_interp_func = interp1d(transm_spec[:,0], transm_spec[:,1], 
+                                    kind='linear')
+
+    def func_poly(coeffs, wave_order, flux_order):
+        chi_squared = []
+        for d in range(len(flux_order)):
+            wave, flux = wave_order[d], flux_order[d]
+            poly = [coeffs[i] for i in [d, len(coeffs)-2, len(coeffs)-1]]
+
+            # Apply the polynomial coefficients
+            new_wave = Poly.polyval(wave - np.mean(wave), poly) + wave
+
+            # Interpolate the template onto the new wavelength grid
+            template = template_interp_func(new_wave)
+
+            # Maximize the cross correlation
+            chi_squared.append(-template.dot(flux))
+
+        return np.sum(chi_squared)
+    
+    wlens = []
+    Ncut = 15
+    wlen_cal = np.zeros_like(w_init)
+
+    for o in range(len(fluxes[0])):
+        f, wlen_init = fluxes[:,o], w_init[:,o]
+
+        # ignore the detector-edges 
+        f, w = f[:,Ncut:-Ncut], wlen_init[:,Ncut:-Ncut]
+
+        # Remove continuum and nans of spectra.
+        # The continuum is estimated by smoothing the
+        # spectrum with a 2nd order Savitzky-Golay filter
+        f_norm, w_norm = [],[]
+        for d in range(len(f)):
+            nans = np.isnan(f[d])
+            continuum = signal.savgol_filter(
+                        f[d][~nans], window_length=cont_smooth_len,
+                        polyorder=2, mode='interp')
+            
+            f_norm.append((f[d]-continuum)[Ncut:-Ncut])
+            w_norm.append(w[d,Ncut:-Ncut])
+            # outliers = np.abs(f)>(5*np.nanstd(f))
+            # f[outliers]=0
+
+        # Use scipy.optimize to find the best-fitting coefficients
+        res = optimize.minimize(
+                    func_poly, 
+                    args=(w_norm, f_norm), 
+                    x0=[0,0,0,0,0], method='Nelder-Mead', tol=1e-8, 
+                    bounds=[(-p0_range,+p0_range),
+                            (-p0_range,+p0_range),
+                            (-p0_range,+p0_range),
+                            (-p1_range,+p1_range), 
+                            (-p2_range,+p2_range)])
+        poly_opt = res.x
+
+        result = [f'{item:.6f}' for item in poly_opt]
+
+        if debug:
+            print(f"Order {o} -> Poly(x^0, x^1, x^2): {result}")
+
+        for d in range(len(f)):
+            
+            poly = [poly_opt[i] for i in [d, len(poly_opt)-2, len(poly_opt)-1]]
+            wlen_cal[d,o] = wlen_init[d] + \
+                    Poly.polyval(wlen_init[d] - np.mean(wlen_init[d]), poly)     
+
+    return wlen_cal
 
 
 def SpecConvolve(in_wlen, in_flux, out_res, in_res=1e6, verbose=False):

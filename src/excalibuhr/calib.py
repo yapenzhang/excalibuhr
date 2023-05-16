@@ -100,6 +100,7 @@ class CriresPipeline:
                     'key_wave_max': 'ESO INS WLEN END', 
                     'key_wave_cen': 'ESO INS WLEN CENY', 
                     'key_caltype': 'CAL TYPE',
+                    'key_airmass': 'ESO TEL AIRM END'
                             }
         for par in self.header_keys.keys():
             setattr(self, par, self.header_keys[par])
@@ -421,7 +422,7 @@ class CriresPipeline:
         plt.close(fig)
 
 
-    def _plot_spec_by_order(self, savename, flux, wlen=None, transm_spec=None):
+    def _plot_spec_by_order(self, savename, flux, wlen=None, transm_spec=None, show=False):
         flux = np.array(flux)
         Ndet, Norder, Nx = flux.shape
         self._set_plot_style()
@@ -473,7 +474,8 @@ class CriresPipeline:
         if transm_spec is not None:
             axes[-1,-1].legend()
         plt.savefig(savename[:-4]+'png')
-        # plt.show()
+        if show:
+            plt.show()
         plt.close(fig)
 
 
@@ -1529,8 +1531,6 @@ class CriresPipeline:
         NoneType
             None
         """
-        if run_skycalc:
-            self.run_skycalc()
 
         self._print_section("Refine wavelength solution")
 
@@ -1542,18 +1542,23 @@ class CriresPipeline:
         # get updated product info
         self.product_info = pd.read_csv(self.product_file, sep=';')
 
-        indices_tellu = (self.calib_info[self.key_caltype] == "TELLU_SKYCALC") 
-        if np.sum(indices_tellu) < 1:
-            raise RuntimeError("No Telluric transmission model found. \
-                        Please set `run_skycalc` to `True`.") 
-        file = self.calib_info[indices_tellu][self.key_filename].iloc[0]
-        tellu = fits.getdata(os.path.join(self.calpath, file))
 
         indices = (self.product_info[self.key_caltype] == data_type) 
         # Check unique WLEN setting
         unique_wlen = set()
         for item in self.product_info[indices][self.key_wlen]:
             unique_wlen.add(item)
+
+        if run_skycalc:
+            airmass = self.product_info[indices][self.key_airmass].max()
+            self.run_skycalc(airmass=airmass)
+
+        indices_tellu = (self.calib_info[self.key_caltype] == "TELLU_SKYCALC") 
+        if np.sum(indices_tellu) < 1:
+            raise RuntimeError("No Telluric transmission model found. \
+                        Please set `run_skycalc` to `True`.") 
+        file = self.calib_info[indices_tellu][self.key_filename].iloc[0]
+        tellu = fits.getdata(os.path.join(self.calpath, file))
 
         for item_wlen in unique_wlen:
             print(f"Calibrating WLEN setting {item_wlen}:")
@@ -1569,6 +1574,8 @@ class CriresPipeline:
             if object is not None:
                 indices_wlen = indices_wlen & \
                         (self.product_info[self.key_target_name] == object)
+                if sum(indices_wlen) == 0:
+                    raise Exception(f"Extr1D data of {object} are not found in products")
 
             dt, dt_err = [], []
             # sum available spectra 
@@ -1578,7 +1585,10 @@ class CriresPipeline:
                     dt_err.append(hdu["FLUX_ERR"].data)
             dt, dt_err = su.combine_frames(dt, dt_err, collapse='sum')
 
-            wlen_cal = self._loop_over_detector(su.wlen_solution, True,
+            # wlen_cal = self._loop_over_detector(su.wlen_solution, True,
+            #             dt, wlen_init, transm_spec=tellu,
+            #             debug=debug)
+            wlen_cal = su.wlen_solution_crires(
                         dt, wlen_init, transm_spec=tellu,
                         debug=debug)
 
@@ -1589,7 +1599,7 @@ class CriresPipeline:
                         "CAL_WLEN")
 
             self._plot_spec_by_order(file_name, dt, wlen_cal, 
-                                    transm_spec=tellu)
+                                    transm_spec=tellu, show=debug)
         
 
     def save_extracted_data(self, combine=False):
@@ -1716,7 +1726,7 @@ class CriresPipeline:
                     result.plot_spec1d(file_name[:-4]+'png')
 
 
-    def run_skycalc(self, pwv: float = 5) -> None:
+    def run_skycalc(self, airmass=1.0, pwv=2.5):
         """
         Method for running the Python wrapper of SkyCalc
         (see https://skycalc-ipy.readthedocs.io).
@@ -1791,6 +1801,7 @@ class CriresPipeline:
         sky_calc["wgrid_mode"] = "fixed_spectral_resolution"
         sky_calc["wres"] = 2e5
         sky_calc["pwv"] = pwv
+        sky_calc['airmass'] = airmass 
 
         print(f"  - Wavelength range (nm) = {sky_calc['wmin']} - {sky_calc['wmax']}")
         print(f"  - lambda / Dlambda = {sky_calc['wres']}")
@@ -1810,9 +1821,9 @@ class CriresPipeline:
         # Convolve spectra
 
         if slit_width == "w_0.2":
-            spec_res = 120000.0
+            spec_res = 100000.0
         elif slit_width == "w_0.4":
-            spec_res = 60000.0
+            spec_res = 50000.0
         else:
             raise ValueError(f"Slit width {slit_width} not recognized.")
 

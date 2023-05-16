@@ -142,7 +142,7 @@ class SPEC2D:
         self.wlen_bins = data_wlen_bins
 
 
-    def make_covariance(self, amp, length, trunc_dist=4):
+    def make_covariance(self, amp, length, trunc_dist=5):
 
         if np.array(amp).size == 1: 
             amp = np.ones(self.Nchip) * amp[0]
@@ -159,7 +159,7 @@ class SPEC2D:
             self.cov.append(cov)
             
 
-    def make_covariance_local(self, amp, mu, sigma, trunc_dist=4):
+    def make_covariance_local(self, amp, mu, sigma, trunc_dist=5):
         
         for a, m, s in zip(amp, mu, sigma):
             # check which chip the local feature belongs to

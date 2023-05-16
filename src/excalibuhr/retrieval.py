@@ -404,27 +404,27 @@ class Retrieval:
 
 
     def free_PT_model(self):
-        p_ret = np.copy(self.press)
-        t_names = [x for x in self.params if x.split('_')[0]=='t']
-        t_names.sort(reverse=True)
-        knots_t = [self.params[x].value for x in t_names]
-        knots_p = np.logspace(np.log10(self.press[0]),np.log10(self.press[-1]), len(knots_t))
-        # interpolation and penalty in logT - logP space
-        t_spline = splrep(np.log10(knots_p), np.log10(knots_t), k=3)
-        knots, coeffs, _ = t_spline
-        tret = splev(np.log10(p_ret), t_spline, der=0)
-        self.temp = 1e1 ** tret
-
         # p_ret = np.copy(self.press)
         # t_names = [x for x in self.params if x.split('_')[0]=='t']
         # t_names.sort(reverse=True)
         # knots_t = [self.params[x].value for x in t_names]
         # knots_p = np.logspace(np.log10(self.press[0]),np.log10(self.press[-1]), len(knots_t))
-        # t_spline = splrep(np.log10(knots_p), knots_t, k=1)
+        # # interpolation and penalty in logT - logP space
+        # t_spline = splrep(np.log10(knots_p), np.log10(knots_t), k=3)
         # knots, coeffs, _ = t_spline
         # tret = splev(np.log10(p_ret), t_spline, der=0)
-        # t_smooth = gaussian_filter(tret, 1.5)
-        # self.temp = t_smooth
+        # self.temp = 1e1 ** tret
+
+        p_ret = np.copy(self.press)
+        t_names = [x for x in self.params if x.split('_')[0]=='t']
+        t_names.sort(reverse=True)
+        knots_t = [self.params[x].value for x in t_names]
+        knots_p = np.logspace(np.log10(self.press[0]),np.log10(self.press[-1]), len(knots_t))
+        t_spline = splrep(np.log10(knots_p), np.log10(knots_t), k=1)
+        knots, coeffs, _ = t_spline
+        tret = splev(np.log10(p_ret), t_spline, der=0)
+        t_smooth = gaussian_filter(tret, 1)
+        self.temp = 1e1 ** t_smooth
 
         if self.PT_penalty_order:
 
@@ -1395,6 +1395,7 @@ class Retrieval:
         # plot ccf of residuals 
         for instrument in self.obs.keys():
             if instrument != 'photometry':
+                # self.make_ccf_plot_by_detector(self.obs[instrument], self.model_rebin[instrument], 
                 self.make_ccf_plot(self.obs[instrument], self.model_rebin[instrument], 
                                     self.model_single[instrument],
                                     self.prefix + f'{instrument}_res_ccf.pdf')
@@ -1456,7 +1457,7 @@ class Retrieval:
     def make_best_fit_plot(self, obs, models, savename, labels=['model']):
         self._set_plot_style()
         nrows = obs.Nchip//3
-        fig, axes = plt.subplots(nrows=nrows*2, ncols=1, sharex=True,
+        fig, axes = plt.subplots(nrows=nrows*2, ncols=1, 
                           figsize=(12,nrows*3), constrained_layout=True,
                           gridspec_kw={"height_ratios": [3,1]*nrows})
 
@@ -1496,13 +1497,13 @@ class Retrieval:
             ax_res.set_xlim((wmin, wmax))
             ax.set_ylim((ymin*0.9, ymax*1.1))
             ax_res.set_ylim((rmin*0.9, rmax*1.1))
-            ax.set_xticklabels([])
+            # ax.set_xticklabels([])
             ax.set_ylabel(r'Flux')
             ax_res.set_ylabel(r'Residual')
         axes[0].legend()
         axes[-1].set_xlabel('Wavelength (nm)')
         plt.savefig(savename)
-        # plt.show()
+        plt.show()
         plt.close(fig)
 
 
@@ -1575,7 +1576,7 @@ class Retrieval:
                 for j in range(min(3, obs.Nchip-3*i)):
                     x, y, y_err = obs.wlen[i*3+j], obs.flux[i*3+j], obs.err[i*3+j]
                     y_model, y_single = model[i*3+j], y_singles[i*3+j]
-                    v, ccf_order = su.CCF_doppler(x, y-y_model+y_single, x, y_single-np.mean(y_single), 1000, 1)
+                    v, ccf_order = su.CCF_doppler(x, y-y_model, x, y_single-np.mean(y_single), 1000, 1)
                     ccf.append(ccf_order)
                     in_range = (v > -500) & (v<-500)
                     if self.leave_out[k] == 'CO_36':
