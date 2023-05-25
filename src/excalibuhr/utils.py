@@ -733,7 +733,7 @@ def measure_Gaussian_center(y, peaks, width):
 
     return center
 
-def slit_curve(det, badpix, trace, wlen_min, wlen_max, debug=False):
+def slit_curve(det, badpix, trace, wlen_min, wlen_max, sub_factor=1, debug=False):
     
     width = 35 # half width of fpet line (in pixel)
     
@@ -753,9 +753,9 @@ def slit_curve(det, badpix, trace, wlen_min, wlen_max, debug=False):
 
         # assuming stable tilt across the whole order
         # use correlation to coadd all fpet lines to measure the slit tilt
-        ccf = np.zeros_like(im_sub)
-        for i in range(im_sub.shape[0]):
-            ccf[i] = np.correlate(im_sub[len(im_sub)//2], im_sub[i], mode='same')
+        yy = np.arange(sub_factor, im_sub.shape[0], sub_factor)
+        
+        ccf = np.array([np.correlate(im_sub[len(im_sub)//2], im_sub[i], mode='same') for i in yy])
         peaks = np.argmax(ccf, axis=1)[:,np.newaxis]
         
         # Calculate center of the peaks by fitting Gaussian profiles
@@ -763,18 +763,21 @@ def slit_curve(det, badpix, trace, wlen_min, wlen_max, debug=False):
         for i in range(ccf.shape[0]):
             cens[i] = measure_Gaussian_center(ccf[i], peaks[i], width=width)[0]
 
-        cens_model, coeff = PolyfitClip(range(im_sub.shape[0]), cens, order=3)
+        _, coeff = PolyfitClip(yy[cens!=0], cens[cens!=0], order=3)
+        x_mean = np.arange(im_sub.shape[0]) - np.mean(np.arange(im_sub.shape[0])) 
+        A_full = np.vander(x_mean, 3)
+        cens_model = np.dot(A_full, coeff)
         
         tilt.append(coeff)
         # plt.scatter(range(im_sub.shape[0]), cens)
         # plt.plot(range(im_sub.shape[0]), cens_model, color='r')
         # plt.show()
         
-        if debug:
-            plt.imshow(ccf)
-            plt.plot(cens, range(im_sub.shape[0]))
-            plt.plot(cens_model, np.arange(im_sub.shape[0]))
-            plt.show()
+        # if debug:
+        #     plt.imshow(ccf, extent=[])
+        #     plt.plot(cens, yy)
+        #     plt.plot(cens_model, np.arange(im_sub.shape[0]))
+        #     plt.show()
 
         # correct for the slit tilt and collapse the fpet image
         collapse = np.zeros_like(xx)
@@ -794,6 +797,7 @@ def slit_curve(det, badpix, trace, wlen_min, wlen_max, debug=False):
         #             np.sum(collapse[int(p-width):int(p+width)]) \
         #             for p in peaks]
         cens = measure_Gaussian_center(collapse, peaks, width=width)
+        cens = cens[cens!=0]
         x_fpet.append(cens)
         
         if debug:
@@ -1343,6 +1347,10 @@ def remove_starlight(D_full, V_full, spec_star, cen0_p, cen1_p,
     spatial_x = np.arange(len(D_full))
     bkg = np.zeros_like(D_full)
 
+    if cen0_p + aper0 > len(spatial_x):
+        return D_full, np.sqrt(V_full)
+
+
     polys = []
     x_sub = np.arange(0, D_full.shape[-1], sub_factor) + sub_factor/2.
     D = np.reshape(D_full, (D_full.shape[0], 
@@ -1354,7 +1362,7 @@ def remove_starlight(D_full, V_full, spec_star, cen0_p, cen1_p,
     cen0_n = np.argmax(np.nanmedian(-D_sub, axis=1))
     cen1_n = int(cen0_n - cen0_p + cen1_p)
     profile = np.nanmedian(D_sub, axis=1)
-    cen0_p = measure_Gaussian_center(profile, np.array([cen0_p]), width=5)
+    cen0_p = measure_Gaussian_center(profile, np.array([cen0_p]), width=5)[0]
 
     # aper0: mask the negative primary trace
     # aper1: mask the negative secondary trace and the primary line core
@@ -1368,16 +1376,17 @@ def remove_starlight(D_full, V_full, spec_star, cen0_p, cen1_p,
     else:
         m = (~mask) & (spatial_x-cen0_p>0)
     
-    
     # flip PSF to the oposite side
     xx = 2.*cen0_p - spatial_x[m]
     D_sub = D_sub[m]
 
-    # plt.plot(spatial_x, profile)
-    # # plt.plot(spatial_x[mask], profile[mask])
-    # plt.plot(spatial_x[m], profile[m])
-    # plt.plot(xx, profile[m])
-    # plt.show()
+    if debug:
+        # print(cen0_p, cen1_p, cen0_n, cen1_n)
+        plt.plot(spatial_x, profile)
+        # plt.plot(spatial_x[mask], profile[mask])
+        plt.plot(spatial_x[m], profile[m])
+        plt.plot(xx, profile[m])
+        plt.show()
 
     for w in range(len(x_sub)):
         poly = Poly.polyfit(xx, D_sub[:,w], 5)
@@ -1800,7 +1809,7 @@ def wlen_solution(fluxes, w_init, transm_spec=None,
         return chi_squared
 
     wlens = []
-    Ncut = 15
+    Ncut = 20
     minimum_strength=0.005
 
     for o in range(len(fluxes)):
@@ -1927,8 +1936,7 @@ def wlen_solution_crires(fluxes, w_init, transm_spec=None,
 
         return np.sum(chi_squared)
     
-    wlens = []
-    Ncut = 15
+    Ncut = 20
     wlen_cal = np.zeros_like(w_init)
 
     for o in range(len(fluxes[0])):

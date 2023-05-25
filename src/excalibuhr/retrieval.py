@@ -871,7 +871,7 @@ class Retrieval:
                 if instrument != 'photometry':
                     for i in range(self.obs[instrument].Nchip):
                         for o in range(1, self.fit_poly+1):
-                            self.add_parameter(f'poly_{instrument}_{o}_{i:02}', prior=(-5e-2/o, 5e-2/o))
+                            self.add_parameter(f'poly_{instrument}_{o}_{i:02}', prior=(-1e-1/o, 1e-1/o))
         
 
     def apply_poly_continuum(self):
@@ -900,8 +900,8 @@ class Retrieval:
 
     def add_GP(self, mu_local_GP=None, dmu=0.3,
                GP_chip_bin=None, 
-               prior_amp_global=(-4,0), prior_tau_global=(-1,1),
-               prior_amp_local=(-4,0), prior_tau_local=(-2,0.),
+               prior_amp_global=(-4,0), prior_tau_global=(-2,1),
+               prior_amp_local=(-4,0), prior_tau_local=(-3,0.),
                ):
         if self.fit_GP:
             for instrument in self.obs.keys():

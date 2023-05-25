@@ -92,7 +92,6 @@ class CriresPipeline:
                     'key_wlen': 'ESO INS WLEN ID',
                     'key_nodpos': 'ESO SEQ NODPOS',
                     'key_nexp_per_nod': 'ESO SEQ NEXPO',
-                    'key_nabcycle': 'ESO SEQ NABCYCLES',
                     'key_slitlen': 'ESO INS SLIT1 LEN',
                     'key_slitwid': 'ESO INS SLIT1 NAME',
                     'key_jitter': 'ESO SEQ JITTERVAL',
@@ -101,7 +100,7 @@ class CriresPipeline:
                     'key_wave_max': 'ESO INS WLEN END', 
                     'key_wave_cen': 'ESO INS WLEN CENY', 
                     'key_caltype': 'CAL TYPE',
-                    'key_airmass': 'ESO TEL AIRM END',
+                    'key_airmass': 'ESO TEL AIRM END'
                             }
         for par in self.header_keys.keys():
             setattr(self, par, self.header_keys[par])
@@ -1066,13 +1065,13 @@ class CriresPipeline:
                     nod_a_count = sum(indices_nod_A)
                     nod_b_count = sum(indices_nod_B)
 
-                    if np.isfinite(self.header_info[indices_nod_A][self.key_nexp_per_nod].iloc[0]):
+                    try:
                         self.Nexp_per_nod = int(self.header_info[indices_nod_A]\
                                       [self.key_nexp_per_nod].iloc[0])
-                    else:
+                    except:
                         # Some headers missing the NEXP key
                         self.Nexp_per_nod = int(nod_a_count//self.header_info[indices_nod_A][self.key_nabcycle].iloc[0])
-
+                    
                     if nod_a_count == nod_b_count:
                         print(f"Number of AB pairs: {nod_a_count}")
                     else:
@@ -1187,7 +1186,7 @@ class CriresPipeline:
             su.wfits(file_name, ext_list={"FLUX": frame_bkg_cor, 
                                 "FLUX_ERR": err_bkg_cor}, header=hdr)
 
-            print(f"\nProcessed file {file_s[:-5]} at nod position {pos}")
+            print(f"\nProcessed file {file_s} at nod position {pos}")
             self._add_to_product("./obs_nodding/Nodding_" + \
                                 object.replace(" ", "") + \
                                 f"_{item_wlen}_{file_s}", 
@@ -1302,6 +1301,7 @@ class CriresPipeline:
     def obs_extract(self, caltype='NODDING_COMBINED', object=None,
                           peak_frac=None, companion_sep=None, 
                           bkg_subtract=False, 
+                          std_object=None,
                           aper_prim=15, aper_comp=10, 
                           extract_2d=False,
                           interpolation=True,
@@ -1392,14 +1392,23 @@ class CriresPipeline:
                 blaze = fits.getdata(os.path.join(self.calpath, file))
                 
                 # Loop over each observation
-                for file in self.product_info[indices_wlen][self.key_filename]:
-                    job = pool.apply_async(self._process_extraction, 
-                                        args=(file, bpm, tw, slit, blaze, 
-                                            peak_frac, aper_prim, aper_comp, 
-                                            companion_sep, bkg_subtract,
-                                            extract_2d, 
-                                            interpolation, debug))
-                    pool_jobs.append(job)
+                if object == std_object:
+                    for file in self.product_info[indices_wlen][self.key_filename]:
+                        job = pool.apply_async(self._process_extraction, 
+                                            args=(file, bpm, tw, slit, blaze, 
+                                                peak_frac, aper_prim, aper_comp, 
+                                                None, False, False, interpolation, 
+                                                debug))
+                        pool_jobs.append(job)
+                else:
+                    for file in self.product_info[indices_wlen][self.key_filename]:
+                        job = pool.apply_async(self._process_extraction, 
+                                            args=(file, bpm, tw, slit, blaze, 
+                                                peak_frac, aper_prim, aper_comp, 
+                                                companion_sep, bkg_subtract,
+                                                extract_2d, 
+                                                interpolation, debug))
+                        pool_jobs.append(job)
         
         for job in pool_jobs:
             job.get() 
@@ -1444,9 +1453,9 @@ class CriresPipeline:
             paths = file.split('/')
             paths[-1] = 'Extr2D_PRIMARY_' + paths[-1][:-5]
             filename2d = os.path.join(self.outpath, '/'.join(paths))
+            self._plot_extr_model(filename2d)
             self._save_extr2D(filename2d, D, P, V, id_order, chi2_r)
             self._add_to_product('/'.join(paths)+'.npz', "Extr2D_PRIMARY")
-            self._plot_extr_model(filename2d)
 
         if not companion_sep is None:
 
@@ -1767,10 +1776,6 @@ class CriresPipeline:
         #     update_values=True,
         # )
 
-        # print(f"  - MJD = {mjd_start:.2f}")
-        # print(f"  - RA (deg) = {ra_mean:.2f}")
-        # print(f"  - Dec (deg) = {dec_mean:.2f}")
-
         # See https://skycalc-ipy.readthedocs.io/en/latest/GettingStarted.html
         sky_calc["msolflux"] = 130
 
@@ -1813,8 +1818,6 @@ class CriresPipeline:
 
         print("Get telluric spectrum with SkyCalc...", end="", flush=True)
 
-        # temp_file =  os.path.join(self.calpath , "skycalc_temp.fits")
-        # sky_spec = sky_calc.get_sky_spectrum(filename=temp_file)
         wave, trans, _ = sky_calc.get_sky_spectrum(return_type="arrays")
 
         print(" [DONE]\n")
@@ -1994,6 +1997,7 @@ class CriresPipeline:
                         companion_sep=companion_sep, 
                         bkg_subtract=bkg_subtract,
                         extract_2d=extract_2d,
+                        std_object=std_object,
                         )
         
         self.refine_wlen_solution(object=std_object)
