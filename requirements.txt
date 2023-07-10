@@ -2,6 +2,7 @@ numpy
 scipy
 pandas
 astropy
+matplotlib
 astroquery
 skycalc_ipy
-matplotlib
+PyAstronomy
