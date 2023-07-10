@@ -3,7 +3,7 @@ import sys
 import glob
 import numpy as np 
 from astropy.io import fits
-# from telfit import Modeler
+from telfit import Modeler
 import excalibuhr.utils as su
 from scipy.interpolate import RegularGridInterpolator
 

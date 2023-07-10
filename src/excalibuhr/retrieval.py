@@ -409,22 +409,21 @@ class Retrieval:
         # t_names.sort(reverse=True)
         # knots_t = [self.params[x].value for x in t_names]
         # knots_p = np.logspace(np.log10(self.press[0]),np.log10(self.press[-1]), len(knots_t))
-        # # interpolation and penalty in logT - logP space
-        # t_spline = splrep(np.log10(knots_p), np.log10(knots_t), k=3)
+        # # interpolation and penalty in T - logP space
+        # t_spline = splrep(np.log10(knots_p), knots_t, k=3)
         # knots, coeffs, _ = t_spline
         # tret = splev(np.log10(p_ret), t_spline, der=0)
-        # self.temp = 1e1 ** tret
+        # self.temp = tret
 
         p_ret = np.copy(self.press)
         t_names = [x for x in self.params if x.split('_')[0]=='t']
         t_names.sort(reverse=True)
         knots_t = [self.params[x].value for x in t_names]
         knots_p = np.logspace(np.log10(self.press[0]),np.log10(self.press[-1]), len(knots_t))
-        t_spline = splrep(np.log10(knots_p), np.log10(knots_t), k=1)
+        t_spline = splrep(np.log10(knots_p), knots_t, k=1)
         knots, coeffs, _ = t_spline
         tret = splev(np.log10(p_ret), t_spline, der=0)
-        t_smooth = gaussian_filter(tret, 1)
-        self.temp = 1e1 ** t_smooth
+        self.temp = gaussian_filter(tret, 1)
 
         if self.PT_penalty_order:
 
@@ -803,8 +802,8 @@ class Retrieval:
                     self.add_parameter(f'{instrument}_L', prior=(0.1, 3))
 
 
-    def apply_instrument_broaden(self):
-        self.model_convolved = {}
+    def apply_instrument_broaden(self, telluric_only=False):
+        self.model_convolved, self.model_tellu_convolved = {}, {}
         for instrument in self.obs.keys():
             if instrument == 'photometry':
                 # skip broadening for photometry objects 
@@ -819,14 +818,16 @@ class Retrieval:
                 else:
                     inst_L = 0
                 model_target = self.model_spin[instrument]
-                model_tmp = []
+                model_tmp, model_telluric = [], []
                 for dt in model_target:
                     wave_tmp, flux_tmp = dt[0], dt[1]
-                    flux_full = flux_tmp * self.model_tellu(wave_tmp)
+                    if telluric_only:
+                        flux_full = self.model_tellu(wave_tmp)
+                    else:
+                        flux_full = flux_tmp * self.model_tellu(wave_tmp)
                     flux_conv = su.SpecConvolve_GL(wave_tmp, flux_full, inst_G, inst_L)
                     model_tmp.append([wave_tmp, flux_conv])
                 self.model_convolved[instrument] = model_tmp
-
 
     def apply_rebin_to_obs_wlen(self):
         self.model_rebin = {}
@@ -1399,6 +1400,13 @@ class Retrieval:
                 self.make_ccf_plot(self.obs[instrument], self.model_rebin[instrument], 
                                     self.model_single[instrument],
                                     self.prefix + f'{instrument}_res_ccf.pdf')
+        if self.fit_telluric:
+            self.apply_instrument_broaden(True)
+            self.apply_rebin_to_obs_wlen()
+            for instrument in self.obs.keys():
+                if instrument != 'photometry':
+                    model = SPEC2D(self.obs[instrument].wlen, self.model_rebin[instrument])
+                    model.save_spec1d(self.prefix + f'{instrument}_best_fit_tellu.dat')
 
 
     def average_post_model(self, N, instrument='crires'):

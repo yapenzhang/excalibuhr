@@ -1,13 +1,4 @@
 # File: src/excalibuhr/utils.py
-__all__ = [
-    "combine_frames",
-    "detector_shotnoise", 
-    "peak_slit_fraction", "align_jitter", "util_unravel_spec",
-    "order_trace", "slit_curve", "spectral_rectify_interp",
-    "trace_rectify_interp", "mean_collapse", "blaze_norm",
-    "readout_artifact", "extract_spec", "remove_starlight",
-    "optimal_extraction", "wlen_solution", "xcor_wlen_solution",
-    ]
 
 import numpy as np
 from astropy.io import fits
@@ -299,7 +290,7 @@ def peak_slit_fraction(im, trace):
     -------
     frac: float
         the fraction of peak signal along the slit 
-        (`frac`=0 at the bottom, and 1 at the top) 
+        (frac=0 means the bottom, and 1 at the top) 
     """
 
     frac = []
@@ -505,211 +496,30 @@ def order_trace(det, badpix, slitlen, sub_factor=64,
     return [poly_lower, poly_upper]
 
 
-# def slit_curve_deprecated(det, badpix, trace, wlen_min, wlen_max, sub_factor=8, debug=False):
-#     """
-#     Trace the spectral orders
 
-#     Parameters
-#     ----------
-#     det: array
-#         input fpet image
-#     badpix: array
-#         bad pixel map corresponding to the `det` image
-#     wlen_min, wlen_max: array
-#         the min and max wavelngth of each order 
-#         for an initial wavelength solution 
-#     sub_factor: int
-#         binning factor along the cross-dispersion axis
-    
-#     Returns
-#     -------
-#     [meta0, meta1, meta2]
-#         The quadratic polynomial coeffiences of the slit tilt 
-#         as a function of the dispersion axis for each order
-#     wlen
-#         initial wavelength solution of each order
-#     """
-
-#     poly_order = 1
-#     spacing = 40 # minimum spacing (in pixel) of fpet lines
-    
-#     badpix = badpix | np.isnan(det)
-#     im = np.ma.masked_array(det, mask=badpix)
-
-#     xx = np.arange(im.shape[1])
-#     polys_middle = np.sum(trace, axis=0)/2.
-#     # Evaluate the upper and lower edges of all orders
-#     yy_trace = trace_polyval(xx, trace)
-#     trace_lower, trace_upper = yy_trace
-
-
-#     meta, wlen, x_fpet = [], [], []
-#     # Loop over each order
-#     for (yy_upper, yy_lower, middle, w_min, w_max) in \
-#         zip(trace_upper, trace_lower, polys_middle, wlen_min, wlen_max):
-
-#         if debug:
-#             plt.imshow(im, aspect='auto')
-#         # Loop over each pixel-row in a sub-sampled image
-#         slit_image, x_slit, poly_slit = [], [], []
-#         N_lines = 0
-#         for row in range(int(yy_lower.min()+1), 
-#                          int(yy_upper.max()), 
-#                          sub_factor):
-
-#             # combine a few rows (N=sub_factor) to increase 
-#             # S/N and reject outliers
-#             im_masked = stats.sigma_clip(im[row:row+sub_factor], 
-#                                 sigma=2, axis=0, masked=True)
-#             spec = np.ma.mean(im_masked, axis=0)
-#             mask = (np.sum(im_masked.mask, axis=0) > 0.7*sub_factor)
-#             badchannel = np.argwhere(mask)[:,0]
-#             # mask neighboring pixels as well
-#             badchannel = np.concatenate((badchannel, 
-#                             badchannel+1, badchannel-1), axis=None)
-
-#             # measure the baseline of the spec to be 10% lowest values
-#             height = np.median(np.sort(spec.data[~mask])[:len(spec)//10])
-
-#             # Find the peak pixels (along horizontal axis) 
-#             peaks, properties = signal.find_peaks(spec, distance=spacing, 
-#                                         width=15, height=2*height) 
-#             # mask the peaks identified due to bad channels
-#             peaks = np.array([item for item in peaks if not item in badchannel])
-
-#             # leave out lines around detector edge
-#             width = np.median(properties['widths'])
-#             # peaks = peaks[(peaks<(im.shape[1]-width)) & (peaks>(width))]
-
-#             # Calculate center-of-mass of the peaks
-#             cens = [np.sum(xx[int(p-width):int(p+width)]* \
-#                            spec[int(p-width):int(p+width)]) / \
-#                     np.sum(spec[int(p-width):int(p+width)]) \
-#                     for p in peaks]
-#             slit_image.extend([[p, row+(sub_factor-1)/2.] for p in cens])
-
-#             # generate bins to divide the peaks in groups
-#             # when maximum number of fpet lines are identified in the order
-#             if len(peaks) > N_lines:
-#                 bins = sorted([x-spacing for x in cens] + \
-#                               [x+spacing for x in cens])
-#                 N_lines = len(peaks)
-            
-#             # plt.plot(xx, spec)
-#             # plt.plot(peaks, spec[peaks],'x')
-#             # plt.plot(cens, spec[peaks],'x')
-#             # # for p in badchannel:
-#             # #     plt.axvline(p)
-#             # plt.show()
-
-#         slit_image = np.array(slit_image)
-#         # Index of bin to which each peak belongs
-#         indices = np.digitize(slit_image[:,0], bins)
-
-#         # Loop over every other bin
-#         for i in range(1, len(bins), 2):
-#             xs = slit_image[:,0][indices == i] # x-coordinate of peaks
-#             ys = slit_image[:,1][indices == i] # y-coordinate 
-            
-#             if debug:
-#                 plt.scatter(xs, ys)
-
-#             # Fit a polynomial to the the fpet signal
-#             poly = Poly.polyfit(ys, xs, poly_order)
-#             poly_orth = Poly.polyfit(xs, ys, poly_order)
-
-#             # Find mid-point on slit image, i.e. 
-#             # the intersection of two polynomials
-#             root = Poly.polyroots(np.pad(poly_orth, 
-#                     (0, len(middle)-len(poly_orth)), 'constant')
-#                     - middle)
-
-#             if np.iscomplexobj(root):
-#                 # slit is close to vertical 
-#                 root = np.mean(xs)
-#             # Select the intersection within the valid x-coordinates
-#             root = root[(root>int(xs.min()-2)) & (root<int(xs.max()+2))]
-
-#             # x_slit stores the centre x-coordinates of each fpet line 
-#             if len(root)>0:
-#                 x_slit.append(root.mean())
-#                 poly_slit.append(poly)
-
-#         # Fit a polynomial to the polynomial coefficients
-#         # using the x-coordinates of the fpet signal
-#         poly_slit = np.array(poly_slit)
-#         meta.append([Poly.polyfit(x_slit, poly_slit[:,i], 2) 
-#                         for i in range(poly_order+1)])
-#         x_fpet.append(x_slit)
-        
-#         if debug:
-#             plt.show()
-
-#         # Determine the wavelength solution along the detectors/orders
-#         # Mapping from measured fpet positions to a linear-spaced grid, 
-#         # fitting with 2nd-order poly
-#         ii = np.arange(len(x_slit))
-#         _, poly = PolyfitClip(x_slit, ii, 2)
-        
-#         # Fix the end of the wavelength grid to be values from the header
-#         grid_poly = Poly.polyfit([Poly.polyval(xx, poly)[0], 
-#                                   Poly.polyval(xx, poly)[-1]], 
-#                                  [w_min, w_max], 1)
-#         ww_cal = Poly.polyval(Poly.polyval(xx, poly), grid_poly)
-#         wlen.append(ww_cal)
-
-#         # w_slit = Poly.polyval(Poly.polyval(x_slit, poly), grid_poly)
-#         # plt.plot(np.diff(w_slit))
-#         # plt.show()
-
-#     # check rectified image
-#     if debug:
-#         spectral_rectify_interp(im, badpix, trace, meta, debug=debug)
-
-#     return meta, x_fpet, wlen
-
-# def FPET_model(xx, yy, params):
-#     a, b, c, d, sigma, amp, tilt = params
-#     # x = a + b*xx + c*xx**2
-#     x = Poly.polyval(xx - np.mean(xx), (a,b,c)) + xx
-#     x_peak = np.arange(-0.5*len(x), 1.5*len(x), d)
-#     model = []
-#     for y in yy:
-#         x_new = x + tilt*(y-len(yy)/2.)
-#         z = np.sum([amp*np.exp(-(x_new-xp)**2/2./sigma**2) for xp in x_peak], axis=0)
-#         model.append(z)
-#     plt.imshow(model, aspect='auto')
-#     plt.show()
-#     return np.array(model)
-
-# def func_MSE(params, *args):
-#     xx, yy, im = args
-#     model = FPET_model(xx, yy, params)
-#     nans = np.isnan(im)
-#     return np.mean(np.square(model[~nans]-im[~nans]))
-
-# def func_slitcurve(slope, plotting=False, *args):
-#     xx, yy, im = args
-#     shift = []
-#     collapse = np.zeros_like(xx)
-#     for i in range(im.shape[0]):
-#         x_new = xx + slope*(yy[i]-(yy[0]+yy[-1])/2.)
-#         nans = np.isnan(im[i])
-#         shift.append(interp1d(x_new[~nans], im[i][~nans], bounds_error=False, fill_value=0)(xx))
-#         collapse += interp1d(x_new[~nans], im[i][~nans], bounds_error=False, fill_value=0)(xx)
-#     peaks, properties = signal.find_peaks(collapse, height=2.*np.mean(collapse)) 
-#     if plotting:
-#         plt.plot(xx, collapse)
-#         for p in peaks:
-#             plt.scatter(xx[p], collapse[p])
-#         plt.show()
-#         plt.imshow(shift)
-#         plt.show()
-#     return -np.sum(collapse[peaks])
- 
 def measure_Gaussian_center(y, peaks, width):
+    """
+    measure the centers of lines by fitting guassian profiles
+
+    Parameters
+    ----------
+    y: array
+        input spectrum   
+    peaks: array
+        rough locations of peaks in the input spectrum
+    width: int
+        window size around each peak for the profile fitting
+
+    Returns
+    -------
+    center: array
+        the Gaussian center of each peaks in the spectrum
+
+    """
+
     xx = np.arange(len(y))
     center = np.zeros(len(peaks))
+    # avoid the peaks near the edges
     peaks = peaks[(peaks<(len(xx)-width)) & (peaks>(width))]
 
     gg_init = models.Gaussian1D(amplitude=1, mean=0, stddev=1.) \
@@ -724,25 +534,227 @@ def measure_Gaussian_center(y, peaks, width):
         gg_fit = fitter(gg_init, x_use, y_use)
         cen = gg_fit.mean_0.value
         center[i] = cen
-        # print(gg_fit)
-        # plt.plot(xx, y)
-        # plt.plot(xx, gg_fit(xx))
-        # plt.axvline(cen, color='r')
-        # plt.axvline(peaks[i], color='y')
-        # plt.show()
 
     return center
 
-def slit_curve(det, badpix, trace, wlen_min, wlen_max, sub_factor=1, debug=False):
+def slit_curve(fpet, une, badpix, trace, wlen_min, wlen_max, 
+               sub_factor=1, une_xcorr=True, wlen_id=None, 
+                 debug=False):
     
+    """
+    Trace the curvature of the slit and determine the wavelength solution
+
+    Parameters
+    ----------
+    fpet: array
+        Fabry-Perot (fpet) image
+    une: array
+        uranium-neon lamp (une) image
+    badpix: array
+        bad pixel map
+    trace: array
+        the trace for order identification
+    wlen_min, wlen_max: array
+        the min and max wavelngth of each order from header for an initial 
+        wavelength solution 
+    sub_factor: int
+        binning factor along the cross-dispersion axis
+    une_xcorr: bool
+        boolean flag indicating whether to use cross-correlation with the 
+        une lamp to correct the wavelength solution
+    wlen_id: str
+        wavelength setting
+    debug: bool
+        boolean flag indicating the debug mode
+    
+    Returns
+    -------
+    tilt, x_fpet, wlen: array
+        the slit tilt, the positions of the FP line peaks, and the corrected wavelength.
+    """
+
     width = 35 # half width of fpet line (in pixel)
     
-    badpix = badpix | np.isnan(det)
-    im = np.ma.masked_array(det, mask=badpix)
+    badpix = badpix | np.isnan(fpet)
+    im = np.ma.masked_array(fpet, mask=badpix)
+    im_une = np.ma.masked_array(une, mask=badpix)
+
+    im_subs, yy_indices = im_order_cut(im, trace)
+    # une_subs, yy_indices = im_order_cut(im_une, trace)
 
     xx = np.arange(im.shape[1], dtype=float)
 
+    wlen, x_fpet, tilt = [], [], []
+    # Loop over each order
+    for (im_sub, w_min, w_max) in \
+        zip(im_subs, wlen_min, wlen_max):
+
+        im_sub[im_sub.mask] = 0.
+
+        # assuming stable tilt across the whole order
+        # use correlation to coadd all fpet lines to measure the slit tilt
+        yy = np.arange(sub_factor, im_sub.shape[0], sub_factor)
+        
+        ccf = np.array([np.correlate(im_sub[len(im_sub)//2], im_sub[i], mode='same') for i in yy])
+        peaks = np.argmax(ccf, axis=1)[:,np.newaxis]
+        
+        # Calculate center of the peaks by fitting Gaussian profiles
+        cens = np.zeros(ccf.shape[0])
+        for i in range(ccf.shape[0]):
+            cens[i] = measure_Gaussian_center(ccf[i], peaks[i], width=width)[0]
+
+        _, coeff = PolyfitClip(yy[cens!=0], cens[cens!=0], order=3)
+        x_mean = np.arange(im_sub.shape[0]) - np.mean(np.arange(im_sub.shape[0])) 
+        A_full = np.vander(x_mean, 3)
+        cens_model = np.dot(A_full, coeff)
+        
+        tilt.append(coeff)
+        
+        # if debug:
+        #     plt.imshow(ccf, extent=[])
+        #     plt.plot(cens, yy)
+        #     plt.plot(cens_model, np.arange(im_sub.shape[0]))
+        #     plt.show()
+
+        # correct for the slit tilt and collapse the fpet image
+        collapse = np.zeros_like(xx)
+        shift = []
+        for i in range(im_sub.shape[0]):
+            x_new = xx + cens_model[i] - cens_model[len(cens_model)//2]
+            nans = im_sub[i].mask
+            shift.append(interp1d(x_new[~nans], im_sub[i][~nans], bounds_error=False, fill_value=0)(xx))
+            collapse += interp1d(x_new[~nans], im_sub[i][~nans], bounds_error=False, fill_value=0)(xx)
+
+        # then measure the position of fpet line peaks
+        peaks, _ = signal.find_peaks(collapse, height=np.mean(collapse), distance=width) 
+        cens = measure_Gaussian_center(collapse, peaks, width=width)
+        cens = cens[cens!=0]
+        x_fpet.append(cens)
+        
+        if debug:
+            plt.plot(xx, collapse)
+            for p in cens:
+                plt.scatter(p, collapse[int(p)], color='r')
+            plt.show()
+            plt.imshow(shift)
+            plt.show()
+
+        # Determine the wavelength solution along the detectors/orders
+        # Mapping from measured fpet positions to a linear-spaced grid, 
+        # fitting with 2nd-order poly
+        ii = np.arange(len(cens))
+        poly = Poly.polyfit(cens, ii, 2)
+        
+        # Fix the end of the wavelength grid to values from the header
+        grid_poly = Poly.polyfit([Poly.polyval(xx, poly)[0], 
+                                  Poly.polyval(xx, poly)[-1]], 
+                                 [w_min, w_max], 1)
+        ww_cal = Poly.polyval(Poly.polyval(xx, poly), grid_poly)
+        wlen.append(ww_cal)
+
+        if debug:
+            plt.plot(np.diff(cens))
+            plt.show()
+            w_slit = Poly.polyval(Poly.polyval(cens, poly), grid_poly)
+            print(np.std(np.diff(w_slit)))
+            plt.plot(np.diff(w_slit))
+            plt.show()
+
+    # check rectified image
+    # spectral_rectify_interp(im, badpix, trace, tilt, debug=True)
+
+    if une_xcorr:
+        # extract une spectrum
+        wlen_xcorr = []
+        x_model, y_model, y_model_s, x_lines, w0s, w1s = genline(wlen, wlen_id)
+        template_interp_func = interp1d(x_model, y_model_s, kind='linear', 
+                                        bounds_error=False, fill_value=0)
+        spec_une, _ = extract_blaze(im_une, badpix, trace)
+        dw = 0.06
+        order = 2
+        p_range=[0.1, 0.01, 0.01]
+        bound = [(-p_range[j], p_range[j]) for j in range(order+1)]
+
+        for (flux, w_init) in zip(spec_une, wlen):
+            f = np.zeros_like(w_init)
+            order_mask = (w0s > w_init[0]) & (w1s < w_init[-1])
+            if not np.any(order_mask):
+                w_cal = w_init
+            else:
+                # estimate the continuum level from the neighbourhood of each line
+                for w0, w1 in zip(w0s[order_mask], w1s[order_mask]):
+                    cont_mask = ((w_init > w0 - dw) & (w_init < w0)) \
+                            | ((w_init < w1 + dw) & (w_init > w1))
+                    line_mask = (w_init > w0) & (w_init < w1)
+                    poly_cont = Poly.polyfit(w_init[cont_mask], flux[cont_mask], 1)
+                    flux[line_mask] -= Poly.polyval(w_init[line_mask], poly_cont)
+                    # plt.plot(w_init[cont_mask], flux[cont_mask],'r', zorder=10)
+
+                # mark the regions of lines for cross-correlation with lamp model
+                line_mask = np.zeros_like(w_init)
+                order_mask = (x_lines > w_init[0])&(x_lines<w_init[-1])
+                for l in x_lines[order_mask]:
+                    line_mask += (w_init > l - dw) & (w_init < l + dw)
+                line_mask = line_mask.astype(bool)
+
+                f[line_mask] = flux[line_mask]
+
+                # find optimal wavelength solution correction 
+                # by maximizing the cross-correlation
+                res = optimize.minimize(
+                                func_wlen_optimization, 
+                                args=(w_init, f, template_interp_func), 
+                                x0=np.zeros(order+1), method='Nelder-Mead', 
+                                bounds=bound) 
+                poly_opt = res.x
+                # print(poly_opt)
+                w_cal = w_init + \
+                            Poly.polyval(w_init - np.mean(w_init), poly_opt) 
+
+            wlen_xcorr.append(w_cal)
+
+            # plt.plot(w_init, flux)
+            # plt.plot(w_init, f)
+            # plt.plot(w_cal, flux)
+            # plt.plot(w_cal, template_interp_func(w_cal), 'k', alpha=0.5)
+            # plt.show()
+        wlen = wlen_xcorr
+
+    return tilt, x_fpet, wlen
+
+
+def slit_curve_alter(fpet, une, badpix, trace, wlen_min, wlen_max, 
+                     sub_factor=1, wlen_id=None, debug=False):
+    
+    def func_wave(x, poly, w0, w1, det_len):
+        w_poly = Poly.polyfit([0, det_len-1],[w0, w1], 1)
+        w_init = Poly.polyval(np.arange(det_len), w_poly)
+        w_sample = Poly.polyval(x, w_poly)
+        w_cal = w_sample + Poly.polyval(w_sample - np.mean(w_init), poly) 
+        return w_cal
+
+    def func_optmize(poly, *args):
+        x_sample, w0, w1, det_len = args
+        n_sample = np.arange(len(x_sample))
+        w_sample = func_wave(x_sample, poly, w0, w1, det_len)
+        # plt.plot(w_sample)
+        # plt.show()
+        poly_fpet = Poly.polyfit(n_sample, w_sample, 1)
+        mse = np.sum((w_sample - Poly.polyval(n_sample, poly_fpet))**2)
+        return mse
+
+    c = 2.99792458e5 #km/s
+
+    width = 35 # half width of fpet line (in pixel)
+    
+    badpix = badpix | np.isnan(fpet)
+    im = np.ma.masked_array(fpet, mask=badpix)
+    im_une = np.ma.masked_array(une, mask=badpix)
+
     im_subs, yy_indices = im_order_cut(im, trace)
+    # une_subs, yy_indices = im_order_cut(im_une, trace)
+
+    xx = np.arange(im.shape[1], dtype=float)
 
     wlen, x_fpet, tilt = [], [], []
     # Loop over each order
@@ -779,23 +791,28 @@ def slit_curve(det, badpix, trace, wlen_min, wlen_max, sub_factor=1, debug=False
         #     plt.plot(cens_model, np.arange(im_sub.shape[0]))
         #     plt.show()
 
-        # correct for the slit tilt and collapse the fpet image
-        collapse = np.zeros_like(xx)
-        shift = []
-        for i in range(im_sub.shape[0]):
-            x_new = xx + cens_model[i] - cens_model[len(cens_model)//2]
-            nans = im_sub[i].mask
-            shift.append(interp1d(x_new[~nans], im_sub[i][~nans], bounds_error=False, fill_value=0)(xx))
-            collapse += interp1d(x_new[~nans], im_sub[i][~nans], bounds_error=False, fill_value=0)(xx)
+    # correct for the slit tilt and collapse the fpet image
+
+    fpet_rect = spectral_rectify_interp(fpet, badpix, trace, tilt)
+    # filtered_data = stats.sigma_clip(det_rect, sigma=5)
+    # badpix_rect = filtered_data.mask | badpix
+
+    # Retrieve the blaze function by mean-collapsing 
+    # the master flat along the slit
+    fpet1d, _ = extract_blaze(fpet_rect, badpix, trace)
+
+    for collapse, w_min, w_max in zip(fpet1d, wlen_min, wlen_max):
+        # collapse = np.zeros_like(xx)
+        # shift = []
+        # for i in range(im_sub.shape[0]):
+        #     x_new = xx + cens_model[i] - cens_model[len(cens_model)//2]
+        #     nans = im_sub[i].mask
+        #     shift.append(interp1d(x_new[~nans], im_sub[i][~nans], bounds_error=False, fill_value=0)(xx))
+        #     collapse += interp1d(x_new[~nans], im_sub[i][~nans], bounds_error=False, fill_value=0)(xx)
 
         # then measure the position of fpet line peaks
         peaks, _ = signal.find_peaks(collapse, height=np.mean(collapse), distance=width) 
-        # width = 10
-        # peaks = peaks[(peaks<(len(xx)-width)) & (peaks>(width))]
-        # cens2 = [np.sum(xx[int(p-width):int(p+width)]* \
-        #                    collapse[int(p-width):int(p+width)]) / \
-        #             np.sum(collapse[int(p-width):int(p+width)]) \
-        #             for p in peaks]
+
         cens = measure_Gaussian_center(collapse, peaks, width=width)
         cens = cens[cens!=0]
         x_fpet.append(cens)
@@ -804,37 +821,128 @@ def slit_curve(det, badpix, trace, wlen_min, wlen_max, sub_factor=1, debug=False
             plt.plot(xx, collapse)
             for p in cens:
                 plt.scatter(p, collapse[int(p)], color='r')
-            # for p in cens2:
-            #     plt.scatter(p, collapse[int(p)], color='g')
             plt.show()
-            plt.imshow(shift)
-            plt.show()
-
+            
         # Determine the wavelength solution along the detectors/orders
         # Mapping from measured fpet positions to a linear-spaced grid, 
         # fitting with 2nd-order poly
-        ii = np.arange(len(cens))
-        poly = Poly.polyfit(cens, ii, 2)
+
+        p0_range, p1_range = 1e-3, 1e-3
+        # Use scipy.optimize to find the best-fitting coefficients
+        res = optimize.minimize(
+                    func_optmize, 
+                    args=(cens, w_min, w_max, len(xx)), 
+                    x0=[0,0], method='Nelder-Mead', tol=1e-20, 
+                    bounds=[(-p0_range,+p0_range),
+                            # (-p1_range,+p1_range), 
+                            (-p1_range,+p1_range), 
+                            ]) 
+        poly_opt = res.x
+        ww_cal = func_wave(xx, poly_opt, w_min, w_max, len(xx))
+        print(poly_opt)
+        # ii = np.arange(len(cens))
+        # poly = Poly.polyfit(cens, ii, 2)
+        # print(poly)
         
-        # Fix the end of the wavelength grid to values from the header
-        grid_poly = Poly.polyfit([Poly.polyval(xx, poly)[0], 
-                                  Poly.polyval(xx, poly)[-1]], 
-                                 [w_min, w_max], 1)
-        ww_cal = Poly.polyval(Poly.polyval(xx, poly), grid_poly)
+        # # Fix the end of the wavelength grid to values from the header
+        # grid_poly = Poly.polyfit([Poly.polyval(xx, poly)[0], 
+        #                           Poly.polyval(xx, poly)[-1]], 
+        #                          [w_min, w_max], 1)
+        # ww_cal = Poly.polyval(Poly.polyval(xx, poly), grid_poly)
         wlen.append(ww_cal)
 
         if debug:
-            plt.plot(np.diff(cens))
-            plt.show()
-            w_slit = Poly.polyval(Poly.polyval(cens, poly), grid_poly)
+            # plt.plot(ww_cal)
+            # plt.show()
+            w_slit = func_wave(cens, poly_opt, w_min, w_max, len(xx))
+            # print(np.std(np.diff(w_slit)))
             plt.plot(np.diff(w_slit))
             plt.show()
 
     # check rectified image
     # spectral_rectify_interp(im, badpix, trace, tilt, debug=True)
 
-
     return tilt, x_fpet, wlen
+
+
+
+
+def genline(wlen, wlen_id):
+    """
+    generate lamp model spectra for specific wavelength settings from linelist
+
+    Parameters
+    ----------
+    wlen: array
+        an initial guess of the observed wavelength
+    wlen_id: str
+        wavelength setting identifier  
+
+    Returns
+    -------
+    x_model, y_model: array
+        model spectrum generated from the lamp linelist
+    wave: array
+        center of selected lamp lines
+    w0s, w1s: array
+        minimum and maximum wavelengths of selected regions with lamp lines
+
+    """
+
+    def G(x, x0, a, sigma):
+        """ Return Gaussian line shape wth sigma """
+        # return a / np.sqrt(2. * np.pi) / sigma\
+        return a * np.exp(-( (x - x0) / sigma)**2 / 2.)
+
+    wlen = np.array(wlen)
+    w_min = wlen[:,0]
+    w_max = wlen[:,-1]
+
+    # read the calibration lamp data
+    src_path = os.path.dirname(os.path.abspath(__file__))
+    if np.max(w_max) < 1440:
+        lines_file = os.path.join(src_path, '../../data/lines_u_sarmiento.txt')
+    else:
+        lines_file = os.path.join(src_path, '../../data/lines_u_redman.txt')
+
+    selection_file =  os.path.join(src_path, f'../../data/{wlen_id}.dat')
+    w0s, w1s = np.genfromtxt(selection_file, unpack=1)
+
+    wave, amp, = [], []
+    with open(lines_file, 'r') as fp:
+        dt = fp.readlines()
+        for x in dt:
+            wave.append(float(x[:9]))
+            amp.append(float(x[9:]))
+    wave, amp = np.array(wave), np.array(amp)
+
+    # select wavelength regions based on the observations
+    indices = []
+    for w0, w1 in zip(w_min, w_max):
+        indices.append((wave>w0) & (wave<w1))
+    indices = np.sum(indices, axis=0).astype(bool)
+    wave, amp = wave[indices], amp[indices]
+
+    # make the lamp model spectrum from the line list
+    x_model = np.arange(wave[0]-10, wave[-1]+10, 0.002)
+    y_model = np.zeros_like(x_model)
+    for i in range(len(wave)):
+        y_model += G(x_model, wave[i], 10., 0.01)
+    
+    indices = []
+    for w0, w1 in zip(w0s, w1s):
+        indices.append((wave>w0) & (wave<w1))
+    indices = np.sum(indices, axis=0).astype(bool)
+    wave, amp = wave[indices], amp[indices]
+
+    # make the lamp model spectrum from the line list
+    y_model_s = np.zeros_like(x_model)
+    for i in range(len(wave)):
+        # if amp[i]>10:
+            y_model_s += G(x_model, wave[i], 10., 0.01)
+
+    return x_model, y_model, y_model_s, wave, w0s, w1s
+
 
 
 def trace_polyval(xx, tw):
@@ -869,37 +977,28 @@ def trace_polyval(xx, tw):
     return yy_list
 
 
-# def slit_polyval(xx, meta):
-#     """
-#     evaluate slit curvature polynomials given the pixel grid
 
-#     Parameters
-#     ----------
-#     xx: array or list
-#         pixel grid or a list of x coordinates
-#     meta: array
-#         meta polynomial coefficiences for the change of slit tilt over 
-#         x coordinates
-
-#     Returns
-#     -------
-#     slit: list
-#         the evaluated polynomial coefficiences describing the slit tilt 
-#         for each given x coordinate
-#     """
-
-#     if isinstance(xx, list):
-#         slit = [np.array([Poly.polyval(x_line, poly_meta) 
-#                           for poly_meta in meta_order]).T 
-#                 for (x_line, meta_order) in zip(xx, meta)]
-#     else:
-#         slit = [np.array([Poly.polyval(xx, poly_meta) 
-#                           for poly_meta in meta_order]).T 
-#                 for meta_order in meta]
-
-#     return slit
 
 def spectral_rectify_resample(im, badpix, trace, slit, debug=False):
+    """
+    Resample image along the direction of the tilted slit
+
+    Parameters
+    ----------
+    im: array
+        input image
+    badpix: array
+        bad pixel map corresponding to the image
+    trace: array
+        polynomials that delineate the edge of the specific order 
+    slit: array
+        slope of the slit tilt
+
+    Returns
+    -------
+    im_rect: array
+        resampled images where the slit image is vertical on detector
+    """
 
     bpm = np.logical_not((badpix.astype(bool) | np.isnan(im)))
     im = np.nan_to_num(im)
@@ -956,7 +1055,26 @@ def spectral_rectify_resample(im, badpix, trace, slit, debug=False):
     
     return im_rect                           
 
+
 def im_order_cut(im, trace, slit=None):
+    """
+    Cut out individual orders from the detector image
+
+    Parameters
+    ----------
+    im: array
+        input image
+    trace: array
+        polynomials that delineate the edge of the specific order 
+
+    Returns
+    -------
+    im_subs: array
+        sub-images of each order
+    yy_indices: array
+        y-axis indices of each order
+    """
+
     # Evaluate order traces 
     xx = np.arange(im.shape[-1])
     yy_trace = trace_polyval(xx, trace)
@@ -982,7 +1100,29 @@ def im_order_cut(im, trace, slit=None):
     else:
         return im_subs, yy_indices
 
+
 def spectral_rectify_interp(im, badpix, trace, slit, reverse=False, debug=False):
+    """
+    Correct for the slit-tilt by interpolating to a pixel-grid
+
+    Parameters
+    ----------
+    im: array
+        input image
+    badpix: array
+        bad pixel map corresponding to the image
+    trace: array
+        polynomials that delineate the edge of the specific order 
+    slit: array
+        slope of the slit tilt
+    reverse: bool
+        if `True`, interpolate back to the tilted slit 
+
+    Returns
+    -------
+    im_rect: array
+        rectified images where the slit image is vertical on detector
+    """
 
     bpm = (badpix.astype(bool) | np.isnan(im))
     im_rect = np.copy(im)
@@ -1000,7 +1140,10 @@ def spectral_rectify_interp(im, badpix, trace, slit, reverse=False, debug=False)
                 x_new = xx - x_model[i] 
             nans = np.logical_or(np.isnan(im[row]), bpm[row])
 
-            im_rect[row] = interp1d(xx[~nans], im[row][~nans], 
+            if np.sum(nans)>0.9*len(nans):
+                im_rect[row] = np.nan
+            else:
+                im_rect[row] = interp1d(xx[~nans], im[row][~nans], 
                                     kind='linear', 
                                     bounds_error=False, 
                                     fill_value=np.nan)(x_new)
@@ -1011,6 +1154,36 @@ def spectral_rectify_interp(im, badpix, trace, slit, reverse=False, debug=False)
 
     return im_rect       
 
+
+# def slit_polyval(xx, meta):
+#     """
+#     evaluate slit curvature polynomials given the pixel grid
+
+#     Parameters
+#     ----------
+#     xx: array or list
+#         pixel grid or a list of x coordinates
+#     meta: array
+#         meta polynomial coefficiences for the change of slit tilt over 
+#         x coordinates
+
+#     Returns
+#     -------
+#     slit: list
+#         the evaluated polynomial coefficiences describing the slit tilt 
+#         for each given x coordinate
+#     """
+
+#     if isinstance(xx, list):
+#         slit = [np.array([Poly.polyval(x_line, poly_meta) 
+#                           for poly_meta in meta_order]).T 
+#                 for (x_line, meta_order) in zip(xx, meta)]
+#     else:
+#         slit = [np.array([Poly.polyval(xx, poly_meta) 
+#                           for poly_meta in meta_order]).T 
+#                 for meta_order in meta]
+
+#     return slit
 
 # def spectral_rectify_interp_complex(im_list, badpix, trace, slit_meta, reverse=False, debug=False):
 #     """
@@ -1195,8 +1368,7 @@ def master_flat_norm(det, badpix, trace, slit_meta, slitlen=None, debug=False):
 
     return flat_norm, blaze, trace_update
 
-
-def extract_blaze(im, badpix, trace, f0=0.5, fw=0.5, sigma=5):
+def extract_blaze(im, badpix, trace, f0=0.5, fw=0.45, sigma=3):
     """
     Collpase 2D image along the cross-dispersion direction 
     in an order-by-order basis.
@@ -1243,10 +1415,10 @@ def extract_blaze(im, badpix, trace, f0=0.5, fw=0.5, sigma=5):
         blaze_orders.append(blaze)
 
     return blaze_orders, blaze_image
-    
 
 
-def readout_artifact(det, det_err, badpix, trace, Nborder=10, sigma=3, debug=False):
+
+def readout_artifact(det, det_err, badpix, trace, Nborder=20, sigma=3, debug=False):
     """
     Correct for readout noise artifacts that appear like vertical strips 
     by subtracting the inter-order average value in each column on detector.
@@ -1282,9 +1454,12 @@ def readout_artifact(det, det_err, badpix, trace, Nborder=10, sigma=3, debug=Fal
     uppers = uppers[:-1]
     lowers = lowers[1:]
     
-    indices_row = []
-    for up, low in zip(uppers, lowers):
-        indices_row += list(range(int(up+Nborder), int(low-Nborder+1)))
+    # indices_row = []
+    # for up, low in zip(uppers, lowers):
+    #     indices_row += list(range(int(up+Nborder), int(low-Nborder+1)))
+
+    # use rows without light
+    indices_row = range(5, 40)
 
     im = stats.sigma_clip(det[indices_row], sigma=sigma, axis=0)
     im_err = np.ma.masked_array(det_err[indices_row], mask=im.mask)
@@ -1298,6 +1473,63 @@ def readout_artifact(det, det_err, badpix, trace, Nborder=10, sigma=3, debug=Fal
         plt.imshow(det, vmin=-20, vmax=20)
         plt.show()
     return det, det_err
+
+
+def remove_skylight(D_full, V_full, M_bpm, obj_cen, frac_mask, debug=False):
+    """
+    Remove sky background in a 2D detector image. 
+
+    Parameters
+    ----------
+    D_full: array
+        cropped image of one order 
+    V_full: array
+        Variance of the input image accounting for sky background 
+        and readout noise
+    M_bpm: array
+        bad pixel map corresponding to the detector image
+    obj_cen: float
+        location of the star on slit in pixel 
+    frac_mask: float
+        half width of the trace to be masked in fraction of slit length
+
+    Returns
+    -------
+    D_cor, err_cor: array
+        image and error after the sky background removal
+
+    """
+
+    # mask trace of the target before combining the background
+    yy = np.arange(D_full.shape[0])
+    width = int(frac_mask*len(yy))
+    D = np.ma.masked_array(D_full, mask=M_bpm)
+    D.mask[obj_cen-width:obj_cen+width+1, :] = True 
+    D.mask[:obj_cen-2*width, :] = True 
+    D.mask[obj_cen+2*width:, :] = True 
+    bkg_image = stats.sigma_clip(D, axis=0)
+    bkg = np.ma.mean(bkg_image, axis=0)
+    # plt.imshow(bkg_image, aspect='auto', vmin=0, vmax=100)
+    # plt.show()
+
+    # err propogation
+    V = np.ma.masked_array(V_full, mask=bkg_image.mask)
+    bkg_var = np.ma.sum(V, axis=0)/np.sum(~V.mask, axis=0)**2
+
+    D_cor = D_full - bkg.data
+    V_cor = V_full + bkg_var.data
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        err_cor = np.sqrt(V_cor)
+
+    if debug:
+        ax1 = plt.subplot(211)
+        ax2 = plt.subplot(212)
+        ax1.imshow(D_full, aspect='auto', vmin=0, vmax=100)
+        ax2.imshow(D_cor, aspect='auto', vmin=0, vmax=100)
+        plt.show()
+    return D_cor, err_cor
 
 
 def remove_starlight(D_full, V_full, spec_star, cen0_p, cen1_p, 
@@ -1315,7 +1547,7 @@ def remove_starlight(D_full, V_full, spec_star, cen0_p, cen1_p,
         Variance of the input image accounting for sky background 
         and readout noise
     spec_star: array
-        in case of sub-stellar companion extraction and `bkg_subtract=True`,
+        in case of sub-stellar companion extraction and `remove_star_bkg=True`,
         provide the extracted stellar spectra. This will be scaled according  
         to the PSF and then removed from the science image before extracting
         the companion spectra.
@@ -1433,11 +1665,37 @@ def remove_starlight(D_full, V_full, spec_star, cen0_p, cen1_p,
     return D_full-bkg, Err_full
 
 
+# def fit_double_PSF(P, sep, debug=False):
+#     x = np.arange(len(P))
+#     xx = np.linspace(0, len(P), 500)
+#     m0 = np.argmax(P)
+#     m1 = m0 - sep 
+#     # gg_init = models.Gaussian1D(0.5, m0, 1) + models.Gaussian1D(0.1, m1, 1)
+#     gg_init = models.Moffat1D(0.5, m0, 1, 1) + models.Moffat1D(0.1, m1, 1, 1)
+    
+#     fitter = fitting.SLSQPLSQFitter()
+#     gg_fit = fitter(gg_init, x, P)
+#     fit_params = gg_fit.param_sets
+#     # gA = models.Gaussian1D(*fit_params[:3])
+#     # gB = models.Gaussian1D(*fit_params[3:])
+#     gA = models.Moffat1D(*fit_params[:4])
+#     gB = models.Moffat1D(*fit_params[4:])
+#     if debug:
+#         print("fA/all=",gA(m1)/(gA(m1)+gB(m1)))
+#         plt.plot(x, P)
+#         plt.plot(xx, gg_fit(xx))
+#         plt.plot(xx, gA(xx))
+#         plt.plot(xx, gB(xx))
+#         plt.show()
+#     return gA, gB
+
+
 
 def extract_spec(det, det_err, badpix, trace, slit, blaze, spec_star, 
                     gain, NDIT=1, cen0=90, companion_sep=None, aper_half=20, 
-                    bkg_subtract=False, interpolation=True, 
-                    extract_2d=False, debug=False):
+                    extract_2d=False,  interpolation=True, 
+                    remove_star_bkg=False, remove_sky_bkg=False, 
+                    debug=False):
     """
     Extract 1D spectra from detector images
 
@@ -1466,11 +1724,11 @@ def extract_spec(det, det_err, badpix, trace, slit, blaze, spec_star,
         location of the companion on slit in pixel
     aper_half: int
         half of extraction aperture in pixel
-    bkg_subtract: bool
+    remove_star_bkg: bool
         in case of sub-stellar companion extraction, whether remove the 
         starlight contamination.
     spec_star: array
-        in case of sub-stellar companion extraction and `bkg_subtract=True`,
+        in case of sub-stellar companion extraction and `remove_star_bkg=True`,
         provide the extracted stellar spectra. This will be scaled according  
         to the PSF and then removed from the science image before extracting
         the companion spectra.
@@ -1493,7 +1751,7 @@ def extract_spec(det, det_err, badpix, trace, slit, blaze, spec_star,
         im = spectral_rectify_resample(det, badpix, trace, slit, debug=False)
         im_err = spectral_rectify_resample(det_err, badpix, trace, slit, debug=False)
     
-    if extract_2d or bkg_subtract:
+    if extract_2d or remove_star_bkg or remove_sky_bkg:
         filter_mode = 'median'
         dt_rect = trace_rectify_interp([im, im_err], trace, debug=False) 
         im, im_err = dt_rect
@@ -1513,22 +1771,33 @@ def extract_spec(det, det_err, badpix, trace, slit, blaze, spec_star,
         im_err_sub = im_err[int(yy_lower):int(yy_upper+1)]
         bpm_sub = badpix[int(yy_lower):int(yy_upper+1)]
 
+        obj_cen = cen0
+
         if cen0 is None:
             # find out the location of the peak signal
             profile = np.nanmedian(im_sub, axis=1)
-            cen0 = np.argmax(profile) 
+            obj_cen = np.argmax(profile) 
+            # plt.plot(profile)
+            # plt.axvline(obj_cen)
+            # plt.show()
+        
+        if remove_sky_bkg:
+            im_sub, im_err_sub = remove_skylight(
+                                im_sub, im_err_sub**2, bpm_sub,
+                                obj_cen=int(np.round(obj_cen)), 
+                                frac_mask=0.2,
+                                debug=debug)
         
         # remove starlight contamination
-        if bkg_subtract and companion_sep is not None:
+        if remove_star_bkg and companion_sep is not None:
             im_sub, im_err_sub = remove_starlight(im_sub, im_err_sub**2, 
                             spec_star[o]/blaze[o], cen0, cen0-companion_sep, 
                             gain=gain, debug=debug)
             aper_half = 5
 
         # Pixel-location of target
-        obj_cen = cen0
         if companion_sep is not None:
-            obj_cen = cen0 - companion_sep
+            obj_cen -= companion_sep
         
         # Extract a 1D spectrum using the optimal extraction algorithm
         f_opt, f_err, D_sub, P_sub, V_sub, chi2_r = optimal_extraction(
@@ -1548,6 +1817,7 @@ def extract_spec(det, det_err, badpix, trace, slit, blaze, spec_star,
     D_stack, id_order = stack_ragged(D)
     P_stack, id_order = stack_ragged(P)
     V_stack, id_order = stack_ragged(V)
+
     return flux, err, D_stack, P_stack, V_stack, id_order, chi2 
 
 
@@ -1752,9 +2022,41 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
     
     return f_opt, np.sqrt(var), D.T, P.T, np.sqrt(V_new).T, chi2_r
 
+def func_wlen_optimization(poly, *args):
+    """
+    objective function for optimizing wavelength solutions
 
-def wlen_solution(fluxes, w_init, transm_spec=None, 
-                p0_range=0.5, p1_range=0.05, p2_range=0.01,
+    Parameters
+    ----------
+    poly: array
+        polynomial coefficients for correcting the wavelength solution
+    args: 
+        wave, flux: initial wavelengths and observed flux
+        template_interp_func: model spectrum 
+    
+    Returns
+    -------
+    correlation: float
+        minus correlation between observed and model spectra
+    """
+    
+    wave, flux, template_interp_func = args
+
+    # Apply the polynomial coefficients
+    new_wave = Poly.polyval(wave - np.mean(wave), poly) + wave
+
+    # Interpolate the template onto the new wavelength grid
+    template = template_interp_func(new_wave)
+
+    # Maximize the cross correlation
+    correlation = -template.dot(flux)
+    # chi_squared = np.sum((template-flux)**2/err**2)
+
+    return correlation
+
+
+def wlen_solution(fluxes, errs, w_init, transm_spec, order=2,
+                  p_range=[0.5, 0.05, 0.01],
                 cont_smooth_len=101,
                 debug=False):
     """
@@ -1793,30 +2095,17 @@ def wlen_solution(fluxes, w_init, transm_spec=None,
     # Prepare a function to interpolate the skycalc transmission
     template_interp_func = interp1d(transm_spec[:,0], transm_spec[:,1], 
                                     kind='linear')
-
-    def func_poly(poly, *args):
-        wave, flux = args
-
-        # Apply the polynomial coefficients
-        new_wave = Poly.polyval(wave - np.mean(wave), poly) + wave
-
-        # Interpolate the template onto the new wavelength grid
-        template = template_interp_func(new_wave)
-
-        # Maximize the cross correlation
-        chi_squared = -template.dot(flux)
-
-        return chi_squared
-
+    
     wlens = []
-    Ncut = 20
-    minimum_strength=0.005
+    Ncut = 10
+    minimum_strength=0.0005
 
     for o in range(len(fluxes)):
-        f, wlen_init = fluxes[o], w_init[o]
+
+        f, f_err, wlen_init = fluxes[o], errs[o], w_init[o]
 
         # ignore the detector-edges 
-        f, w = f[Ncut:-Ncut], wlen_init[Ncut:-Ncut]
+        f, w, f_err = f[Ncut:-Ncut], wlen_init[Ncut:-Ncut], f_err[Ncut:-Ncut]
 
         # Remove continuum and nans of spectra.
         # The continuum is estimated by smoothing the
@@ -1829,22 +2118,21 @@ def wlen_solution(fluxes, w_init, transm_spec=None,
         f = f[~nans] - continuum
         # outliers = np.abs(f)>(5*np.nanstd(f))
         # f[outliers]=0
-        f, w = f[Ncut:-Ncut], w[~nans][Ncut:-Ncut]
+        f, w, f_err = f[Ncut:-Ncut], w[~nans][Ncut:-Ncut], f_err[Ncut:-Ncut]
 
         index_o = (transm_spec[:,0]>np.min(wlen_init)) & \
                   (transm_spec[:,0]<np.max(wlen_init))
 
+        bound = [(-p_range[j], p_range[j]) for j in range(order+1)]
         # Check if there are enough telluric features in this wavelength range
         if np.std(transm_spec[:,1][index_o]) > minimum_strength: 
             
             # Use scipy.optimize to find the best-fitting coefficients
             res = optimize.minimize(
-                        func_poly, 
-                        args=(w, f), 
-                        x0=[0,0,0], method='Nelder-Mead', tol=1e-8, 
-                        bounds=[(-p0_range,+p0_range),
-                                (-p1_range,+p1_range), 
-                                (-p2_range,+p2_range)]) 
+                        func_wlen_optimization, 
+                        args=(w, f, template_interp_func), 
+                        x0=np.zeros(order+1), method='Nelder-Mead', tol=1e-8, 
+                        bounds=bound) 
             poly_opt = res.x
 
             result = [f'{item:.6f}' for item in poly_opt]
@@ -1854,14 +2142,13 @@ def wlen_solution(fluxes, w_init, transm_spec=None,
 
             # if the coefficient hits the prior edge, fitting is unsuccessful
             # fall back to the 0th oder solution.
-            if np.isclose(np.abs(poly_opt[-1]), p2_range):
+            if np.isclose(np.abs(poly_opt[-1]), p_range[-1]):
                 warnings.warn(f"Fitting of wavelength solution for order {o} is unsuccessful. Only a 0-order offset is applied.")
                 res = optimize.minimize(
-                        func_poly, 
-                        args=(w, f), 
+                        func_wlen_optimization, 
+                        args=(w, f, template_interp_func), 
                         x0=[0], method='Nelder-Mead', tol=1e-8, 
-                        bounds=[(-p0_range,+p0_range),
-                                # (-p1_range,+p1_range), 
+                        bounds=[(-p_range[0],+p_range[0]),
                                 ])
                 poly_opt = res.x
                 if debug:
@@ -1876,114 +2163,117 @@ def wlen_solution(fluxes, w_init, transm_spec=None,
         wlens.append(wlen_cal)
 
     return wlens
+    # return w_init
 
 
-def wlen_solution_crires(fluxes, w_init, transm_spec=None, 
-                p0_range=0.5, p1_range=0.05, p2_range=0.01,
-                cont_smooth_len=101,
-                debug=False):
-    """
-    Method for refining wavelength solution using a quadratic 
-    polynomial correction Poly(p0, p1, p2). The optimization 
-    is achieved by maximizing cross-correlation functions 
-    between the spectrum and a telluric transmission model on 
-    a order-by-order basis.
+# def wlen_solution_crires(fluxes, errs, w_init, transm_spec=None, 
+#                 p0_range=0.5, p1_range=0.05, p2_range=0.01,
+#                 cont_smooth_len=101,
+#                 debug=False):
+#     """
+#     Method for refining wavelength solution using a quadratic 
+#     polynomial correction Poly(p0, p1, p2). The optimization 
+#     is achieved by maximizing cross-correlation functions 
+#     between the spectrum and a telluric transmission model on 
+#     a order-by-order basis.
 
-    Parameters
-    ----------
+#     Parameters
+#     ----------
 
-    fluxes: array
-        flux of observed spectrum in each spectral order
-    w_init: array
-        initial wavelengths of each spectral order
-    p0_range: float
-        the absolute range of the 0th polynomial coefficient
-    p1_range: float
-        the absolute range of the 1th polynomial coefficient
-    p2_range: float
-        the absolute range of the 2th polynomial coefficient
-    cont_smooth_len: int
-        the window length used in the high-pass filter to remove 
-        the continuum of observed spectrum
-    debug : bool
-        if True, print the best fit polynomial coefficients.
+#     fluxes: array
+#         flux of observed spectrum in each spectral order
+#     w_init: array
+#         initial wavelengths of each spectral order
+#     p0_range: float
+#         the absolute range of the 0th polynomial coefficient
+#     p1_range: float
+#         the absolute range of the 1th polynomial coefficient
+#     p2_range: float
+#         the absolute range of the 2th polynomial coefficient
+#     cont_smooth_len: int
+#         the window length used in the high-pass filter to remove 
+#         the continuum of observed spectrum
+#     debug : bool
+#         if True, print the best fit polynomial coefficients.
 
-    Returns
-    -------
-    wlens: array
-        the refined wavelength solution
+#     Returns
+#     -------
+#     wlens: array
+#         the refined wavelength solution
         
-    """
+#     """
 
-    # Prepare a function to interpolate the skycalc transmission
-    template_interp_func = interp1d(transm_spec[:,0], transm_spec[:,1], 
-                                    kind='linear')
+#     # Prepare a function to interpolate the skycalc transmission
+#     template_interp_func = interp1d(transm_spec[:,0], transm_spec[:,1], 
+#                                     kind='linear')
 
-    def func_poly(coeffs, wave_order, flux_order):
-        chi_squared = []
-        for d in range(len(flux_order)):
-            wave, flux = wave_order[d], flux_order[d]
-            poly = [coeffs[i] for i in [d, len(coeffs)-2, len(coeffs)-1]]
+#     def func_wlen_optimization(coeffs, wave_order, flux_order, err_order):
+#         chi_squared = []
+#         for d in range(len(flux_order)):
+#             wave, flux, err = wave_order[d], flux_order[d], err_order[d]
+#             poly = [coeffs[i] for i in [d, len(coeffs)-2, len(coeffs)-1]]
 
-            # Apply the polynomial coefficients
-            new_wave = Poly.polyval(wave - np.mean(wave), poly) + wave
+#             # Apply the polynomial coefficients
+#             new_wave = Poly.polyval(wave - np.mean(wave), poly) + wave
 
-            # Interpolate the template onto the new wavelength grid
-            template = template_interp_func(new_wave)
+#             # Interpolate the template onto the new wavelength grid
+#             template = template_interp_func(new_wave)
 
-            # Maximize the cross correlation
-            chi_squared.append(-template.dot(flux))
+#             # # Maximize the cross correlation /chi square
+#             # chi_squared.append(-template.dot(flux))
+#             chi_squared.append((template-flux)**2/err**2)
 
-        return np.sum(chi_squared)
+#         return np.sum(chi_squared)
     
-    Ncut = 20
-    wlen_cal = np.zeros_like(w_init)
+#     Ncut = 10
+#     wlen_cal = np.zeros_like(w_init)
 
-    for o in range(len(fluxes[0])):
-        f, wlen_init = fluxes[:,o], w_init[:,o]
+#     for o in range(len(fluxes[0])):
+#         f, f_err, wlen_init = fluxes[:,o], errs[:,o], w_init[:,o]
 
-        # ignore the detector-edges 
-        f, w = f[:,Ncut:-Ncut], wlen_init[:,Ncut:-Ncut]
+#         # ignore the detector-edges 
+#         f, w, f_err = f[:,Ncut:-Ncut], wlen_init[:,Ncut:-Ncut], f_err[:,Ncut:-Ncut]
 
-        # Remove continuum and nans of spectra.
-        # The continuum is estimated by smoothing the
-        # spectrum with a 2nd order Savitzky-Golay filter
-        f_norm, w_norm = [],[]
-        for d in range(len(f)):
-            nans = np.isnan(f[d])
-            continuum = signal.savgol_filter(
-                        f[d][~nans], window_length=cont_smooth_len,
-                        polyorder=2, mode='interp')
+#         # Remove continuum and nans of spectra.
+#         # The continuum is estimated by smoothing the
+#         # spectrum with a 2nd order Savitzky-Golay filter
+#         f_norm, w_norm, err_norm = [],[],[]
+#         for d in range(len(f)):
+#             nans = np.isnan(f[d])
+#             continuum = signal.savgol_filter(
+#                         f[d][~nans], window_length=cont_smooth_len,
+#                         polyorder=2, mode='interp')
             
-            f_norm.append((f[d]-continuum)[Ncut:-Ncut])
-            w_norm.append(w[d,Ncut:-Ncut])
-            # outliers = np.abs(f)>(5*np.nanstd(f))
-            # f[outliers]=0
+#             f_norm.append((f[d]-continuum)[Ncut:-Ncut])
+#             w_norm.append(w[d,Ncut:-Ncut])
+#             err_norm.append(f_err[d,Ncut:-Ncut])
+#             # outliers = np.abs(f)>(5*np.nanstd(f))
+#             # f[outliers]=0
 
-        # Use scipy.optimize to find the best-fitting coefficients
-        res = optimize.minimize(
-                    func_poly, 
-                    args=(w_norm, f_norm), 
-                    x0=[0,0,0,0,0], method='Nelder-Mead', tol=1e-8, 
-                    bounds=[(-p0_range,+p0_range),
-                            (-p0_range,+p0_range),
-                            (-p0_range,+p0_range),
-                            (-p1_range,+p1_range), 
-                            (-p2_range,+p2_range)])
-        poly_opt = res.x
+#         # Use scipy.optimize to find the best-fitting coefficients
+#         res = optimize.minimize(
+#                     func_wlen_optimization, 
+#                     args=(w_norm, f_norm, err_norm), 
+#                     x0=[0,0,0,0,0], method='Nelder-Mead', tol=1e-8, 
+#                     bounds=[(-p0_range,+p0_range),
+#                             (-p0_range,+p0_range),
+#                             (-p0_range,+p0_range),
+#                             (-p1_range,+p1_range), 
+#                             (-p2_range,+p2_range)])
+#         poly_opt = res.x
 
-        result = [f'{item:.6f}' for item in poly_opt]
+#         result = [f'{item:.6f}' for item in poly_opt]
 
-        if debug:
-            print(f"Order {o} -> Poly(x^0, x^1, x^2): {result}")
+#         if debug:
+#             print(f"Order {o} -> Poly(x^0, x^1, x^2): {result}")
 
-        for d in range(len(f)):
+#         for d in range(len(f)):
             
-            poly = [poly_opt[i] for i in [d, len(poly_opt)-2, len(poly_opt)-1]]
-            wlen_cal[d,o] = wlen_init[d] + \
-                    Poly.polyval(wlen_init[d] - np.mean(wlen_init[d]), poly)     
+#             poly = [poly_opt[i] for i in [d, len(poly_opt)-2, len(poly_opt)-1]]
+#             wlen_cal[d,o] = wlen_init[d] + \
+#                     Poly.polyval(wlen_init[d] - np.mean(wlen_init[d]), poly)     
 
-    return wlen_cal
+#     return wlen_cal
 
 
 def SpecConvolve(in_wlen, in_flux, out_res, in_res=1e6, verbose=False):
@@ -2328,14 +2618,21 @@ def get_spline_model(x_knots, x_samples, spline_degree=3):
     Compute a spline based linear model.
     If Y=[y1,y2,..] are the values of the function at the location of the node [x1,x2,...].
     np.dot(M,Y) is the interpolated spline corresponding to the sampling of the x-axis (x_samples)
-    Args:
-        x_knots: List of nodes for the spline interpolation as np.ndarray in the same units as x_samples.
+
+    Parameters
+    ----------
+    x_knots: list
+        List of nodes for the spline interpolation as np.ndarray in the same units as x_samples.
             x_knots can also be a list of ndarrays/list to model discontinous functions.
-        x_samples: Vector of x values. ie, the sampling of the data.
-        spline_degree: Degree of the spline interpolation (default: 3).
-            if np.size(x_knots) <= spline_degree, then spline_degree = np.size(x_knots)-1
-    Returns:
-        M: Matrix of size (D,N) with D the size of x_samples and N the total number of nodes.
+    x_samples: array 
+        the sampling of the data.
+    spline_degree: int
+        Degree of the spline interpolation (default: 3). 
+        if np.size(x_knots) <= spline_degree, then spline_degree = np.size(x_knots)-1
+    Returns
+    -------
+    M: array
+        Matrix of size (D,N) with D the size of x_samples and N the total number of nodes.
     """
     if type(x_knots[0]) is list or type(x_knots[0]) is np.ndarray:
         x_knots_list = x_knots
@@ -2385,6 +2682,17 @@ def stack_ragged(array_list, axis=0):
     idx = np.cumsum(lengths[:-1])
     stacked = np.concatenate(array_list, axis=axis)
     return stacked, idx
+
+
+def load_extr2D(filename):
+        data = np.load(filename)
+        D = data['FLUX']
+        V = data['FLUX_ERR']
+        P = data['MODEL']
+        id_det = data['id_det']
+        id_order = data['id_order']
+        chi2 = data['chi2']
+        return D, P, V, id_det, id_order, chi2
 
 
 def create_eso_recipe_config(eso_recipe, outpath, verbose):

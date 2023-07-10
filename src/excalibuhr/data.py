@@ -1,3 +1,5 @@
+# File: src/excalibuhr/data.py
+__all__ = ['SPEC2D']
 
 import numpy as np 
 import matplotlib.pyplot as plt 
@@ -47,8 +49,13 @@ class SPEC2D:
                     self.err = np.array(f_err)
                     self.wlen = np.array(w)
             else:
-                self.wlen, self.flux, self.err = \
-                    np.genfromtxt(filename, skip_header=1, unpack=True)
+                try:
+                    self.wlen, self.flux, self.err = \
+                        np.genfromtxt(filename, skip_header=1, unpack=True)
+                except:
+                    self.wlen, self.flux = \
+                        np.genfromtxt(filename, skip_header=1, unpack=True)
+                    self.err = None
             self.reformat_data()
         elif wlen is not None:
             self.wlen = wlen
@@ -195,9 +202,6 @@ class SPEC2D:
 
         if not np.allclose(self.wlen, spec_denominator.wlen):
             pass
-            # interp1d(spec_denominator.wlen, spec_denominator.flux, 
-            #          bounds_error=False, 
-            #                   fill_value=np.nan)
         else:
             return self._copy(flux=self.flux/spec_denominator.flux, 
                              err=self.err/spec_denominator.flux)
@@ -370,5 +374,3 @@ class SPEC2D:
             axes[-1].set_ylabel('S/N')
             plt.savefig(savename[:-4]+'_SNR.png')
             plt.close(fig)
-
-
