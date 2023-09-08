@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.abspath('../src'))
 project = 'excalibuhr'
 copyright = '2023, Yapeng Zhang'
 author = 'Yapeng Zhang'
-# release = '0.1'
+release = '0.1'
 root_doc = 'index'
 
 # -- General configuration ---------------------------------------------------

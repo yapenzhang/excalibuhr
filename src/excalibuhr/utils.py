@@ -160,7 +160,7 @@ def util_master_flat(dt, dark, collapse='median', badpix_clip=5):
 
     return master, badpix
 
-def combine_frames(dt, err, collapse='mean', clip=None, weights=None):
+def combine_frames(dt, err, collapse='mean', clip=3, weights=None):
     """
     combine multiple images or spectra with error propogation 
     
@@ -188,30 +188,35 @@ def combine_frames(dt, err, collapse='mean', clip=None, weights=None):
             master = np.nanmedian(dt, axis=0)
             master_err = np.sqrt(np.nansum(np.square(err), axis=0))/np.sum(~np.isnan(dt), axis=0)
         elif collapse == 'mean':
-            if clip is not None:
-                med = np.nanmedian(dt, axis=0)
-                std = np.nanstd(dt, axis=0)
-                mask = np.abs(dt - med) > clip * std
-                dt_masked = np.ma.masked_array(dt, mask=mask)
-                master = np.ma.mean(dt_masked, axis=0).data
-                # dt_masked = stats.sigma_clip(dt, sigma=clip, axis=0)
-                # master = np.ma.mean(dt_masked, axis=0).data
-            else:
-                master = np.nanmean(dt, axis=0)
-            master_err = np.sqrt(np.nansum(np.square(err), axis=0))/np.sum(~np.isnan(dt), axis=0)
+            # med = np.nanmedian(dt, axis=0)
+            # std = np.nanstd(dt, axis=0)
+            # mask = np.abs(dt - med) > clip * std
+            # dt_masked = np.ma.masked_array(dt, mask=mask)
+            # master = np.ma.mean(dt_masked, axis=0).data
+            dt_masked = stats.sigma_clip(dt, sigma=clip, axis=0)
+            master = np.ma.mean(dt_masked, axis=0).data
+            master_err = np.sqrt(np.nansum(np.square(err), axis=0))/np.sum(~(dt_masked.mask), axis=0)
         elif collapse == 'sum':
             master = np.nansum(dt, axis=0)
             master_err = np.sqrt(np.nansum(np.square(err), axis=0))
         elif collapse == 'weighted':
-            N_frames = np.array(dt).shape
-            dt_flat = np.reshape(dt, (N_frames[0], -1))
-            err_flat = np.reshape(err, (N_frames[0], -1))
-            # weighted by average SNR squared
-            weights = np.square(np.nanmedian(dt_flat/err_flat, axis=1))
-            master = np.dot(weights, dt_flat)/np.sum(weights)
-            master_err = np.sqrt(np.dot(weights**2, err_flat**2))/np.sum(weights)
-            master = np.reshape(master, N_frames[1:])
-            master_err = np.reshape(master_err, N_frames[1:])
+            dt_masked = stats.sigma_clip(dt, sigma=clip, axis=0)
+            # sqerr_masked = np.ma.masked_array(err, mask=dt_masked.mask)
+            master = np.ma.average(dt_masked, axis=0, weights=weights).data
+            master_err = np.sqrt(np.nansum(np.square(err), axis=0))/np.sum(~(dt_masked.mask), axis=0)
+            # master = np.ma.average(sqerr_masked, axis=0, weights=weights).data
+
+            # plt.imshow(master[0], vmin=0, vmax=100)
+            # plt.show()
+            # N_frames = np.array(dt).shape
+            # dt_flat = np.reshape(dt, (N_frames[0], -1))
+            # err_flat = np.reshape(err, (N_frames[0], -1))
+            # # weighted by average SNR squared
+            # weights = np.square(np.nanmedian(dt_flat/err_flat, axis=1))
+            # master = np.dot(weights, dt_flat)/np.sum(weights)
+            # master_err = np.sqrt(np.dot(weights**2, err_flat**2))/np.sum(weights)
+            # master = np.reshape(master, N_frames[1:])
+            # master_err = np.reshape(master_err, N_frames[1:])
 
     return master, master_err
 
@@ -1368,7 +1373,7 @@ def master_flat_norm(det, badpix, trace, slit_meta, slitlen=None, debug=False):
 
     return flat_norm, blaze, trace_update
 
-def extract_blaze(im, badpix, trace, f0=0.5, fw=0.45, sigma=3):
+def extract_blaze(im, badpix, trace, f0=0.5, fw=0.48, sigma=3):
     """
     Collpase 2D image along the cross-dispersion direction 
     in an order-by-order basis.
@@ -1454,12 +1459,12 @@ def readout_artifact(det, det_err, badpix, trace, Nborder=20, sigma=3, debug=Fal
     uppers = uppers[:-1]
     lowers = lowers[1:]
     
-    # indices_row = []
-    # for up, low in zip(uppers, lowers):
-    #     indices_row += list(range(int(up+Nborder), int(low-Nborder+1)))
+    indices_row = []
+    for up, low in zip(uppers, lowers):
+        indices_row += list(range(int(up+Nborder), int(low-Nborder+1)))
 
-    # use rows without light
-    indices_row = range(5, 40)
+    # # use rows without light
+    # indices_row = range(5, 40)
 
     im = stats.sigma_clip(det[indices_row], sigma=sigma, axis=0)
     im_err = np.ma.masked_array(det_err[indices_row], mask=im.mask)
@@ -1707,40 +1712,50 @@ def extract_spec(det, det_err, badpix, trace, slit, blaze, spec_star,
         readout+background noise associated with the input science image
     badpix: array
         bad pixel map corresponding to the input image
-    tw: array
+    trace: array
         polynomials that delineate the edge of the specific order 
     slit: array
         polynomials that describing the slit curvature 
         as a function of the dispersion axis
-    blazes: array
+    blaze: array
         1D blaze function of each order
-    gain: float
-        detector gain
-    NDIT: int
-        number of DIT exposure coadded
-    f0: float
-        location of the star on slit in pixel 
-    f1: float
-        location of the companion on slit in pixel
-    aper_half: int
-        half of extraction aperture in pixel
-    remove_star_bkg: bool
-        in case of sub-stellar companion extraction, whether remove the 
-        starlight contamination.
     spec_star: array
         in case of sub-stellar companion extraction and `remove_star_bkg=True`,
         provide the extracted stellar spectra. This will be scaled according  
         to the PSF and then removed from the science image before extracting
         the companion spectra.
+    gain: float
+        detector gain
+    NDIT: int
+        number of DIT exposure coadded
+    cen0: float
+        location of the star on slit in pixel 
+    companion_sep: float
+        angular separation of the companion on slit in pixel
+    aper_half: int
+        half of extraction aperture in pixel
+    extract_2d: bool
+        if extracting 2D spectra, the curvature of the trace will be explicitly corrected
+    interpolation: bool
+        This determines the mode of the slit curvature correction.
+        If `False`, the 2D spectra will be resampled to a normal grid to correct for the slit curvature.
+        Otherwise, it uses interpolation to speed up.
+    remove_star_bkg: bool
+        in case of sub-stellar companion extraction, whether remove the starlight contamination.
+    remove_sky_bkg: bool
+        in case of staring observations, set it to `True` to remove the sky background.
 
     Returns
     -------
-    f_opt, f_err: array
+    flux, err: array
         the extracted fluxes and their uncertainties
-    D: array
-        [2d spectral data, modeled 2d slit function, 2d spectral uncertainty]
-    chi2_r: array
-        reduced chi2 of the model (for plotting)
+    D_stack, P_stack, V_stack: array
+        2d spectral data, modeled 2d slit function, 2d spectral uncertainty
+    id_order: array
+        the output 2D data of different orders are stacked along the first axis, 
+        `id_order` contains the indices to retrieve the data of each order.
+    chi2: array
+        reduced chi2 of the model (for diagnositic purposes)
     """
 
     # Correct for the slit curvature and trace curvature
@@ -1752,34 +1767,51 @@ def extract_spec(det, det_err, badpix, trace, slit, blaze, spec_star,
         im_err = spectral_rectify_resample(det_err, badpix, trace, slit, debug=False)
     
     if extract_2d or remove_star_bkg or remove_sky_bkg:
-        filter_mode = 'median'
         dt_rect = trace_rectify_interp([im, im_err], trace, debug=False) 
         im, im_err = dt_rect
+        filter_mode = 'median' # rectifying the trace using interpolation will 
+        # introduce low frequency trend in the dispersion direction, 
+        # which need to be taken into account when modeling the psf
     else:
         filter_mode = 'poly'
 
-    xx_grid = np.arange(im.shape[1])
-    yy_trace = trace_polyval(xx_grid, trace)
-    trace_lower, trace_upper = yy_trace
+    im_subs, yy_indices = im_order_cut(im, trace)
+    im_err_subs, yy_indices = im_order_cut(im_err, trace)
+    bpm_subs, yy_indices = im_order_cut(badpix, trace)
+
+    # find out the location of the peak signal
+    obj_cen = cen0
+    if cen0 is None:
+        profile = np.nanmedian(im_subs[0], axis=1)
+        slitlen = min([len(im_sub) for im_sub in im_subs])
+        profiles = np.zeros((len(im_subs), slitlen))
+        for o, im_sub in enumerate(im_subs):
+            profiles[o] = np.nanmedian(im_sub, axis=1)[:slitlen]
+        profile = np.mean(profiles, axis=0)
+        # avoid edges
+        N_edge = 10
+        profile[:N_edge] = 0.
+        profile[-N_edge:] = 0.
+        obj_cen = np.argmax(profile)
+
 
     flux, err, D, P, V, chi2 = [],[],[],[],[],[]
-    for o, (yy_upper, yy_lower) in enumerate(zip(trace_upper, trace_lower)):
+    for o, (im_sub, im_err_sub, bpm_sub) in enumerate(zip(im_subs, im_err_subs, bpm_subs)):
+    # for o, (yy_upper, yy_lower) in enumerate(zip(trace_upper, trace_lower)):
         # Crop out the order from the frame
-        yy_upper = yy_upper[len(xx_grid)//2]
-        yy_lower = yy_lower[len(xx_grid)//2]
-        im_sub = im[int(yy_lower):int(yy_upper+1)]
-        im_err_sub = im_err[int(yy_lower):int(yy_upper+1)]
-        bpm_sub = badpix[int(yy_lower):int(yy_upper+1)]
+        # yy_upper = yy_upper[len(xx_grid)//2]
+        # yy_lower = yy_lower[len(xx_grid)//2]
+        # im_sub = im[int(yy_lower):int(yy_upper+1)]
+        # im_err_sub = im_err[int(yy_lower):int(yy_upper+1)]
+        # bpm_sub = badpix[int(yy_lower):int(yy_upper+1)]
 
-        obj_cen = cen0
-
-        if cen0 is None:
-            # find out the location of the peak signal
-            profile = np.nanmedian(im_sub, axis=1)
-            obj_cen = np.argmax(profile) 
-            # plt.plot(profile)
-            # plt.axvline(obj_cen)
-            # plt.show()
+        # if cen0 is None:
+        # #     # find out the location of the peak signal
+        # #     profile = np.nanmedian(im_sub, axis=1)
+        # #     obj_cen = np.argmax(profile) 
+        #     plt.plot(profile)
+        #     plt.axvline(obj_cen)
+        #     plt.show()
         
         if remove_sky_bkg:
             im_sub, im_err_sub = remove_skylight(
@@ -1798,7 +1830,7 @@ def extract_spec(det, det_err, badpix, trace, slit, blaze, spec_star,
         # Pixel-location of target
         if companion_sep is not None:
             obj_cen -= companion_sep
-        
+
         # Extract a 1D spectrum using the optimal extraction algorithm
         f_opt, f_err, D_sub, P_sub, V_sub, chi2_r = optimal_extraction(
                                 im_sub.T, im_err_sub.T**2, bpm_sub.T, 
@@ -1827,7 +1859,7 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
                        max_iter=30, extr_level=0.95, 
                        gain=2., NDIT=1., etol=1e-6, debug=False):
     """
-    Optimal extraction based on Horne(1986)
+    Optimal extraction based on Horne(1986).
 
     Parameters
     ----------
@@ -1852,6 +1884,7 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
         number of DIT exposure coadded
     etol: float
         The tolerance parameter to avoid division by 0
+    
     Returns
     -------
     f_opt, f_err: array
@@ -2756,28 +2789,13 @@ def create_eso_recipe_config(eso_recipe, outpath, verbose):
 
             config_text = config_text.replace(
                 "FIT_MOLEC=NULL",
-                "FIT_MOLEC=1,0,1,1,0,1",
+                "FIT_MOLEC=1,1,0,1,0,1",
             )
 
             config_text = config_text.replace(
                 "REL_COL=NULL",
                 "REL_COL=1.0,1.0,1.0,1.0,1.0,1.0",
             )
-
-            # config_text = config_text.replace(
-            #     "LIST_MOLEC=NULL",
-            #     "LIST_MOLEC=H2O,CO2,CO,CH4",
-            # )
-
-            # config_text = config_text.replace(
-            #     "FIT_MOLEC=NULL",
-            #     "FIT_MOLEC=1,1,1,1",
-            # )
-
-            # config_text = config_text.replace(
-            #     "REL_COL=NULL",
-            #     "REL_COL=1.0,1.0,1.0,1.0",
-            # )
 
             config_text = config_text.replace(
                 "MAP_REGIONS_TO_CHIP=1",
@@ -2821,7 +2839,7 @@ def create_eso_recipe_config(eso_recipe, outpath, verbose):
 
             config_text = config_text.replace(
                 "FIT_WLC=0",
-                "FIT_WLC=1",
+                "FIT_WLC=NULL",
             )
 
             config_text = config_text.replace(
@@ -2834,25 +2852,51 @@ def create_eso_recipe_config(eso_recipe, outpath, verbose):
                 "WLC_CONST=0.0",
             )
 
-            # config_text = config_text.replace(
-            #     "FIT_RES_LORENTZ=TRUE",
-            #     "FIT_RES_LORENTZ=FALSE",
-            # )
+            config_text = config_text.replace(
+                "FIT_CONTINUUM=1",
+                "FIT_CONTINUUM=NULL",
+            )
+
+            config_text = config_text.replace(
+                "CONTINUUM_N=0",
+                "CONTINUUM_N=NULL",
+            )
+
+            config_text = config_text.replace(
+                "FIT_RES_BOX=TRUE",
+                "FIT_RES_BOX=FALSE",
+            )
+
+            config_text = config_text.replace(
+                "RES_BOX=1.0",
+                "RES_BOX=0",
+            )
+
+            config_text = config_text.replace(
+                "RES_GAUSS=1.0",
+                "RES_GAUSS=3.0",
+            )
+
+            config_text = config_text.replace(
+                "RES_LORENTZ=1.0",
+                "RES_LORENTZ=0.5",
+            )
+
+            config_text = config_text.replace(
+                "FIT_RES_LORENTZ=TRUE",
+                "FIT_RES_LORENTZ=FALSE",
+            )
+
+            config_text = config_text.replace(
+                "KERNMODE=FALSE",
+                "KERNMODE=TRUE",
+            )
 
             config_text = config_text.replace(
                 "VARKERN=FALSE",
                 "VARKERN=TRUE",
             )
 
-            config_text = config_text.replace(
-                "CONTINUUM_N=0",
-                "CONTINUUM_N=1",
-            )
-
-            # config_text = config_text.replace(
-            #     "CONTINUUM_CONST=1.0",
-            #     "CONTINUUM_CONST=1000.0",
-            # )
 
         elif eso_recipe == "molecfit_calctrans":
             config_text = config_text.replace(
@@ -2877,7 +2921,7 @@ def create_eso_recipe_config(eso_recipe, outpath, verbose):
         if not verbose:
             print(" [DONE]")
 
-def molecfit(input_path, spec, wmin=None, wmax=None, verbose=False):
+def molecfit(input_path, spec, wave_range=None, savename=None, verbose=False):
     """
     A wrapper of molecfit for telluric correction
     From pycrires (see https://pycrires.readthedocs.io)
@@ -2888,10 +2932,8 @@ def molecfit(input_path, spec, wmin=None, wmax=None, verbose=False):
         the working directory for molecfit.
     spec: SPEC2D 
         input spectra for molecfit
-    wmin, wmax: list
+    wave_range: list of tuple
         list of wavelength regions to be indcluded for the telluric fitting
-        wmin contain the lower limits of the regions and 
-        wmax contain the upper limits of the regions
     verbose : bool
         Print output produced by ``esorex``.
 
@@ -2901,30 +2943,39 @@ def molecfit(input_path, spec, wmin=None, wmax=None, verbose=False):
         None
     """
     
-    target_name = "SCIENCE.fits"
+    if savename is None:
+        savename = "SCIENCE.fits"
 
     primary_hdu = fits.PrimaryHDU(header=spec.header)
 
     hdul_out = fits.HDUList([primary_hdu])
 
-    w0 = spec.wlen[:,0]
-    w1 = spec.wlen[:,-1]
-    if wmin is None or wmax is None:
-        map_chip = range(1, spec.wlen.shape[0]+1)
+    Nedge = 10 #avoid edges of the detectors
+    w0 = spec.wlen[:,Nedge]
+    w1 = spec.wlen[:,-Nedge]
+    if wave_range is None:
         wmin, wmax = w0, w1
+        map_chip = range(spec.wlen.shape[0])
     else:
-        # map input wavelength ranges to chips
-        map_chip = np.zeros(len(wmin))
-        for i, (a, b) in enumerate(zip(wmin, wmax)):
-            for j, (x0, x1) in enumerate(zip(w0, w1)):
-                if a>x0 and b<x1:
-                    map_chip[i] = j+1
-        mask = (map_chip==0)
-        wmin, wmax = np.array(wmin)[~mask], np.array(wmax)[~mask]
-        map_chip = map_chip[~mask]
+        mask = np.zeros_like(spec.wlen[:,Nedge:-Nedge])
+        for w_range in wave_range:
+            mask = np.logical_or((spec.wlen[:,Nedge:-Nedge] > w_range[0]) & 
+                                 (spec.wlen[:,Nedge:-Nedge] < w_range[1]), mask)
 
+        # find min and max wavelength of each region
+        w_masked = spec.wlen[:,Nedge:-Nedge][mask]
+        indice_split = np.diff(w_masked) > Nedge * np.max(np.diff(spec.wlen))
+        wmin = w_masked[np.append(True, indice_split)]
+        wmax = w_masked[np.append(indice_split, True)]
+
+        # map wavelength ranges to chips
+        map_chip = [np.searchsorted(w1, a) for a in wmin]
+    
+    # define flags for wavelength solution and continuum fitting
     map_ext = range(0, spec.wlen.shape[0]+1)
-    wlc_fit = np.ones_like(map_chip, dtype=int)
+    wlc_fit = np.ones_like(map_chip, dtype=int) - 1
+    cont_fit = np.ones_like(map_chip, dtype=int)
+    cont_fit_poly = np.ones_like(map_chip, dtype=int)
 
     # Loop over chips
     for i_det in range(spec.wlen.shape[0]):
@@ -2939,21 +2990,24 @@ def molecfit(input_path, spec, wmin=None, wmax=None, verbose=False):
         col3 = fits.Column(name='FLUX_ERR', format='D', array=flux_err)
         table_hdu = fits.BinTableHDU.from_columns([col1, col2, col3])
         hdul_out.append(table_hdu)
+    
     if verbose:        
         for a,b in zip(wmin, wmax): 
             plt.axvspan(a, b, alpha=0.3, color='r')
         plt.show()
+
     # Create FITS file with SCIENCE
-    file_science = os.path.join(input_path, target_name)
+    file_science = os.path.join(input_path, savename)
     hdul_out.writeto(file_science, overwrite=True)
 
     # Create FITS file with WAVE_INCLUDE
     col_wmin = fits.Column(name="LOWER_LIMIT", format="D", array=wmin)
     col_wmax = fits.Column(name="UPPER_LIMIT", format="D", array=wmax)
     col_map = fits.Column(name="MAPPED_TO_CHIP", format="I", array=map_chip)
+    col_cont = fits.Column(name="CONT_FIT_FLAG", format="I", array=cont_fit)
+    col_cont_poly = fits.Column(name="CONT_POLY_ORDER", format="I", array=cont_fit_poly)
     col_wlc = fits.Column(name="WLC_FIT_FLAG", format="I", array=wlc_fit)
-    col_cont = fits.Column(name="CONT_FIT_FLAG", format="I", array=wlc_fit)
-    columns = [col_wmin, col_wmax, col_map, col_wlc, col_cont]
+    columns = [col_wmin, col_wmax, col_map, col_cont, col_cont_poly, col_wlc]
     table_hdu = fits.BinTableHDU.from_columns(columns)
     file_wave_inc = os.path.join(input_path, "WAVE_INCLUDE.fits")
     table_hdu.writeto(file_wave_inc, overwrite=True)
@@ -3075,3 +3129,13 @@ def molecfit(input_path, spec, wmin=None, wmax=None, verbose=False):
     best_params = fits.getdata(file_best_par, 1)
     np.savetxt(os.path.join(input_path, 'BEST_FIT_PARAMETERS.txt'), 
                     best_params.tolist()[:-2], fmt='%s')
+    
+    print("Summary saved in 'BEST_FIT_PARAMETERS.txt'")
+
+    # save telluric model
+    tellu = fits.getdata(os.path.join(input_path, 'TELLURIC_DATA.fits'))
+    np.savetxt(os.path.join(input_path, 'TELLURIC_DATA.dat'),
+                np.c_[tellu['lambda']*1e3, tellu['mtrans'], 
+                    #   tellu['flux'], tellu['cflux']
+                    ],
+                    header='#Wavelength(nm) Transmission')

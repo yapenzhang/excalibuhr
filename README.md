@@ -5,12 +5,13 @@ A Python package for data reduction of high-resolution spectroscopy of exoplanet
 
 ## Documentation
 
-Documentation can be found at []().
+Documentation can be found at [https://excalibuhr.readthedocs.io/](https://excalibuhr.readthedocs.io/).
 
 
-## Attribution
+## Contributor
 
-Please cite [Zhang et al. (2023)]()  when *excalibuhr* is used in a publication.
+Yapeng Zhang
+Sam de Regt
 
 ## Contact
 
@@ -20,5 +21,5 @@ Contributions, feature requests, or bug reports are welcome through [Github page
 
 * [pycrires](https://github.com/tomasstolker/pycrires)
 
-* [cr2res pipeline]()
+* [cr2res pipeline](https://www.eso.org/sci/software/pipelines/cr2res/cr2res-pipe-recipes.html)
 

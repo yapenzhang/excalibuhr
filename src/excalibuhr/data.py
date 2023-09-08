@@ -180,7 +180,7 @@ class SPEC2D:
         splined = M_spline * self.flux[:, :, None]
         return splined, M_spline
     
-    def match_LSF(self, wlen_sharp, flux_sharp, chip_bin=3, kernel_size=50):
+    def match_LSF(self, wlen_sharp, flux_sharp, chip_bin=3, kernel_size=20):
         spec_reconst = []
         spec_sharp = interp1d(wlen_sharp, flux_sharp, bounds_error=False, 
                               fill_value=np.nanmean(flux_sharp))
@@ -242,26 +242,47 @@ class SPEC2D:
             plt.show()
         return spec
 
-    def high_pass_filter(self, sigma=201):
-        #signal.savgol_filter
+    def high_pass_filter(self, sigma=51):
+        #or signal.savgol_filter
         spec = self._copy()
         for i in range(self.Nchip):
             spec.flux[i] /= ndimage.gaussian_filter(self.flux[i], sigma=sigma)
             spec.err[i] /= ndimage.gaussian_filter(self.flux[i], sigma=sigma)
+            # spec.flux[i] -= np.nanmean(spec.flux[i])
+            # plt.plot(self.flux[i])
+            # plt.plot(ndimage.gaussian_filter(self.flux[i], sigma=sigma))
+            # plt.show()
         return spec
 
-
-    def outliers(self, spec_model, clip=3):
-        res = self._copy(flux=self.flux-spec_model.flux)
+    def get_outlier_mask(self, clip=3):
+        outlier_mask = []
         for i in range(self.Nchip):
-            filtered = stats.sigma_clip(res.flux[i], sigma=clip)
-            outlier_mask = filtered.mask
-            plt.plot(self.wlen[i], res.flux[i], 'k')
-            for w in self.wlen[i][outlier_mask]:
-                plt.axvline(w, ls=':', color='r', alpha=0.7)
-        plt.show()
+            filtered = stats.sigma_clip(self.flux[i], sigma=clip)
+            outlier_mask.append(filtered.mask | np.isnan(self.flux[i]))
+        self.mask = outlier_mask
 
-
+    # def remove_nans(self):
+    #     spec = self._copy()
+    #     w, f, f_err = [], [], []
+    #     for i in range(self.Nchip):
+    #         nans = np.isnan(self.flux[i])
+    #         w.append(self.wlen[i][~nans])
+    #         f.append(self.flux[i][~nans])
+    #         f_err.append(self.err[i][~nans])
+    #     spec.wlen = w
+    #     spec.flux = f
+    #     spec.err = f_er
+    #     return spec
+    
+    # def outliers(self, spec_model, clip=3):
+    #     res = self._copy(flux=self.flux-spec_model.flux)
+    #     for i in range(self.Nchip):
+    #         filtered = stats.sigma_clip(res.flux[i], sigma=clip)
+    #         outlier_mask = filtered.mask
+    #         plt.plot(self.wlen[i], res.flux[i], 'k')
+    #         for w in self.wlen[i][outlier_mask]:
+    #             plt.axvline(w, ls=':', color='r', alpha=0.7)
+    #     plt.show()
 
 
     def noise_stat(self, spec_model, Nbins=20):
@@ -364,7 +385,7 @@ class SPEC2D:
                 for j in range(min(3, self.wlen.shape[0]-3*i)):
                     x, y, z = self.wlen[i*3+j], self.flux[i*3+j], self.err[i*3+j]
                     ax.plot(x, y/z, 'k')
-                    nans = np.isnan(y)
+                    nans = np.isnan(y/z)
                     vmin, vmax = np.percentile((y/z)[~nans], (10, 90))
                     ymin = min(vmin, ymin)
                     ymax = max(vmax, ymax)

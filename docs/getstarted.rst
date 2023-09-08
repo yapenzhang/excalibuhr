@@ -41,7 +41,7 @@ Alternatively, the pipeline also has a method for downloading the data using the
 .. code-block:: python 
 
     username = 'yzhang' #your ESO username
-    program_id = '107.' 
+    program_id = '107.22TG' 
 
     ppl.download_rawdata_eso(login=username, prog_id=program_id)
 
@@ -79,7 +79,7 @@ This function essentially runs the following recipes:
         ppl.refine_wlen_solution()
         ppl.save_extracted_data()
 
-The extracted 1d spectra will be saved as text files to the ``out_calibrated`` folder.
+The extracted 1d spectra will be saved as text files to the ``obs_calibrated`` folder.
 
 If you need more customized reduction, please find the individual recipes explained in the
 API reference of :class:`~excalibuhr.pipeline.CriresPipeline` class.

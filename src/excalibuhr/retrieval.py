@@ -8,6 +8,7 @@ import numpy as np
 import urllib.request
 from scipy.interpolate import interp1d, splrep, splev, RegularGridInterpolator#, CubicSpline
 from scipy.ndimage import gaussian_filter
+from scipy import signal
 # from numpy.polynomial import polynomial as Poly
 from numpy.polynomial import chebyshev as Chev
 from astropy.io import fits
@@ -16,7 +17,7 @@ import pymultinest
 import corner
 import excalibuhr.utils as su 
 from excalibuhr.data import SPEC2D
-from excalibuhr.grids import TelluricGrid, StellarGrid, LimbDarkGrid
+from excalibuhr.grids import TelluricGrid, StellarGrid, LimbDarkGrid, SonoraGrid
 from petitRADTRANS import Radtrans
 from petitRADTRANS import nat_cst as nc
 from petitRADTRANS.retrieval import rebin_give_width as rgw
@@ -329,6 +330,8 @@ class Retrieval:
                 else:
                     self.obs[obs.name].append(obs)
             else:
+                if self.remove_continuum:
+                    obs = obs.high_pass_filter()
                 self.obs[obs.name] = obs
 
 
@@ -471,34 +474,68 @@ class Retrieval:
 
 
     def add_grid_PT_model(self,
+                          grid='marcs',
                           grid_path=None,
                           inhomo=False,
                           ):
-        self.PT_model = self.grid_PT_model
-
-        self.stellar_grid = StellarGrid(grid_path)
+        
         self.limb_dark_grid = LimbDarkGrid(grid_path)
 
-        teff_grid = self.stellar_grid.teff_grid
-        logg_grid = self.stellar_grid.logg_grid
-        metal_grid = self.stellar_grid.metal_grid
+        if grid == 'marcs':
+            self.PT_model = self.grid_PT_model
 
-        self.add_parameter(self.key_teff, prior=(teff_grid[0], teff_grid[-1]))
-        self.add_parameter(self.key_gravity, prior=(logg_grid[0], logg_grid[-1]))
-        self.add_parameter(self.key_metallicity, prior=(metal_grid[0], metal_grid[-1]))
+            self.PT_grid = StellarGrid(grid_path)
 
-        if inhomo:
-            self.add_parameter(self.key_teff_spot, prior=(0.8, 1.))
-            self.add_parameter(self.key_spot_coverage, prior=(0, 0.5))
+            teff_grid = self.PT_grid.teff_grid
+            logg_grid = self.PT_grid.logg_grid
+            metal_grid = self.stellar_grid.metal_grid
 
+            self.add_parameter(self.key_teff, prior=(teff_grid[0], teff_grid[-1]))
+            self.add_parameter(self.key_gravity, prior=(logg_grid[0], logg_grid[-1]))
+            self.add_parameter(self.key_metallicity, prior=(metal_grid[0], metal_grid[-1]))
+
+            if inhomo:
+                self.add_parameter(self.key_teff_spot, prior=(0.8, 1.))
+                self.add_parameter(self.key_spot_coverage, prior=(0, 0.5))
+
+        elif grid =='sonora':
+            self.PT_model = self.grid_PT_model_sonora
+
+            self.PT_grid = SonoraGrid(grid_path)
+
+            teff_grid = self.PT_grid.teff_grid
+            logg_grid = self.PT_grid.logg_grid
+
+            self.add_parameter(self.key_teff, prior=(teff_grid[0], teff_grid[-1]))
+            self.add_parameter(self.key_gravity, prior=(logg_grid[0], logg_grid[-1]))
+
+
+    def grid_PT_model_sonora(self):
+
+        self.press, self.temp = self.PT_grid.interp_PT(
+                                    self.params[self.key_teff].value, 
+                                    self.params[self.key_gravity].value
+                                    )
+
+        # interpolation of limb darkening
+        # grid_param = np.array([self.params[self.key_teff].value, 
+        #                        self.params[self.key_gravity].value,
+        #                        ])
+        self.limb = self.limb_dark_grid.interp_limb(
+                                    self.params[self.key_teff].value, 
+                                    self.params[self.key_gravity].value
+                                    )
+        self.ln_L_penalty = 0.
+        
+        return self.press, self.temp
 
     def grid_PT_model(self):
 
         grid_param = np.array([self.params[self.key_teff].value, 
                                self.params[self.key_gravity].value,
                                self.params[self.key_metallicity].value,])
-        self.temp = self.stellar_grid.interp_grid()(grid_param)[0,0]
-        self.press = self.stellar_grid.interp_grid()(grid_param)[0,1]
+        self.temp = self.PT_grid.interp_grid()(grid_param)[0,0]
+        self.press = self.PT_grid.interp_grid()(grid_param)[0,1]
 
         # interpolation of limb darkening
         self.limb = self.limb_dark_grid.interp_grid()(grid_param[:2])[0]
@@ -508,8 +545,8 @@ class Retrieval:
             grid_param = np.array([self.params[self.key_teff_spot].value, 
                                     self.params[self.key_gravity].value,
                                     self.params[self.key_metallicity].value,])
-            temp =  self.stellar_grid.interp_grid()(grid_param)[0,0]
-            press = self.stellar_grid.interp_grid()(grid_param)[0,1]
+            temp =  self.PT_grid.interp_grid()(grid_param)[0,0]
+            press = self.PT_grid.interp_grid()(grid_param)[0,1]
 
             return [self.press, press], [self.temp, temp]
 
@@ -556,14 +593,14 @@ class Retrieval:
         if self.debug:
             c2o = calc_elemental_ratio('C', 'O', 
                         calc_mass_to_mol_frac(abundances, MMW))
-            co_iso_name = []
-            for key in abundances:
-                if key.split('_')[0] == 'CO':
-                    co_iso_name.append(key)
-            co_iso_name.sort()
-            c_iso = abundances[co_iso_name[1]]/abundances[co_iso_name[0]]
             print("C/O: ", np.mean(c2o))
-            print("12CO/13CO: ", np.mean(c_iso))
+            # co_iso_name = []
+            # for key in abundances:
+            #     if key.split('_')[0] == 'CO':
+            #         co_iso_name.append(key)
+            # co_iso_name.sort()
+            # c_iso = abundances[co_iso_name[1]]/abundances[co_iso_name[0]]
+            # print("12CO/13CO: ", np.mean(c_iso))
 
         return abundances, MMW
 
@@ -761,11 +798,12 @@ class Retrieval:
                     wave_tmp = self.obs[instrument].wlen[i]
                     flux_obs = self.obs[instrument].flux[i]
                     err_obs = self.obs[instrument].err[i]
+                    # axes[0].plot(wave_tmp, flux_obs, color='r', alpha=0.8)
                     axes[0].errorbar(wave_tmp, flux_obs, err_obs, color='r', alpha=0.8)
                     axes[0].plot(wave_tmp, flux_tmp, color='k', alpha=0.8, zorder=10)
                     axes[1].plot(wave_tmp, (flux_obs-flux_tmp), color='k', alpha=0.8, zorder=10)
-        # axes[0].set_ylim(0.1, 1.2)
-        # axes[1].set_ylim(-5,5)
+        axes[0].set_ylim(-10, 10)
+        axes[1].set_ylim(-10,10)
         axes[0].set_ylabel(r'Flux')
         axes[1].set_ylabel(r'Residual')
         axes[1].set_xlabel('Wavelength (nm)')
@@ -775,6 +813,7 @@ class Retrieval:
     
 
     def apply_rot_broaden_rv_shift(self):
+
         if self.key_limb_dark_u in self.params:
             self.limb = self.params[self.key_limb_dark_u].value
         self.model_spin = {}
@@ -896,6 +935,20 @@ class Retrieval:
 
         # if self.debug:
         #     self.plot_rebin_model_debug(self.model_rebin)
+
+
+    def apply_high_pass_filter(self, sigma=51):
+        for instrument in self.obs.keys():
+            if instrument != 'photometry':
+                model_target = self.model_rebin[instrument]
+                model_tmp = []
+                for i, y_model in enumerate(model_target):
+                    y_model /= gaussian_filter(y_model, sigma=sigma)
+                    # y_model -= np.nanmean(y_model)
+                    # y_model -= signal.savgol_filter(y_model, window_length=sigma,
+                        # polyorder=2, mode='interp')
+                    model_tmp.append(y_model)
+                self.model_rebin[instrument] = np.array(model_tmp)
 
 
     def add_GP(self, mu_local_GP=None, dmu=0.3,
@@ -1039,6 +1092,8 @@ class Retrieval:
                 self.apply_rebin_to_obs_wlen()
                 if self.fit_poly:
                     self.apply_poly_continuum()
+                if self.remove_continuum:
+                    self.apply_high_pass_filter()
                 model_reduced.append(copy.copy(self.model_rebin))
             
         # draw parameter values from cube
@@ -1052,6 +1107,8 @@ class Retrieval:
         self.apply_rebin_to_obs_wlen()
         if self.fit_poly:
             self.apply_poly_continuum()
+        if self.remove_continuum:
+            self.apply_high_pass_filter()
 
 
         self.flux_scaling, self.err_infaltion, self.model_single = {}, {}, {}
@@ -1070,6 +1127,7 @@ class Retrieval:
                     for ind_sp in range(len(self.leave_out)):
                         model_single.append(model_target - model_reduced[ind_sp][instrument])
 
+                
                 obs_target = self.obs[instrument]._copy()
                 if self.fit_GP:
                     cov = self.calc_covariance(obs_target)
@@ -1090,6 +1148,13 @@ class Retrieval:
                         #     model_single[i] = np.dot(model_single[i], f_det)
 
                 if self.fit_scaling:
+                    # use one scaling factor for all orders
+                    # f_dets = self.calc_scaling(np.array(model_target).flatten(), 
+                    #                           obs_target.flux.flatten(),
+                    #                           np.array(cov).flatten())
+                    # f_dets = np.median(obs_target.flux)/np.median(model_target)
+                    # model_target *= f_dets
+
                     f_dets = np.ones(model_target.shape[:-1])
                     for i in range(obs_target.Nchip):
                         # plt.imshow(cov[i].toarray())
@@ -1128,8 +1193,10 @@ class Retrieval:
                     chi2_reduced += chi2/obs_target.flux.size
             
                 self.model_rebin[instrument] = model_target
-                self.flux_scaling[instrument] = f_dets
-                self.err_infaltion[instrument] = betas
+                if self.fit_scaling:
+                    self.flux_scaling[instrument] = f_dets
+                if self.fit_err_inflation:
+                    self.err_infaltion[instrument] = betas
                 if self.leave_out is not None:
                     self.model_single[instrument] = model_single
         
@@ -1152,11 +1219,13 @@ class Retrieval:
               press=None,
               N_t_knots=None, 
               PT_profile='free',
+              grid_name='marcs',
               chemistry='free',
               line_species_ck=None,
               fit_instrument_kernel=True,
               Lorentzian_kernel=False,
               leave_out=None,
+              remove_continuum=False,
               fit_GP=False, 
               fit_poly=1, 
               fit_scaling=True, 
@@ -1189,6 +1258,7 @@ class Retrieval:
         self.fit_instrument_kernel = fit_instrument_kernel
         self.leave_out = leave_out
         self.PT_penalty_order = PT_penalty_order
+        self.remove_continuum = remove_continuum
 
         self.add_observation(obs)
         assert self.obs, "No input observations provided"
@@ -1200,6 +1270,7 @@ class Retrieval:
             self.add_free_PT_model(N_t_knots)
         elif PT_profile == 'grid':
             self.add_grid_PT_model(inhomo=inhomogeneous,
+                                   grid=grid_name,
                                    grid_path=stellar_grid_path)
 
 
@@ -1390,11 +1461,13 @@ class Retrieval:
                 model.save_spec1d(self.prefix + f'{instrument}_best_fit_spec.dat')
         
         best_fit_params = s['modes'][0][which_best]
-        self.leave_out = ['H2O','CO_36']
+        self.leave_out = ['H2O']
         self.loglike(best_fit_params[:self.n_params], self.n_params, self.n_params)
         # plot ccf of residuals 
         for instrument in self.obs.keys():
             if instrument != 'photometry':
+                # plt.plot(self.model_single[instrument][0][-1])
+                # plt.show()
                 # self.make_ccf_plot_by_detector(self.obs[instrument], self.model_rebin[instrument], 
                 self.make_ccf_plot(self.obs[instrument], self.model_rebin[instrument], 
                                     self.model_single[instrument],
@@ -1482,7 +1555,12 @@ class Retrieval:
                     mask = (cov==0.)
                     y_err = np.array([np.sqrt(np.std(cov[r][~mask[r]])) for r in range(len(cov))])
 
-                ax.errorbar(x, y, y_err, color='k', alpha=0.8, capsize=0.5)
+                # convolve to v_spin of the target 
+                vsini = self.params[self.key_spin].value
+                y_conv = su.SpecConvolve(x, y, 2.99792458e5/vsini, 1e5)
+                ax.plot(x, y_conv, color='k', alpha=0.8)
+                # ax.errorbar(x, y, y_err, color='k', alpha=0.8, capsize=0.5)
+
                 ax_res.fill_between(x, -3*y_err, 3*y_err, color=cmap(7), alpha=0.2)
                 ax_res.fill_between(x, -y_err, y_err, color=cmap(7), alpha=0.4)
 
@@ -1496,7 +1574,7 @@ class Retrieval:
                             alpha=0.8, zorder=10)
                     ax_res.plot(x, y-y_model,  color=cmap(k), alpha=0.8)
                 nans = np.isnan(y)
-                vmin, vmax = np.percentile(y_model, (1, 99))
+                vmin, vmax = np.percentile(y_conv[~nans], (1, 99))
                 ymin, ymax = min(vmin, ymin), max(vmax, ymax)
                 rmin, rmax = np.percentile((y-y_model)[~nans], (0.1, 99.9))
 
@@ -1507,7 +1585,7 @@ class Retrieval:
             # ax.set_xticklabels([])
             ax.set_ylabel(r'Flux')
             ax_res.set_ylabel(r'Residual')
-        axes[0].legend()
+        # axes[0].legend()
         axes[-1].set_xlabel('Wavelength (nm)')
         plt.savefig(savename)
         plt.show()
@@ -1530,17 +1608,18 @@ class Retrieval:
                 wmin, wmax = obs.wlen[i*3][0], obs.wlen[min(i*3+2, obs.Nchip-1)][-1]
 
                 x, y = obs.wlen[i*3:i*3+3].flatten(), obs.flux[i*3:i*3+3].flatten()
-                # y_err = obs.err[i*3:i*3+3].flatten()
+                y_err = obs.err[i*3:i*3+3].flatten()
+
                 y_model, y_single = model[i*3:i*3+3].flatten(), y_singles[i*3:i*3+3].flatten()
-                v, ccf_order = su.CCF_doppler(x, y-y_model+y_single, 
+                v, ccf_order = su.CCF_doppler(x, y/y_err**2,#-y_model+y_single, 
                                               x, y_single-np.mean(y_single), 
                                               800, 1)
                 ccf.append(ccf_order)
                 in_range = (v > -400) & (v<-400)
-                if self.leave_out[k] == 'CO_36':
+                if self.leave_out[k] == 'H2O':
                     for j in range(min(3, obs.Nchip-3*i)):
                         axes[i,0].plot(obs.wlen[i*3+j], 
-                                       obs.flux[i*3+j]-model[i*3+j]+y_singles[i*3+j], 
+                                       obs.flux[i*3+j],#-model[i*3+j]+y_singles[i*3+j], 
                                        color='k', alpha=0.8)
                 axes[i,0].plot(x, y_single, color=cmap(k), alpha=0.8)
                 axes[i,1].plot(v, ccf_order/np.std(ccf_order[~in_range]), 
@@ -1560,6 +1639,9 @@ class Retrieval:
         plt.savefig(savename)
         plt.show()
         plt.close(fig)
+        
+        plt.plot(v, np.sum(ccf[:-1], axis=0))
+        plt.show()
 
 
     def make_ccf_plot_by_detector(self, obs, model, model_single, savename):

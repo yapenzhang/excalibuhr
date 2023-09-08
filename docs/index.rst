@@ -20,6 +20,14 @@ It has an end-to-end pipeline for VLT/CRIRES+, and will be extended to other sim
 
 .. Please cite  `Zhang et al. (2023) <>`_  when *excalibuhr*  is used in a publication.
 
+
+Contributor
+-------------
+
+Yapeng Zhang
+Sam de Regt
+
+
 Contact
 -------------
 

@@ -104,6 +104,7 @@ class CriresPipeline:
                     'key_wave_cen': 'ESO INS WLEN CENY', 
                     'key_wlen': 'ESO INS WLEN ID',
                     'key_caltype': 'CAL TYPE',
+                    'key_snr': 'SNR',
                             }
         for par in self.header_keys.keys():
             setattr(self, par, self.header_keys[par])
@@ -295,7 +296,7 @@ class CriresPipeline:
         self.calib_info.to_csv(self.calib_file, index=False, sep=';')
 
 
-    def _add_to_product(self, file, prod_type):
+    def _add_to_product(self, file, prod_type, snr=None):
         """
         Internal method for adding details of data products
         to the DataFrame and text file.
@@ -325,6 +326,7 @@ class CriresPipeline:
             calib_dict[key_item] = [header.get(key_item)]
         calib_dict[self.key_caltype] = [prod_type]
         calib_dict[self.key_filename] = [file]
+        calib_dict[self.key_snr] = [snr]
         calib_append = pd.DataFrame(data=calib_dict)
         calib_append.to_csv(self.product_file, index=False, mode='a', header=False, sep=';')
         
@@ -1116,15 +1118,19 @@ class CriresPipeline:
             
 
     @print_runtime
-    def obs_nodding(self):
+    def obs_nodding(self, mode=None):
         """
         Method for processing nodding frames. Apply AB pair subtraction,
         readout artifacts correction, and flat fielding.
 
         Parameters
         ----------
-        debug : bool
-            generate plots for debugging.
+        mode : str
+            Specify the way of sky background subtraction. If `mode='nod'`, it uses 
+            the two nodding positions to remove background. If `mode='stare'`,
+            the A and B nodding frames will be treated separately. By default, the 
+            code read from the data header to determine the mode. It is necessary 
+            to use this parameter only if one needs to force a specific mode.
 
         Returns
         -------
@@ -1225,23 +1231,31 @@ class CriresPipeline:
                     else:
                         print(f"Number of A and B files: {nod_a_count, nod_b_count}")
 
-                    if self.header_info[indices_nod_A][self.key_nabcycle].iloc[0] == 0:
+                    if self.header_info[indices_nod_A][self.key_nabcycle].iloc[0] == 0 \
+                                        or mode == 'stare':
                         # staring mode
                         indices_dark = (self.calib_info[self.key_caltype] == "DARK_MASTER") \
                                     & (self.calib_info[self.key_DIT] == item_dit)
+
+                        if np.sum(indices_dark) < 1:
+                            warnings.warn(f"No MASTER DARK frame found with the DIT value {item_dit}s corresponding to that of science data")
+                            self._download_archive("DARK", item_dit)
+                        
+                        indices_dark = (self.calib_info[self.key_caltype] == "DARK_MASTER") \
+                                    & (self.calib_info[self.key_DIT] == item_dit)
                         file = self.calib_info[indices_dark][self.key_filename].iloc[0]
-                        dark = fits.getdata(os.path.join(self.calpath, file))
+                        dark = fits.getdata(os.path.join(self.calpath, file)) 
 
                         indices_ron = (self.calib_info[self.key_caltype] == "DARK_RON") \
                                     & (self.calib_info[self.key_DIT] == item_dit)
                         file_ron = self.calib_info[indices_ron][self.key_filename].iloc[0]
-                        ron = fits.getdata(os.path.join(self.calpath, file_ron))
+                        ron = fits.getdata(os.path.join(self.calpath, file_ron)) 
                         
                         for i in range(df_nods.shape[0]):
                             filename = df_nods[self.key_filename].iloc[i]
                             job = pool.apply_async(self._process_staring, 
                                                 args=(filename, flat, bpm, 
-                                                    tw, slit, dark, ron, object, item_wlen))
+                                                    tw, dark, ron, object, item_wlen))
                             pool_jobs.append(job)
                     else:
                         # nodding mode
@@ -1370,7 +1384,7 @@ class CriresPipeline:
                         f"{object}_NODDING_FRAME_{item_wlen}", frame_bkg_cor)
     
 
-    def _process_staring(self, file, flat, bpm, tw, slit, dark, ron, object, item_wlen):
+    def _process_staring(self, file, flat, bpm, tw, dark, ron, object, item_wlen):
 
         frame, frame_err = [], []
         with fits.open(os.path.join(self.rawpath, file)) as hdu:
@@ -1388,6 +1402,7 @@ class CriresPipeline:
         frame_bkg_cor, err_bkg_cor = su.combine_frames(
                             [frame, -dark], [frame_err, ron], 
                             collapse='sum')
+
         
         # correct vertical strips due to readout artifacts
         result = self._loop_over_detector(su.readout_artifact, False,
@@ -1397,12 +1412,6 @@ class CriresPipeline:
         # Apply the flat-fielding
         frame_bkg_cor, err_bkg_cor = su.flat_fielding(
                             frame_bkg_cor, err_bkg_cor, flat)
-
-        # # remove sky background 
-        # result = self._loop_over_detector(su.sky_background, False,
-        #                     frame_bkg_cor, err_bkg_cor, bpm, tw, slit,
-        #                     frac_mask=0.25, slitlen=slitlen)
-        # frame_bkg_cor, err_bkg_cor = result 
         
         file_s = file.split('_')[-1]
         file_name = os.path.join(self.noddingpath, 
@@ -1422,10 +1431,19 @@ class CriresPipeline:
     
 
     @print_runtime
-    def obs_nodding_combine(self, clip=3):
+    def obs_nodding_combine(self, combine_mode='mean', clip=3):
         """
-        Method for combining multiple nodding exposures to single A or B farme.
+        Method for combining multiple nodding exposures to single A or B frame.
 
+        Parameters
+        ----------
+        combine_mode: str
+            the way of combining frames: `mean`, `median`, or `weighted`.
+            `weighted` applys a weighted average by the mean SNR squared of each 
+            exposure, which is estimated using the extratced spectrum of the target. 
+        clip: int
+            sigma clipping threshold for rejecting bad pixels
+        
         Returns
         -------
         NoneType
@@ -1436,8 +1454,16 @@ class CriresPipeline:
 
         self.noddingpath = os.path.join(self.outpath, "obs_nodding")
         
+        self.product_info = pd.read_csv(self.product_file, sep=';')
+        
+        if combine_mode == 'weighted':
+            print("Estimate SNR of individual exposures from extracted spectra:")
+            savename = 'TMP'
+            self.obs_extract(caltype='NODDING_FRAME', savename=savename)
+
         # get updated product info
         self.product_info = pd.read_csv(self.product_file, sep=';')
+
 
         # Select the obs_nodding observations
         indices = (self.product_info[self.key_caltype] == 'NODDING_FRAME')
@@ -1467,19 +1493,22 @@ class CriresPipeline:
                 indices_wlen = indices_obj & \
                             (self.product_info[self.key_wlen] == item_wlen)
 
-                indices_tw = (self.calib_info[self.key_caltype] == "TRACE_TW") \
-                           & (self.calib_info[self.key_wlen] == item_wlen)
+                # indices_tw = (self.calib_info[self.key_caltype] == "TRACE_TW") \
+                #            & (self.calib_info[self.key_wlen] == item_wlen)
 
-                file = self.calib_info[indices_tw][self.key_filename].iloc[0]
-                tw = fits.getdata(os.path.join(self.calpath, file))
+                # file = self.calib_info[indices_tw][self.key_filename].iloc[0]
+                # tw = fits.getdata(os.path.join(self.calpath, file))
 
                 # Loop over the nodding positions
                 INT_total = 0.
                 for pos in ['A', 'B']:
+                    # combine the images for each nodding position
+                    print('\nFilename; SNR')
+                    
                     indices_pos = indices_wlen & \
                             (self.product_info[self.key_nodpos] == pos)
                     
-                    frames, frames_err = [], []
+                    frames, frames_err, snrs = [], [], []
                     # Loop over the observations at each nodding position
                     for j, file in enumerate(
                             self.product_info[indices_pos][self.key_filename]):
@@ -1495,13 +1524,28 @@ class CriresPipeline:
                                     int(np.round(hdr[self.key_jitter]/self.pix_scale)))
                             frames.append(dt)
                             frames_err.append(dt_err)
-
-                    # Mean-combine the images for each nodding position
+                        
+                        # get signal to noise ratio of the observation
+                        if combine_mode == 'weighted':
+                            name_tmp = file.split('/')
+                            name_tmp[1] = '_'.join(['Extr1D_PRIMARY', savename, name_tmp[1]])
+                            indice_snr = (self.product_info[self.key_filename] == '/'.join(name_tmp) )
+                            snr = self.product_info[indice_snr][self.key_snr].iloc[0]
+                            snrs.append(snr)
+                            print(f"{file}; {snr}")
+                    
                     print("\nCombining {0:d} frames at nodding".format(j+1),
                          f"position {pos}")
+
+                    if combine_mode == 'weighted':
+                        weights = np.square(snrs)
+                    else:
+                        weights = None
+
                     combined, combined_err = su.combine_frames(
                                         frames, frames_err, 
-                                        collapse='mean', clip=clip)
+                                        collapse=combine_mode, clip=clip,
+                                        weights=weights)
                     
                     # Save the combined obs_nodding observation
                     file_name = os.path.join(self.noddingpath, 
@@ -1523,7 +1567,9 @@ class CriresPipeline:
 
 
     @print_runtime
-    def obs_extract(self, caltype='NODDING_COMBINED', object=None,
+    def obs_extract(self, caltype='NODDING_COMBINED', 
+                          object=None,
+                          savename='',
                           peak_frac=None, companion_sep=None, 
                           remove_star_bkg=False, 
                           std_object=None,
@@ -1538,8 +1584,7 @@ class CriresPipeline:
         Parameters
         ----------
         caltype: str
-            Label of the file type to worked on: 
-            `NODDING_COMBINED`, `NODDING_FRAME`, or `STARING`.
+            Label of the file type to worked on: `NODDING_COMBINED` or `NODDING_FRAME`.
         peak_frac: dict
             the fraction of target signal along the slit at A and B 
             nodding position (`frac`=0 at the bottom, and 1 at the top) 
@@ -1632,7 +1677,7 @@ class CriresPipeline:
                                                 peak_frac, aper_prim, aper_comp, 
                                                 None, False, False, 
                                                 remove_sky_bkg, interpolation, 
-                                                debug))
+                                                savename, debug))
                         pool_jobs.append(job)
                 else:
                     for file in self.product_info[indices_wlen][self.key_filename]:
@@ -1641,7 +1686,7 @@ class CriresPipeline:
                                                 peak_frac, aper_prim, aper_comp, 
                                                 companion_sep, remove_star_bkg,
                                                 extract_2d, remove_sky_bkg, 
-                                                interpolation, debug))
+                                                interpolation, savename, debug))
                         pool_jobs.append(job)
         
         for job in pool_jobs:
@@ -1651,7 +1696,7 @@ class CriresPipeline:
                             peak_frac, aper_prim, aper_comp, 
                             companion_sep, remove_star_bkg, 
                             extract_2d, remove_sky_bkg, 
-                            interpolation, debug):
+                            interpolation, savename, debug):
         with fits.open(os.path.join(self.outpath, file)) as hdu:
             hdr = hdu[0].header
             dt = hdu["FLUX"].data
@@ -1675,21 +1720,31 @@ class CriresPipeline:
                         aper_half=aper_prim, debug=debug)
         flux_pri, err_pri, D, P, V, id_order, chi2_r = result
 
+        #estimate snr of the primary spectra at the middle order
+        mid_order = len(flux_pri[0])//2
+        # snr_mid = np.nanmean(np.array(flux_pri)[:, mid_order ,:])
+        snr_mid = np.nanmean(np.array(flux_pri)[:, mid_order ,:]/np.array(err_pri)[:, mid_order ,:]).astype(int)
 
         paths = file.split('/')
-        paths[-1] = 'Extr1D_PRIMARY_' + paths[-1]
+        paths[-1] = '_'.join(['Extr1D_PRIMARY', savename, paths[-1]])
         filename = os.path.join(self.outpath, '/'.join(paths))
         su.wfits(filename, ext_list={"FLUX": flux_pri, 
                                 "FLUX_ERR": err_pri}, header=hdr)
-        self._add_to_product('/'.join(paths), "Extr1D_PRIMARY")
+        if savename == '':
+            self._add_to_product('/'.join(paths), 'Extr1D_PRIMARY', snr_mid)
+        else:
+            self._add_to_product('/'.join(paths), '_'.join(['Extr1D_PRIMARY', savename]), snr_mid)
         self._plot_spec_by_order(filename, flux_pri)
         
         if extract_2d:
             paths = file.split('/')
-            paths[-1] = 'Extr2D_PRIMARY_' + paths[-1][:-5]
+            paths[-1] =  '_'.join(['Extr2D_PRIMARY', savename, paths[-1][:-5]])
             filename2d = os.path.join(self.outpath, '/'.join(paths))
             self._save_extr2D(filename2d, D, P, V, id_order, chi2_r)
-            self._add_to_product('/'.join(paths)+'.npz', "Extr2D_PRIMARY")
+            if savename == '':
+                self._add_to_product('/'.join(paths)+'.npz', 'Extr2D_PRIMARY')
+            else:
+                self._add_to_product('/'.join(paths)+'.npz', '_'.join(['Extr2D_PRIMARY', savename]))
             self._plot_extr_model(filename2d)
 
         if not companion_sep is None:
@@ -1708,18 +1763,24 @@ class CriresPipeline:
             flux_sec, err_sec, D, P, V, id_order, chi2_r = result
 
             paths = file.split('/')
-            paths[-1] = 'Extr1D_SECONDARY_' + paths[-1]
+            paths[-1] = '_'.join(['Extr1D_SECONDARY', savename, paths[-1]])
             filename = os.path.join(self.outpath, '/'.join(paths))
             su.wfits(filename, ext_list={"FLUX": flux_sec, 
                                     "FLUX_ERR": err_sec}, header=hdr)
-            self._add_to_product('/'.join(paths), "Extr1D_SECONDARY")
+            if savename == '':
+                self._add_to_product('/'.join(paths), 'Extr1D_SECONDARY')
+            else:
+                self._add_to_product('/'.join(paths), '_'.join(['Extr1D_SECONDARY', savename]))
             self._plot_spec_by_order(filename, flux_sec)
             
             paths = file.split('/')
-            paths[-1] = 'Extr2D_SECONDARY_' + paths[-1][:-5]
+            paths[-1] = '_'.join(['Extr2D_SECONDARY', savename, paths[-1][:-5]])
             filename2d = os.path.join(self.outpath, '/'.join(paths))
             self._save_extr2D(filename2d, D, P, V, id_order, chi2_r)
-            self._add_to_product('/'.join(paths)+'.npz', "Extr2D_SECONDARY")
+            if savename == '':
+                self._add_to_product('/'.join(paths)+'.npz', 'Extr2D_SECONDARY')
+            else:
+                self._add_to_product('/'.join(paths)+'.npz', '_'.join(['Extr2D_SECONDARY', savename]))
             self._plot_extr_model(filename2d)
 
 
@@ -1947,7 +2008,8 @@ class CriresPipeline:
                         err_series.append(np.reshape(errs[:,i,:,:,:], (-1, npixel))[indice_sort])
                     spec_series = np.array(spec_series)
                     err_series = np.array(err_series)
-                    snr_mid = np.mean((spec_series/err_series)[:,wlens.shape[0]//2,:])
+                    snr_mid = np.mean((spec_series/err_series)[:,wlens.shape[0]//2,:], axis=1)
+
 
                 l = label.split('_')[-1]
                 file_name = os.path.join(self.corrpath, 
@@ -2079,7 +2141,7 @@ class CriresPipeline:
 
     @print_runtime
     def run_molecfit(self, data_type=None, object=None,
-                        wmin=None, wmax=None, verbose=False) -> None:
+                        wave_range=None, verbose=False) -> None:
         """
         Method for running ESO's tool for telluric correction 
         `Molecfit`. 
@@ -2108,11 +2170,11 @@ class CriresPipeline:
 
         # Create the molecfit directory if it does not exist yet
         self.molpath = os.path.join(self.outpath, "molecfit")
-        input_path = os.path.join(self.molpath, "input")
+        # input_path = os.path.join(self.molpath, "input")
         if not os.path.exists(self.molpath):
             os.makedirs(self.molpath)
-        if not os.path.exists(input_path):
-            os.makedirs(input_path)
+        # if not os.path.exists(input_path):
+        #     os.makedirs(input_path)
 
         # get updated product info
         self.product_info = pd.read_csv(self.product_file, sep=';')
@@ -2129,8 +2191,10 @@ class CriresPipeline:
         dt = SPEC2D(filename=os.path.join(self.outpath, science_file))
         dt.wlen *= 1e-3
 
-        su.molecfit(input_path, dt, wmin, wmax, 
-                    target_name=science_file.split('/')[-1], verbose=True)
+        su.molecfit(self.molpath, dt, wave_range, 
+                    savename=science_file.split('/')[-1], verbose=True)
+
+        self._add_to_product('molecfit/TELLURIC_DATA.dat', "TELLU_MOLECFIT")
 
 
     @print_runtime
@@ -2158,13 +2222,13 @@ class CriresPipeline:
         # get updated product info
         self.product_info = pd.read_csv(self.product_file, sep=';')
 
-        indices_tellu = (self.product_info[self.key_caltype] == 'TELLU')
+        indices_tellu = (self.product_info[self.key_caltype] == 'TELLU_MOLECFIT')
         if sum(indices_tellu) < 1:
             raise Exception("No telluric model found")
 
-        tellu = fits.getdata(os.path.join(self.outpath, 
+        tellu = np.genfromtxt(os.path.join(self.outpath, 
             self.product_info[indices_tellu][self.key_filename].iloc[0]))
-        mwlen, mtrans = tellu
+        mwlen, mtrans = tellu[:,0], tellu[:,1]
 
         indices = np.zeros_like(indices_tellu, dtype=bool)
         for data_type in ['SPEC_PRIMARY', 'SPEC_SECONDARY']:
@@ -2189,6 +2253,8 @@ class CriresPipeline:
 
 
     def run_recipes(self, combine=False,
+                    combine_mode='mean',
+                    savename='',
                     companion_sep=None, 
                     remove_star_bkg=False, 
                     aper_prim=20, aper_comp=10,
@@ -2221,7 +2287,7 @@ class CriresPipeline:
         self.obs_nodding()
 
         if combine:
-            self.obs_nodding_combine()
+            self.obs_nodding_combine(combine_mode=combine_mode)
             input_type = 'NODDING_COMBINED'
         else:
             input_type = 'NODDING_FRAME'
@@ -2235,6 +2301,7 @@ class CriresPipeline:
                         extract_2d=extract_2d,
                         std_object=std_object,
                         debug=debug,
+                        savename=savename,
                         )
         
         self.refine_wlen_solution(object=std_object)
@@ -2246,7 +2313,7 @@ class CriresPipeline:
             self.apply_telluric_correction()
 
 
-    def preprocessing(self):
+    def preprocessing(self, combine=False, combine_mode='mean'):
         """
         Method for running the full chain of recipes.
 
@@ -2269,93 +2336,7 @@ class CriresPipeline:
         self.cal_slit_curve()
         self.cal_flat_norm()
         self.obs_nodding()
-    
 
+        if combine:
+            self.obs_nodding_combine(combine_mode=combine_mode)
 
-# def CombineNights(workpath, night_list, object=None, tellu_corrected=False, collapse='weighted'):
-#     """
-#     Method for combining 1D spectra from different nights of
-#     observations and writting to `.dat` files.
-
-#     Parameters
-#     ----------
-#     workpath: str
-#         base directory including folders of different nights
-#     night_list: str
-#         nights to combine
-#     object: str
-#         name of the target
-#     collapse: str
-#         the way of adding individual spectrum. It can be `mean`: 
-#         simple average, or `weighted` average: weighted by the 
-#         median S/N of each spectra.
-        
-#     Returns
-#     -------
-#     NoneType
-#         None
-#     """
-    
-
-#     from scipy.interpolate import interp1d
-
-#     datapath = os.path.join(workpath, 'DATA')
-#     if not os.path.exists(datapath):
-#         os.makedirs(datapath)
-
-    
-#     if tellu_corrected:
-#         app = "_TELLURIC_CORR.dat"
-#     else:
-#         app = ".dat"
-
-#     for target in ['SECONDARY', 'PRIMARY']:
-#         specs = []
-#         for night in night_list:
-#             if object is None:
-#                 names = f"*{target}*{app}"
-#             else:
-#                 names = f"{object}*{target}*{app}"
-
-#             corrpath = os.path.join(workpath, night, 'out', "obs_calibrated")
-#             bkg_list = glob.glob(os.path.join(corrpath, names))
-#             for filename in bkg_list:
-#                 specs.append(np.genfromtxt(filename, skip_header=1))
-#         if len(specs)<1:
-#             continue
-#         specs = np.array(specs)
-
-#         # interpolate to the common wavelength grid
-#         wlen_grid = specs[-1,:,3]
-#         wlens = specs[:,:,0]
-#         fluxes = specs[:,:,1]
-#         errs = specs[:,:,2]
-#         fluxes_grid = np.zeros_like(fluxes)
-#         errs_grid = np.zeros_like(errs)
-#         for i in range(specs.shape[0]):
-#             mask = np.isnan(fluxes[i]) | np.isnan(errs[i])
-#             fluxes_grid[i] = interp1d(wlens[i][~mask], 
-#                                     fluxes[i][~mask], 
-#                                     kind='cubic', 
-#                                     bounds_error=False, 
-#                                     fill_value=np.nan
-#                                     )(wlen_grid)
-#             errs_grid[i] = interp1d(wlens[i][~mask], 
-#                                     errs[i][~mask], 
-#                                     kind='cubic', 
-#                                     bounds_error=False, 
-#                                     fill_value=np.nan
-#                                     )(wlen_grid)
-
-#         # combine spectra
-#         master, master_err = su.combine_frames(fluxes_grid, 
-#                                 errs_grid, collapse=collapse)
-
-#         if object is None:
-#             object = filename.split('/')[-1].split('_')[0].replace(" ", "")
-#         file_name = os.path.join(datapath, f'SPEC_{object}_{target}.dat')
-#         header = "Wlen(nm) Flux Flux_err"
-#         np.savetxt(file_name, np.c_[wlen_grid, master, master_err], 
-#                     header=header)
-
-#         print(f"Output file -> {file_name}")

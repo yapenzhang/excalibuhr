@@ -3,7 +3,7 @@ import sys
 import glob
 import numpy as np 
 from astropy.io import fits
-from telfit import Modeler
+# from telfit import Modeler
 import excalibuhr.utils as su
 from scipy.interpolate import RegularGridInterpolator
 
@@ -190,6 +190,82 @@ class TelluricGrid:
     
 
 
+class SonoraGrid:
+    """
+    Sonora brown dwarf and substellar model grid downloaded from
+    https://zenodo.org/record/5063476#.Y7QLg3aZPEY
+    
+    """
+
+    def __init__(self, gridpath=None):
+
+        if gridpath is None:
+            gridpath = os.path.dirname(os.path.abspath(__file__))
+            gridpath = os.path.join(gridpath, '../', '../', 'data')
+
+        self.gridpath = gridpath
+
+        # Set parameter ranges of the grid
+        self.teff_grid = np.arange(200, 600, 25) 
+        self.teff_grid = np.append(self.teff_grid, np.arange(600, 1000, 50))
+        self.teff_grid = np.append(self.teff_grid, np.arange(1000, 2500, 100))
+
+        self.gravity_grid = np.array([10, 17, 31, 56, 100, 178, 316, 562, 1000, 1780, 3160])
+        self.logg_grid = np.log10(np.array([10, 17, 31, 56, 100, 178, 316, 562, 1000, 1780, 3160])*1e2)
+
+        # self.metal_grid = np.array([0, 0.25, 0.5, 0.75, 1.0])
+
+        try:
+            self.load_grid()
+        except:
+            self.make_grid()
+            self.load_grid()
+
+
+    def make_grid(self):
+        print("Generate grid profiles...")
+        nlayer = 91
+        ncolumn = 2 #t, p
+        grid = np.zeros((len(self.teff_grid), 
+                               len(self.gravity_grid), 
+                            #    len(self.metal_grid), 
+                               ncolumn, nlayer))
+        for i, teff in enumerate(self.teff_grid):
+            for j, grav in enumerate(self.gravity_grid):
+                # for k, z in enumerate(self.metal_grid):
+                    if grav == 10:
+                        filename = f't{teff:.0f}g{grav:.0f}nc_m+0.0.dat'
+                    else:
+                        filename = f't{teff:.0f}g{grav:.0f}nc_m0.0.dat'
+                    filename = os.path.join(self.gridpath, filename)
+                    if not os.path.exists(filename):
+                        raise Exception(f"Model file {filename} not found.")
+                    pt = np.genfromtxt(filename, skip_header=1)
+                    t = pt[:,2]
+                    p = pt[:,1]
+                    grid[i,j,:] = [t, p]
+
+        np.save(os.path.join(self.gridpath,'sonora_PT_grid'), grid)
+
+    def load_grid(self):
+        filename = os.path.join(self.gridpath, 'sonora_PT_grid.npy')
+        file = glob.glob(filename)
+        print(f"Load sonora grid profiles from {filename}...")
+        self.grid = np.load(file[0])
+        
+    def interp_grid(self):
+        interp = RegularGridInterpolator(
+                    (self.teff_grid, self.gravity_grid), 
+                    self.grid, bounds_error=False, fill_value=None)
+        return interp
+    
+    def interp_PT(self, teff, logg):
+        pt = self.interp_grid()([teff, 1e1**logg*1e-2])
+        t = pt[0,0]
+        p = pt[0,1]
+        return p, t
+
+
 class StellarGrid:
     """
     MARCS stellar LTE model grid downloaded from
@@ -299,3 +375,10 @@ class LimbDarkGrid:
         interp = RegularGridInterpolator((self.teff_grid, self.logg_grid), 
                             self.grid, bounds_error=False, fill_value=None)
         return interp
+    
+    def interp_limb(self, teff, logg):
+        teff = max(teff, self.teff_grid[-1])
+        teff = min(teff, self.teff_grid[0])
+        logg = max(logg, self.logg_grid[-1])
+        logg = min(logg, self.logg_grid[0])
+        return self.interp_grid()([teff, logg])[0]
