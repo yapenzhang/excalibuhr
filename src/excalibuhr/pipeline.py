@@ -411,7 +411,9 @@ class CriresPipeline:
             date_obs = self.header_info[indices][self.key_obsdate].iloc[0]
 
             # Sequence of five days before and after the observation
-            time_steps = [0.0, -1.0, 1.0, -2.0, 2, -3.0, 3.0, -4.0, 4.0, -5.0, 5.0]
+            time_steps = [0.0, -1.0, 1.0, -2.0, 2, -3.0, 3.0, -4.0, 4.0, 
+                          -5.0, 5.0, -6.0, 6.0, -7.0, 7.0, -8.0, 8.0,
+                          -9.0, 9.0, -10.0, 10.0]
             obs_time = t.Time(date_obs) + np.array(time_steps) * u.day
 
             # Login at ESO archive
@@ -544,11 +546,17 @@ class CriresPipeline:
             if not slit is None:
                 trace = tw[i]
                 slit_meta, x_fpets = slit[i], x_fpet[i]
-                im_subs, yy_indices, xx_shifts = su.im_order_cut(im, trace, slit_meta)
-                for (yy, x_model, x_peak) in zip(yy_indices, xx_shifts, x_fpets):
-                    for x in x_peak:
-                        xs = x - x_model
-                        ax.plot(xs, yy, ':r', zorder=9)
+                im_subs, yy_indices = su.im_order_cut(im, trace)
+                yy_poly = su.slit_polyval(x_fpets, slit_meta)
+                for (poly, x_peak, yy) in zip(yy_poly, x_fpets, yy_indices):
+                    for x, p in zip(x_peak, poly):
+                        x_model = Poly.polyval(yy, p)
+                        ax.plot(x_model, yy, ':r', zorder=9)
+
+                # for (yy, x_model, x_peak) in zip(yy_indices, xx_shifts, x_fpets):
+                #     for x in x_peak:
+                #         xs = x - x_model
+                #         ax.plot(xs, yy, ':r', zorder=9)
             ax.set_title(f"Detector {i}", size='large', fontweight='bold')
 
         plt.suptitle(title)
@@ -1503,7 +1511,6 @@ class CriresPipeline:
                 INT_total = 0.
                 for pos in ['A', 'B']:
                     # combine the images for each nodding position
-                    print('\nFilename; SNR')
                     
                     indices_pos = indices_wlen & \
                             (self.product_info[self.key_nodpos] == pos)
@@ -1532,7 +1539,7 @@ class CriresPipeline:
                             indice_snr = (self.product_info[self.key_filename] == '/'.join(name_tmp) )
                             snr = self.product_info[indice_snr][self.key_snr].iloc[0]
                             snrs.append(snr)
-                            print(f"{file}; {snr}")
+                            print(f"{file}: SNR={snr}")
                     
                     print("\nCombining {0:d} frames at nodding".format(j+1),
                          f"position {pos}")
@@ -1572,10 +1579,10 @@ class CriresPipeline:
                           savename='',
                           peak_frac=None, companion_sep=None, 
                           remove_star_bkg=False, 
+                          remove_sky_bkg = False,
                           std_object=None,
                           aper_prim=15, aper_comp=10, 
                           extract_2d=False,
-                          interpolation=True,
                           debug=False):    
         """
         Method for extracting. Apply AB pair subtraction,
@@ -1631,9 +1638,6 @@ class CriresPipeline:
             if self.product_info[indices_obj][self.key_nabcycle].iloc[0] == 0:
                 # staring mode, need to remove sky background
                 remove_sky_bkg = True
-            else:
-                remove_sky_bkg = False
-
 
             # Check unique WLEN setting
             unique_wlen = set()
@@ -1676,7 +1680,7 @@ class CriresPipeline:
                                             args=(file, bpm, tw, slit, blaze, 
                                                 peak_frac, aper_prim, aper_comp, 
                                                 None, False, False, 
-                                                remove_sky_bkg, interpolation, 
+                                                remove_sky_bkg, 
                                                 savename, debug))
                         pool_jobs.append(job)
                 else:
@@ -1686,7 +1690,7 @@ class CriresPipeline:
                                                 peak_frac, aper_prim, aper_comp, 
                                                 companion_sep, remove_star_bkg,
                                                 extract_2d, remove_sky_bkg, 
-                                                interpolation, savename, debug))
+                                                savename, debug))
                         pool_jobs.append(job)
         
         for job in pool_jobs:
@@ -1696,7 +1700,7 @@ class CriresPipeline:
                             peak_frac, aper_prim, aper_comp, 
                             companion_sep, remove_star_bkg, 
                             extract_2d, remove_sky_bkg, 
-                            interpolation, savename, debug):
+                            savename, debug):
         with fits.open(os.path.join(self.outpath, file)) as hdu:
             hdr = hdu[0].header
             dt = hdu["FLUX"].data
@@ -1715,8 +1719,7 @@ class CriresPipeline:
                         su.extract_spec, False,
                         dt, dt_err, bpm, tw, slit, blaze, blaze, 
                         self.gain, NDIT=ndit, extract_2d=extract_2d,
-                        cen0=f0, interpolation=interpolation,
-                        remove_sky_bkg=remove_sky_bkg, 
+                        cen0=f0, remove_sky_bkg=remove_sky_bkg, 
                         aper_half=aper_prim, debug=debug)
         flux_pri, err_pri, D, P, V, id_order, chi2_r = result
 
@@ -1894,9 +1897,6 @@ class CriresPipeline:
             wlen_cal = self._loop_over_detector(su.wlen_solution, True,
                         dt, dt_err, wlen_init, transm_spec=tellu, 
                         debug=debug)
-            # wlen_cal = su.wlen_solution_crires(
-            #             dt, dt_err, wlen_init, transm_spec=tellu,
-            #             debug=debug)
 
             # print("\n Output files:")
             file_name = os.path.join(self.corrpath, f'WLEN_{item_wlen}.fits')
@@ -2254,6 +2254,7 @@ class CriresPipeline:
 
     def run_recipes(self, combine=False,
                     combine_mode='mean',
+                    obs_mode=None,
                     savename='',
                     companion_sep=None, 
                     remove_star_bkg=False, 
@@ -2284,7 +2285,7 @@ class CriresPipeline:
         self.cal_flat_trace()
         self.cal_slit_curve()
         self.cal_flat_norm()
-        self.obs_nodding()
+        self.obs_nodding(mode=obs_mode)
 
         if combine:
             self.obs_nodding_combine(combine_mode=combine_mode)
@@ -2292,12 +2293,16 @@ class CriresPipeline:
         else:
             input_type = 'NODDING_FRAME'
 
+        if obs_mode == 'stare':
+            remove_sky_bkg = True
+
         self.obs_extract(
                         caltype=input_type,
                         aper_prim=aper_prim,
                         aper_comp=aper_comp,
                         companion_sep=companion_sep, 
                         remove_star_bkg=remove_star_bkg,
+                        remove_sky_bkg=remove_sky_bkg, 
                         extract_2d=extract_2d,
                         std_object=std_object,
                         debug=debug,
@@ -2313,7 +2318,10 @@ class CriresPipeline:
             self.apply_telluric_correction()
 
 
-    def preprocessing(self, combine=False, combine_mode='mean'):
+    def preprocessing(self, combine=False, 
+                      combine_mode='mean',
+                      obs_mode=None,
+                      ):
         """
         Method for running the full chain of recipes.
 
@@ -2335,7 +2343,7 @@ class CriresPipeline:
         self.cal_flat_trace()
         self.cal_slit_curve()
         self.cal_flat_norm()
-        self.obs_nodding()
+        self.obs_nodding(mode=obs_mode)
 
         if combine:
             self.obs_nodding_combine(combine_mode=combine_mode)
