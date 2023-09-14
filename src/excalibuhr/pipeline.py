@@ -2023,9 +2023,14 @@ class CriresPipeline:
                                     object.replace(" ", "") +\
                                     f'_{l}_CRIRES_SPEC2D.fits', 
                                      f"SPEC_{l}")
+                
+                if isinstance(snr_mid, float):
+                    print(f"Saved target {object} {l} with wavelength coverage {unique_wlen}; ",
+                            f"average S/N ~ {snr_mid:.0f}. \n")
+                else:
+                    print(f"Saved target {object} {l} with wavelength coverage {unique_wlen}; average S/N ~ ",
+                            np.round(snr_mid).astype(int), " \n")
 
-                print(f"Saved target {object} {l} with wavelength coverage {unique_wlen}; ",
-                      f"average S/N ~ {snr_mid:.0f}. \n")
 
                 if combine:
                     result = SPEC2D(wlen=wlens, flux=spec_series, err=err_series)
