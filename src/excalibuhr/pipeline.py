@@ -35,7 +35,9 @@ def print_runtime(func):
 
 class CriresPipeline:
 
-    def __init__(self, workpath, night, clean_start = False,
+    def __init__(self, workpath, night, 
+                 obs_mode = 'nod',
+                 clean_start = False,
                  num_processes = 4):
         """
         Parameters
@@ -72,12 +74,15 @@ class CriresPipeline:
         self.rawpath = os.path.join(self.workpath, self.night, "raw")
         self.calpath = os.path.join(self.workpath, self.night, "cal")
         self.outpath = os.path.join(self.workpath, self.night, "out")
+        self.nodpath = os.path.join(self.outpath, "obs_intermediate")
         self.calib_file = os.path.join(self.nightpath, "calib_info.txt") 
         self.header_file = os.path.join(self.nightpath, "header_info.txt")
         self.product_file = os.path.join(self.nightpath, "product_info.txt")
         self.gain = [2.15, 2.19, 2.0]
         self.pix_scale = 0.056 #arcsec
         self.trace_offset = 0
+
+        self.obs_mode = obs_mode.upper()
 
         print(f"Data reduction folder: {self.nightpath}")
 
@@ -136,6 +141,9 @@ class CriresPipeline:
 
         if not os.path.exists(self.rawpath):
             os.makedirs(self.rawpath)
+
+        if not os.path.exists(self.nodpath):
+            os.makedirs(self.nodpath)
 
 
         # If present, read the info files
@@ -306,7 +314,7 @@ class CriresPipeline:
         file : str
             filename to be added to the table
         cal_type: str 
-            type of the data product, e.g. `NODDING_FRAME`, `Extr1D_PRIMARY`
+            type of the data product, e.g. `NOD_FRAME`, `Extr1D_PRIMARY`
 
         Returns
         -------
@@ -1126,19 +1134,12 @@ class CriresPipeline:
             
 
     @print_runtime
-    def obs_nodding(self, mode=None):
+    def obs_nodding(self):
         """
         Method for processing nodding frames. Apply AB pair subtraction,
         readout artifacts correction, and flat fielding.
-
-        Parameters
-        ----------
-        mode : str
-            Specify the way of sky background subtraction. If `mode='nod'`, it uses 
-            the two nodding positions to remove background. If `mode='stare'`,
-            the A and B nodding frames will be treated separately. By default, the 
-            code read from the data header to determine the mode. It is necessary 
-            to use this parameter only if one needs to force a specific mode.
+        If `obs_mode='nod'`, it subtracts the two nodding positions to remove sky background. 
+        If `obs_mode='stare'`, the A and B nodding frames will be treated separately. 
 
         Returns
         -------
@@ -1146,12 +1147,7 @@ class CriresPipeline:
             None
         """
 
-        self._print_section("Process nodding frames")
-
-        # Create the obs_nodding directory if it does not exist yet
-        self.noddingpath = os.path.join(self.outpath, "obs_nodding")
-        if not os.path.exists(self.noddingpath):
-            os.makedirs(self.noddingpath)
+        self._print_section(f"Process {self.obs_mode} frames")
 
         # initialize a Pool for parallel
         pool = Pool(processes=self.num_processes)
@@ -1240,7 +1236,7 @@ class CriresPipeline:
                         print(f"Number of A and B files: {nod_a_count, nod_b_count}")
 
                     if self.header_info[indices_nod_A][self.key_nabcycle].iloc[0] == 0 \
-                                        or mode == 'stare':
+                                        or self.obs_mode == 'STARE':
                         # staring mode
                         indices_dark = (self.calib_info[self.key_caltype] == "DARK_MASTER") \
                                     & (self.calib_info[self.key_DIT] == item_dit)
@@ -1376,20 +1372,18 @@ class CriresPipeline:
                                 frame_bkg_cor, err_bkg_cor, flat)
             
             file_s = file.split('_')[-1]
-            file_name = os.path.join(self.noddingpath, 
-                            "Nodding_"+ object.replace(" ", "") + \
+            file_name = os.path.join(self.nodpath, 
+                            f"{self.obs_mode}_"+ object.replace(" ", "") + \
                             f"_{item_wlen}_{file_s}")
             su.wfits(file_name, ext_list={"FLUX": frame_bkg_cor, 
                                 "FLUX_ERR": err_bkg_cor}, header=hdr)
 
             print(f"\nProcessed file {file_s} at nod position {pos}")
-            self._add_to_product("obs_nodding/Nodding_" + \
-                                object.replace(" ", "") + \
-                                f"_{item_wlen}_{file_s}", 
-                                "NODDING_FRAME")
+            self._add_to_product('/'.join(file_name.split('/')[-2:]), 
+                                f"{self.obs_mode}_FRAME")
             
             self._plot_det_image(file_name, 
-                        f"{object}_NODDING_FRAME_{item_wlen}", frame_bkg_cor)
+                        f"{object}_{self.obs_mode}_FRAME_{item_wlen}", frame_bkg_cor)
     
 
     def _process_staring(self, file, flat, bpm, tw, dark, ron, object, item_wlen):
@@ -1422,20 +1416,17 @@ class CriresPipeline:
                             frame_bkg_cor, err_bkg_cor, flat)
         
         file_s = file.split('_')[-1]
-        file_name = os.path.join(self.noddingpath, 
-                        "Nodding_"+ object.replace(" ", "") + \
+        file_name = os.path.join(self.nodpath, 
+                        f"{self.obs_mode}_"+ object.replace(" ", "") + \
                         f"_{item_wlen}_{file_s}")
         su.wfits(file_name, ext_list={"FLUX": frame_bkg_cor, 
                             "FLUX_ERR": err_bkg_cor}, header=hdr)
 
-        # print(f"\nProcessed file {file_s}")
-        self._add_to_product("obs_nodding/Nodding_" + \
-                            object.replace(" ", "") + \
-                            f"_{item_wlen}_{file_s}", 
-                            "NODDING_FRAME")
+        self._add_to_product('/'.join(file_name.split('/')[-2:]),  
+                            f"{self.obs_mode}_FRAME")
         
         self._plot_det_image(file_name, 
-                    f"{object}_NODDING_FRAME_{item_wlen}", frame_bkg_cor)
+                    f"{object}_{self.obs_mode}_FRAME_{item_wlen}", frame_bkg_cor)
     
 
     @print_runtime
@@ -1459,22 +1450,20 @@ class CriresPipeline:
         """
 
         self._print_section("Combine nodding frames")
-
-        self.noddingpath = os.path.join(self.outpath, "obs_nodding")
         
         self.product_info = pd.read_csv(self.product_file, sep=';')
         
         if combine_mode == 'weighted':
             print("Estimate SNR of individual exposures from extracted spectra:")
             savename = 'TMP'
-            self.obs_extract(caltype='NODDING_FRAME', savename=savename)
+            self.obs_extract(caltype=f"{self.obs_mode}_FRAME", savename=savename)
 
         # get updated product info
         self.product_info = pd.read_csv(self.product_file, sep=';')
 
 
         # Select the obs_nodding observations
-        indices = (self.product_info[self.key_caltype] == 'NODDING_FRAME')
+        indices = (self.product_info[self.key_caltype] == f"{self.obs_mode}_FRAME")
 
         # Check unique targets
         unique_target = set()
@@ -1555,18 +1544,16 @@ class CriresPipeline:
                                         weights=weights)
                     
                     # Save the combined obs_nodding observation
-                    file_name = os.path.join(self.noddingpath, 
-                            "Combined_"+ object.replace(" ", "") + \
-                            f"_{item_wlen}_Nodding_{pos}.fits")
+                    file_name = os.path.join(self.nodpath, 
+                            "COMBINED_"+ object.replace(" ", "") + \
+                            f"_{item_wlen}_{self.obs_mode}_{pos}.fits")
                     su.wfits(file_name, ext_list={"FLUX": combined, 
                                 "FLUX_ERR": combined_err}, header=hdr)
-                    self._add_to_product("obs_nodding/Combined_"+ \
-                            object.replace(" ", "") + \
-                            f"_{item_wlen}_Nodding_{pos}.fits", 
-                            "NODDING_COMBINED")
+                    self._add_to_product('/'.join(file_name.split('/')[-2:]), 
+                            f"{self.obs_mode}_COMBINED")
 
                     self._plot_det_image(file_name, 
-                        f"{object}_NODDING_{pos}_Combined_{item_wlen}", combined)
+                        f"{object}_{self.obs_mode}_{pos}_COMBINED_{item_wlen}", combined)
 
                     INT_total += hdr[self.key_DIT]*hdr[self.key_NDIT]*(j+1)/3600.
                 
@@ -1574,12 +1561,12 @@ class CriresPipeline:
 
 
     @print_runtime
-    def obs_extract(self, caltype='NODDING_COMBINED', 
+    def obs_extract(self, caltype='NOD_COMBINED', 
                           object=None,
                           savename='',
                           peak_frac=None, companion_sep=None, 
                           remove_star_bkg=False, 
-                          remove_sky_bkg = False,
+                          remove_sky_bkg=False, 
                           std_object=None,
                           aper_prim=15, aper_comp=10, 
                           extract_2d=False,
@@ -1608,6 +1595,9 @@ class CriresPipeline:
 
         self._print_section("Extract spectra")
 
+        if self.obs_mode == 'STARE':
+            remove_sky_bkg = True
+
         # get updated product info
         self.product_info = pd.read_csv(self.product_file, sep=';')
 
@@ -1634,10 +1624,6 @@ class CriresPipeline:
 
             indices_obj = indices & \
                     (self.product_info[self.key_target_name] == object)
-            
-            if self.product_info[indices_obj][self.key_nabcycle].iloc[0] == 0:
-                # staring mode, need to remove sky background
-                remove_sky_bkg = True
 
             # Check unique WLEN setting
             unique_wlen = set()
@@ -1720,6 +1706,7 @@ class CriresPipeline:
                         dt, dt_err, bpm, tw, slit, blaze, blaze, 
                         self.gain, NDIT=ndit, extract_2d=extract_2d,
                         cen0=f0, remove_sky_bkg=remove_sky_bkg, 
+                        remove_star_bkg=remove_star_bkg,
                         aper_half=aper_prim, debug=debug)
         flux_pri, err_pri, D, P, V, id_order, chi2_r = result
 
@@ -1868,6 +1855,10 @@ class CriresPipeline:
             raise Exception("No Telluric transmission model found. Please set `run_skycalc` to `True`.") 
         file = self.calib_info[indices_tellu][self.key_filename].iloc[0]
         tellu = fits.getdata(os.path.join(self.calpath, file))
+        # tellu[:,0] /= 1e3
+
+        # plt.plot(tellu[:,0], tellu[:,1])
+        # plt.show()
 
         for item_wlen in unique_wlen:
             print(f"Calibrating WLEN setting {item_wlen}:")
@@ -1927,7 +1918,9 @@ class CriresPipeline:
         # get updated product info
         self.product_info = pd.read_csv(self.product_file, sep=';')
 
-        data_type = ['Extr1D_PRIMARY', 'Extr1D_SECONDARY']
+        # get labels containing 'Extr1D'
+        all_labels = self.product_info[self.key_caltype].unique()
+        data_type = all_labels[pd.Series(all_labels).str.contains('Extr1D', case=False)]
 
         for label in data_type:
             indices = (self.product_info[self.key_caltype] == label)
@@ -2014,14 +2007,14 @@ class CriresPipeline:
                 l = label.split('_')[-1]
                 file_name = os.path.join(self.corrpath, 
                             object.replace(" ", "") +\
-                            f'_{l}_CRIRES_SPEC2D.fits')
+                            f'_{l}_CRIRES_SPEC1D.fits')
                 su.wfits(file_name, ext_list={"FLUX": spec_series, 
                                               "FLUX_ERR": err_series,
                                               "WAVE": wlens}, 
                                     header=hdr)
                 self._add_to_product("obs_calibrated/" +\
                                     object.replace(" ", "") +\
-                                    f'_{l}_CRIRES_SPEC2D.fits', 
+                                    f'_{l}_CRIRES_SPEC1D.fits', 
                                      f"SPEC_{l}")
                 
                 if isinstance(snr_mid, float):
@@ -2138,7 +2131,7 @@ class CriresPipeline:
         trans = su.SpecConvolve(wave.value, trans, 
                         out_res=spec_res, in_res=sky_calc["wres"])
 
-        transm_spec = np.column_stack((1e3 * wave.value, trans))
+        transm_spec = np.column_stack((wave.value, trans))
         out_file= os.path.join(self.calpath, "TRANSM_SPEC.fits")
         su.wfits(out_file, ext_list={"FLUX": transm_spec})
         self._add_to_calib('TRANSM_SPEC.fits', "TELLU_SKYCALC")
@@ -2259,7 +2252,6 @@ class CriresPipeline:
 
     def run_recipes(self, combine=False,
                     combine_mode='mean',
-                    obs_mode=None,
                     savename='',
                     companion_sep=None, 
                     remove_star_bkg=False, 
@@ -2290,16 +2282,14 @@ class CriresPipeline:
         self.cal_flat_trace()
         self.cal_slit_curve()
         self.cal_flat_norm()
-        self.obs_nodding(mode=obs_mode)
+        self.obs_nodding()
 
         if combine:
-            self.obs_nodding_combine(combine_mode=combine_mode)
-            input_type = 'NODDING_COMBINED'
+            self.obs_nodding_combine(
+                                     combine_mode=combine_mode)
+            input_type = f'{self.obs_mode}_COMBINED'
         else:
-            input_type = 'NODDING_FRAME'
-
-        if obs_mode == 'stare':
-            remove_sky_bkg = True
+            input_type = f'{self.obs_mode}_FRAME'
 
         self.obs_extract(
                         caltype=input_type,
@@ -2307,7 +2297,6 @@ class CriresPipeline:
                         aper_comp=aper_comp,
                         companion_sep=companion_sep, 
                         remove_star_bkg=remove_star_bkg,
-                        remove_sky_bkg=remove_sky_bkg, 
                         extract_2d=extract_2d,
                         std_object=std_object,
                         debug=debug,
@@ -2325,7 +2314,6 @@ class CriresPipeline:
 
     def preprocessing(self, combine=False, 
                       combine_mode='mean',
-                      obs_mode=None,
                       ):
         """
         Method for running the full chain of recipes.
@@ -2348,8 +2336,9 @@ class CriresPipeline:
         self.cal_flat_trace()
         self.cal_slit_curve()
         self.cal_flat_norm()
-        self.obs_nodding(mode=obs_mode)
+        self.obs_nodding()
 
         if combine:
-            self.obs_nodding_combine(combine_mode=combine_mode)
+            self.obs_nodding_combine(
+                                     combine_mode=combine_mode)
 

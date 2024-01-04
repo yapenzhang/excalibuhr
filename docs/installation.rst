@@ -4,20 +4,20 @@ Installation
 ============
 
 
-Installation from PyPI
--------------------------
+.. Installation from PyPI
+.. -------------------------
 
-The package  can be installed with ``pip``:
+.. The package  can be installed with ``pip``:
 
-.. code-block:: console
+.. .. code-block:: console
 
-    $ pip install excalibuhr
+..     $ pip install excalibuhr
 
-To update to the most recent version:
+.. To update to the most recent version:
 
-.. code-block:: console
+.. .. code-block:: console
 
-   $ pip install --upgrade excalibuhr
+..    $ pip install --upgrade excalibuhr
 
 
 Installation from source
@@ -27,7 +27,7 @@ Cloning the repository:
 
 .. code-block:: console
 
-    $ git clone git@github.com:yapenzhang/excalibuhr.git
+    $ git clone https://github.com/yapenzhang/excalibuhr.git
 
 Then install the package by running ``pip`` in the local repository folder:
 

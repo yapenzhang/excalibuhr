@@ -986,7 +986,9 @@ def spectral_rectify_interp(im_list, badpix, trace, slit_meta, reverse=False, de
         # ax1.imshow(im_rect_spec[0, yy_grid, :], vmin=0, vmax=100)
         # ax2.imshow(bpm[yy_grid])
         # plt.show()
-        med = np.nanmedian(im_rect_spec[0, yy_grid], axis=0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            med = np.nanmedian(im_rect_spec[0, yy_grid], axis=0)
 
         # Loop over each row in the order
         for i, (x_isowlen, mask) in enumerate(zip(isowlen_grid, 
@@ -1531,6 +1533,7 @@ def extract_spec(det, det_err, badpix, trace, slit, blaze, spec_star,
         profile[-N_edge:] = 0.
         obj_cen = np.argmax(profile)
 
+
     # Pixel-location of the companion target
     if companion_sep is not None:
         obj2_cen = obj_cen - companion_sep
@@ -1546,11 +1549,11 @@ def extract_spec(det, det_err, badpix, trace, slit, blaze, spec_star,
                                 debug=debug)
         
         # remove starlight contamination
-        if remove_star_bkg and companion_sep is not None:
-            im_sub, im_err_sub = remove_starlight(im_sub, im_err_sub**2, 
-                            spec_star[o]/blaze[o], cen0, cen0-companion_sep, 
-                            gain=gain, debug=debug)
-            aper_half = 5
+        # if remove_star_bkg and companion_sep is not None:
+        #     im_sub, im_err_sub = remove_starlight(im_sub, im_err_sub**2, 
+        #                     spec_star[o]/blaze[o], cen0, cen0-companion_sep, 
+        #                     gain=gain, debug=debug)
+        #     aper_half = 5
 
         if companion_sep is None:
             center = obj_cen
@@ -1564,6 +1567,7 @@ def extract_spec(det, det_err, badpix, trace, slit, blaze, spec_star,
                                 obj_cen=int(np.round(center)), 
                                 aper_half=aper_half, 
                                 filter_mode=filter_mode,
+                                remove_bkg=remove_star_bkg,
                                 gain=gain, NDIT=NDIT, debug=debug) 
 
         flux.append(f_opt/blaze[o])
@@ -1584,6 +1588,7 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
                        aper_half=20, filter_mode='poly',
                        badpix_clip=5, filter_width=121,
                        max_iter=30, extr_level=0.95, 
+                        remove_bkg=False,
                        gain=2., NDIT=1., etol=1e-6, debug=False):
     """
     Optimal extraction based on Horne(1986).
@@ -1638,6 +1643,44 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
     wave_x = np.arange(D.shape[0])
     spatial_x = np.arange(D.shape[1])
     D_norm = np.zeros_like(D)
+
+    # fit and remove bkg per wavelength channel
+    if remove_bkg == True:
+        
+        profile = np.nanmedian(D, axis=0)
+        profile[:len(spatial_x)//5] = 0
+        profile[len(spatial_x)//5*4:] = 0
+        cen0 = np.argmax(profile)
+
+        aper_mask = 8
+        bkg_poly_order = 4
+        mask = (spatial_x > cen0 - aper_mask) & (spatial_x < cen0 + aper_mask)
+        # plt.plot(spatial_x, profile)
+        # plt.plot(spatial_x[mask], profile[mask])
+        # plt.show()
+        # plt.imshow(D, aspect='auto', vmin=0, vmax=20)
+        # plt.show()
+        bkg_model = np.zeros_like(D)
+        for x in wave_x:
+            # if not np.all(mask_use):
+                D_poly, coeffs, _ = PolyfitClip(spatial_x[~mask], D[x, ~mask], order=bkg_poly_order)
+                A_matrix = np.vander(spatial_x-np.mean(spatial_x), bkg_poly_order)
+                y_model = np.dot(A_matrix, coeffs)
+                bkg_model[x] = y_model
+            # print(y_model)
+            # if np.all(np.isnan(y_model)):
+            #     plt.plot(spatial_x, D[x])
+            #     plt.plot(spatial_x[mask], D[x, mask])
+            #     plt.plot(spatial_x, y_model)
+            #     # plt.plot(spatial_x[~mask], D_poly)
+            #     plt.show()
+        # plt.imshow(bkg_model, aspect='auto', vmin=-5, vmax=10)
+        # plt.show()
+        # plt.imshow(D-bkg_model, aspect='auto', vmin=0, vmax=50)
+        # plt.show()
+        D -= bkg_model
+        V_new += np.abs(bkg_model) / gain / NDIT
+
 
     # simple sum collapse to a 1D spectrum
     f_std = np.nansum(D*np.logical_not(bpm).astype(float), axis=1)
@@ -1695,7 +1738,7 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
     cdf = np.cumsum(psf)     
     extr_aper = (cdf > (1.-extr_level)/2.) & (cdf < (1.+extr_level)/2.)
     extr_aper_not = (cdf < (1.-extr_level)/2.) | (cdf > (1.+extr_level)/2.)
-    D[:, extr_aper_not] = 0.
+    # D[:, extr_aper_not] = 0.
     V[:, extr_aper_not] = 1./etol
     P[:, extr_aper_not] = etol
     P[P==0] = etol

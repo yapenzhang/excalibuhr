@@ -138,8 +138,12 @@ class SPEC2D:
 
 
     def remove_order_edge(self, Nedge=10):
-        return self._copy(self.wlen[:, Nedge:-Nedge], self.flux[:, Nedge:-Nedge],
-                          self.err[:, Nedge:-Nedge])
+        if self.err is not None:
+            return self._copy(self.wlen[:, Nedge:-Nedge], self.flux[:, Nedge:-Nedge],
+                            self.err[:, Nedge:-Nedge])
+        else:
+            return self._copy(self.wlen[:, Nedge:-Nedge], self.flux[:, Nedge:-Nedge])
+
 
     def make_wlen_bins(self):
         data_wlen_bins = np.zeros_like(self.wlen)
@@ -242,15 +246,18 @@ class SPEC2D:
             plt.show()
         return spec
 
-    def high_pass_filter(self, sigma=51):
+    def high_pass_filter(self, sigma=51, mask=None):
         #or signal.savgol_filter
+        if mask is None:
+            mask = np.zeros_like(self.flux, dtype=bool)
         spec = self._copy()
         for i in range(self.Nchip):
-            spec.flux[i] /= ndimage.gaussian_filter(self.flux[i], sigma=sigma)
-            spec.err[i] /= ndimage.gaussian_filter(self.flux[i], sigma=sigma)
-            # spec.flux[i] -= np.nanmean(spec.flux[i])
-            # plt.plot(self.flux[i])
-            # plt.plot(ndimage.gaussian_filter(self.flux[i], sigma=sigma))
+            spec.flux[i][~mask[i]] /= ndimage.gaussian_filter(self.flux[i][~mask[i]], sigma=sigma)
+            spec.err[i][~mask[i]] /= ndimage.gaussian_filter(self.flux[i][~mask[i]], sigma=sigma)
+            spec.flux[i] -= 1. #np.nanmean(spec.flux[i])
+            spec.flux[i][mask[i]] = 0.
+            # plt.plot(self.flux[i][~mask[i]])
+            # plt.plot(ndimage.gaussian_filter(self.flux[i][~mask[i]], sigma=sigma))
             # plt.show()
         return spec
 

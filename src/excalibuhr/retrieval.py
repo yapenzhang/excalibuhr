@@ -25,7 +25,7 @@ from petitRADTRANS.retrieval.util import getMM, calc_MMW
 import petitRADTRANS.poor_mans_nonequ_chem as pm
 # from petitRADTRANS.retrieval import cloud_cond as fc
 # from typeguard import typechecked
-from sksparse.cholmod import cholesky
+# from sksparse.cholmod import cholesky
 import matplotlib.pyplot as plt 
 cmap = plt.get_cmap("tab10")
 cmap_hue = plt.get_cmap("tab20c")
@@ -105,20 +105,21 @@ def calc_abundance_ratio_posterior(a, b, params, samples):
 
 
 def calc_elemental_ratio(a, b, abundances):
-    tol = 1e-20
-    from molmass import Formula
-    abund_a, abund_b = [], []
-    for key in abundances:
-        species = key.split("_")[0]
-        f = Formula(species)
-        df = f.composition().dataframe()
-        if a in df.index:
-            abund_a.append(df.loc[a, 'Count']*abundances[key])
-        if b in df.index:
-            abund_b.append(df.loc[b, 'Count']*abundances[key])
-    abund_a = np.sum(abund_a, axis=0)
-    abund_b = np.sum(abund_b, axis=0)
-    return abund_a/(abund_b+tol)
+    # tol = 1e-20
+    # from molmass import Formula
+    # abund_a, abund_b = [], []
+    # for key in abundances:
+    #     species = key.split("_")[0]
+    #     f = Formula(species)
+    #     df = f.composition().dataframe()
+    #     if a in df.index:
+    #         abund_a.append(df.loc[a, 'Count']*abundances[key])
+    #     if b in df.index:
+    #         abund_b.append(df.loc[b, 'Count']*abundances[key])
+    # abund_a = np.sum(abund_a, axis=0)
+    # abund_b = np.sum(abund_b, axis=0)
+    # return abund_a/(abund_b+tol)
+    return 1.
 
 
 def calc_mass_to_mol_frac(abundances, MMW):
@@ -261,12 +262,13 @@ class Photometry:
 class ObsData(SPEC2D):
 
     def __init__(self, wlen=None, flux=None, err=None, filename=None, 
-                 name=None, R=None):
+                 name=None, R=None, mask=None):
         
         super().__init__(wlen=wlen, flux=flux, err=err, filename=filename)
         
         self.name = name
         self.R = R
+        self.mask = mask
 
         if self.R > 1000.:
             self.mode = 'lbl'
@@ -278,6 +280,8 @@ class ObsData(SPEC2D):
         else:
             self.detector_bin = 1
         
+        if self.mask is None:
+            self.mask = np.ones_like(self.wlen)
 
 
 
@@ -304,7 +308,7 @@ class Retrieval:
                 'key_airmass': 'airmass',
                 'key_carbon_to_oxygen': 'C/O',
                 'key_carbon_iso': '13/12C',
-                'key_metallicity': '[C/H]',
+                'key_metallicity': '[Fe/H]',
                 'key_gravity': 'logg',
                 'key_teff': 'T_eff',
                 'key_tellu_temp': 'tellu_temp',
@@ -330,9 +334,12 @@ class Retrieval:
                 else:
                     self.obs[obs.name].append(obs)
             else:
+                obs.flux = obs.flux*(~obs.mask)
                 if self.remove_continuum:
-                    obs = obs.high_pass_filter()
+                    obs = obs.high_pass_filter(mask=obs.mask)
+                # remove masked data points
                 self.obs[obs.name] = obs
+
 
 
 
@@ -798,8 +805,8 @@ class Retrieval:
                     wave_tmp = self.obs[instrument].wlen[i]
                     flux_obs = self.obs[instrument].flux[i]
                     err_obs = self.obs[instrument].err[i]
-                    # axes[0].plot(wave_tmp, flux_obs, color='r', alpha=0.8)
-                    axes[0].errorbar(wave_tmp, flux_obs, err_obs, color='r', alpha=0.8)
+                    axes[0].plot(wave_tmp, flux_obs, color='r', alpha=0.8)
+                    # axes[0].errorbar(wave_tmp, flux_obs, err_obs, color='r', alpha=0.8)
                     axes[0].plot(wave_tmp, flux_tmp, color='k', alpha=0.8, zorder=10)
                     axes[1].plot(wave_tmp, (flux_obs-flux_tmp), color='k', alpha=0.8, zorder=10)
         axes[0].set_ylim(-10, 10)
@@ -944,7 +951,7 @@ class Retrieval:
                 model_tmp = []
                 for i, y_model in enumerate(model_target):
                     y_model /= gaussian_filter(y_model, sigma=sigma)
-                    # y_model -= np.nanmean(y_model)
+                    y_model -= 1.
                     # y_model -= signal.savgol_filter(y_model, window_length=sigma,
                         # polyorder=2, mode='interp')
                     model_tmp.append(y_model)
@@ -1044,7 +1051,11 @@ class Retrieval:
 
         return -(len(y_data)*np.log(2*np.pi)+chi_squared+logdet_cov)/2., chi_squared
 
-
+    def calc_logL_ccf(self, y_model, y_data):
+        N = len(y_data)
+        # f_det = self.calc_scaling(y_model, y_data, np.ones_like(y_data))
+        logl = -N/2.* np.log(1./N*np.sum((y_data - y_model)**2))
+        return logl
 
     def prior(self, cube, ndim, nparams):
         pri=Prior()
@@ -1157,9 +1168,10 @@ class Retrieval:
 
                     f_dets = np.ones(model_target.shape[:-1])
                     for i in range(obs_target.Nchip):
+                        mask = obs_target.flux[i] == 0
                         # plt.imshow(cov[i].toarray())
                         # plt.show()
-                        f_det = self.calc_scaling(model_target[i], obs_target.flux[i], cov[i])
+                        f_det = self.calc_scaling(model_target[i][~mask], obs_target.flux[i][~mask], cov[i][~mask])
                         f_dets[i] = f_det
                         model_target[i] *= f_det
                         if self.leave_out is not None:
@@ -1182,15 +1194,21 @@ class Retrieval:
                 betas = np.ones(obs_target.Nchip)
                 if self.fit_err_inflation:
                     for i in range(obs_target.Nchip):
-                        beta = self.calc_err_inflation(model_target[i], obs_target.flux[i], cov[i])
+                        mask = obs_target.flux[i] == 0
+                        beta = self.calc_err_inflation(model_target[i][~mask], obs_target.flux[i][~mask], cov[i][~mask])
                         cov[i] *= beta**2
                         betas[i] = beta
                 
                 # Add to the log-likelihood
                 for i in range(obs_target.Nchip):
-                    log_l, chi2 = self.calc_logL(model_target[i], obs_target.flux[i], cov[i])
+                    mask = obs_target.flux[i] == 0
+                    if self.fit_ccf:
+                        log_l = self.calc_logL_ccf(model_target[i][~mask], obs_target.flux[i][~mask])
+                        chi2_reduced = 0.
+                    else:
+                        log_l, chi2 = self.calc_logL(model_target[i][~mask], obs_target.flux[i][~mask], cov[i][~mask])
+                        chi2_reduced += chi2/obs_target.flux.size
                     log_likelihood += log_l
-                    chi2_reduced += chi2/obs_target.flux.size
             
                 self.model_rebin[instrument] = model_target
                 if self.fit_scaling:
@@ -1206,7 +1224,7 @@ class Retrieval:
             print("Chi2_r: ", chi2_reduced)
             print(self.ln_L, self.ln_L_penalty, log_likelihood)
             print(self.flux_scaling, self.err_infaltion)
-            # self.plot_rebin_model_debug(self.model_rebin)
+            self.plot_rebin_model_debug(self.model_rebin)
             # self.plot_rebin_model_debug(self.model_reduce)
         
         return self.ln_L
@@ -1222,13 +1240,14 @@ class Retrieval:
               grid_name='marcs',
               chemistry='free',
               line_species_ck=None,
-              fit_instrument_kernel=True,
+              fit_instrument_kernel=False,
               Lorentzian_kernel=False,
               leave_out=None,
               remove_continuum=False,
               fit_GP=False, 
               fit_poly=1, 
               fit_scaling=True, 
+              fit_ccf = False,
               fit_spline=False,
               fit_err_inflation=True,
               fit_telluric=False, 
@@ -1237,6 +1256,7 @@ class Retrieval:
               PT_penalty_order=0,
               mu_local_GP=None,
               inhomogeneous=False,
+              lbl_opacity_sampling=2,
               ):
 
         if press is None:
@@ -1252,6 +1272,7 @@ class Retrieval:
         self.fit_GP = fit_GP
         self.fit_poly = fit_poly
         self.fit_scaling = fit_scaling
+        self.fit_ccf = fit_ccf
         self.fit_spline = fit_spline
         self.fit_err_inflation = fit_err_inflation
         self.fit_telluric = fit_telluric
@@ -1259,12 +1280,14 @@ class Retrieval:
         self.leave_out = leave_out
         self.PT_penalty_order = PT_penalty_order
         self.remove_continuum = remove_continuum
+        if self.remove_continuum:
+            self.fit_poly=0
 
         self.add_observation(obs)
         assert self.obs, "No input observations provided"
 
         print("Creating pRT objects for input data...")
-        self.add_pRT_objects()
+        self.add_pRT_objects(lbl_opacity_sampling=lbl_opacity_sampling)
 
         if PT_profile == 'free':
             self.add_free_PT_model(N_t_knots)
@@ -1536,7 +1559,7 @@ class Retrieval:
 
     def make_best_fit_plot(self, obs, models, savename, labels=['model']):
         self._set_plot_style()
-        nrows = obs.Nchip//3
+        nrows = np.ceil(obs.Nchip/3).astype(int)
         fig, axes = plt.subplots(nrows=nrows*2, ncols=1, 
                           figsize=(12,nrows*3), constrained_layout=True,
                           gridspec_kw={"height_ratios": [3,1]*nrows})
@@ -1594,7 +1617,7 @@ class Retrieval:
 
     def make_ccf_plot(self, obs, model, model_single, savename):
         self._set_plot_style()
-        nrows = obs.Nchip//3
+        nrows = np.ceil(obs.Nchip/3).astype(int)
         fig, axes = plt.subplots(nrows=nrows, ncols=2, 
                           figsize=(14,nrows*3), constrained_layout=True,
                           gridspec_kw={"width_ratios": [5,1]},
@@ -1646,7 +1669,7 @@ class Retrieval:
 
     def make_ccf_plot_by_detector(self, obs, model, model_single, savename):
         self._set_plot_style()
-        nrows = obs.Nchip//3
+        nrows = np.ceil(obs.Nchip/3).astype(int)
         fig = plt.figure(constrained_layout=True, figsize=(14,5))
         gs = fig.add_gridspec(nrows=nrows*2,ncols=4,height_ratios=[2,1]*nrows)
         ax_ccf_sum = fig.add_subplot(gs[:,-1])
