@@ -25,13 +25,14 @@ Contributor
 -------------
 
 Yapeng Zhang
+
 Sam de Regt
 
 
 Contact
 -------------
 
-Contributions, feature requests, or bug reports are welcome through `Github page <https://https://github.com/yapenzhang/excalibuhr>`_  or email to yzhang@strw.leidenuniv.nl  
+Contributions, feature requests, or bug reports are welcome through `Github page <https://github.com/yapenzhang/excalibuhr>`_  or email to yapzhang@caltech.edu
 
 
 References
