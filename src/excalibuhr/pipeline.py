@@ -2,8 +2,8 @@
 
 __all__ = ['CriresPipeline']
 
-
 import os
+os.environ["OMP_NUM_THREADS"] = "1"
 import sys
 import glob
 import time
@@ -12,7 +12,6 @@ import warnings
 from pathlib import Path
 import numpy as np
 import pandas as pd
-import subprocess
 from multiprocessing import Pool
 from astropy.io import fits
 from astroquery.eso import Eso
@@ -1149,10 +1148,6 @@ class CriresPipeline:
 
         self._print_section(f"Process {self.obs_mode} frames")
 
-        # initialize a Pool for parallel
-        pool = Pool(processes=self.num_processes)
-        pool_jobs = []
-
         # Select the science observations
         indices = self.header_info[self.key_catg] == "SCIENCE"
 
@@ -1170,115 +1165,118 @@ class CriresPipeline:
         file_ron = self.calib_info[indices_ron][self.key_filename].iloc[0]
         ron = fits.getdata(os.path.join(self.calpath, file_ron))
 
-        # Loop over each target
-        for object in unique_target:
-            print(f"Processing target: {object}")
+        # initialize a Pool for parallel
+        with Pool(processes=self.num_processes) as pool:
+            pool_jobs = []
+            # Loop over each target
+            for object in unique_target:
+                print(f"Processing target: {object}")
 
-            indices_obj = indices & \
-                    (self.header_info[self.key_target_name] == object)
+                indices_obj = indices & \
+                        (self.header_info[self.key_target_name] == object)
 
-            # Check unique WLEN setting
-            unique_wlen = set()
-            for item in self.header_info[indices_obj][self.key_wlen]:
-                unique_wlen.add(item)
+                # Check unique WLEN setting
+                unique_wlen = set()
+                for item in self.header_info[indices_obj][self.key_wlen]:
+                    unique_wlen.add(item)
 
-            # Loop over each WLEN setting
-            for item_wlen in unique_wlen:
-                
-                indices_wlen = indices_obj & \
-                            (self.header_info[self.key_wlen] == item_wlen)
-                
-                # Check unique DIT
-                unique_dit = set()
-                for item in self.header_info[indices_wlen][self.key_DIT]:
-                    unique_dit.add(item)
+                # Loop over each WLEN setting
+                for item_wlen in unique_wlen:
+                    
+                    indices_wlen = indices_obj & \
+                                (self.header_info[self.key_wlen] == item_wlen)
+                    
+                    # Check unique DIT
+                    unique_dit = set()
+                    for item in self.header_info[indices_wlen][self.key_DIT]:
+                        unique_dit.add(item)
 
-                # Select the corresponding calibration files
-                indices_flat = (self.calib_info[self.key_caltype] == "FLAT_NORM") \
-                             & (self.calib_info[self.key_wlen] == item_wlen)
-                indices_bpm = (self.calib_info[self.key_caltype] == "FLAT_BPM") \
-                           & (self.calib_info[self.key_wlen] == item_wlen)
-                indices_tw = (self.calib_info[self.key_caltype] == "TRACE_TW") \
-                           & (self.calib_info[self.key_wlen] == item_wlen)
-                # indices_blaze = (self.calib_info[self.key_caltype] == "BLAZE") \
-                #                & (self.calib_info[self.key_wlen] == item_wlen)
-                indices_slit = (self.calib_info[self.key_caltype] == "SLIT_TILT") \
+                    # Select the corresponding calibration files
+                    indices_flat = (self.calib_info[self.key_caltype] == "FLAT_NORM") \
+                                & (self.calib_info[self.key_wlen] == item_wlen)
+                    indices_bpm = (self.calib_info[self.key_caltype] == "FLAT_BPM") \
                             & (self.calib_info[self.key_wlen] == item_wlen)
+                    indices_tw = (self.calib_info[self.key_caltype] == "TRACE_TW") \
+                            & (self.calib_info[self.key_wlen] == item_wlen)
+                    # indices_blaze = (self.calib_info[self.key_caltype] == "BLAZE") \
+                    #                & (self.calib_info[self.key_wlen] == item_wlen)
+                    indices_slit = (self.calib_info[self.key_caltype] == "SLIT_TILT") \
+                                & (self.calib_info[self.key_wlen] == item_wlen)
 
-                file = self.calib_info[indices_flat][self.key_filename].iloc[0]
-                flat = fits.getdata(os.path.join(self.calpath, file))
-                file = self.calib_info[indices_bpm][self.key_filename].iloc[0]
-                bpm = fits.getdata(os.path.join(self.calpath, file))
-                file = self.calib_info[indices_tw][self.key_filename].iloc[0]
-                tw = fits.getdata(os.path.join(self.calpath, file))
-                file = self.calib_info[indices_slit][self.key_filename].iloc[0]
-                slit = fits.getdata(os.path.join(self.calpath, file))
+                    file = self.calib_info[indices_flat][self.key_filename].iloc[0]
+                    flat = fits.getdata(os.path.join(self.calpath, file))
+                    file = self.calib_info[indices_bpm][self.key_filename].iloc[0]
+                    bpm = fits.getdata(os.path.join(self.calpath, file))
+                    file = self.calib_info[indices_tw][self.key_filename].iloc[0]
+                    tw = fits.getdata(os.path.join(self.calpath, file))
+                    file = self.calib_info[indices_slit][self.key_filename].iloc[0]
+                    slit = fits.getdata(os.path.join(self.calpath, file))
+                
+                    # Loop over each DIT
+                    for item_dit in unique_dit:
+                        print(f"Wavelength setting: {item_wlen}, "
+                            f"DIT value: {item_dit} s.")
+
+                        indices_nod_A = indices_wlen & \
+                                (self.header_info[self.key_DIT] == item_dit) & \
+                                (self.header_info[self.key_nodpos] == 'A')
+                        indices_nod_B = indices_wlen & \
+                                (self.header_info[self.key_DIT] == item_dit) & \
+                                (self.header_info[self.key_nodpos] == 'B')
+                        df_nods = self.header_info[indices_nod_A | indices_nod_B]\
+                                        .sort_values(self.key_filename)
+
+                        nod_a_count = sum(indices_nod_A)
+                        nod_b_count = sum(indices_nod_B)
+                        if nod_a_count == nod_b_count:
+                            print(f"Number of AB pairs: {nod_a_count}")
+                        else:
+                            print(f"Number of A and B files: {nod_a_count, nod_b_count}")
+
+                        if self.header_info[indices_nod_A][self.key_nabcycle].iloc[0] == 0 \
+                                            or self.obs_mode == 'STARE':
+                            # staring mode
+                            indices_dark = (self.calib_info[self.key_caltype] == "DARK_MASTER") \
+                                        & (self.calib_info[self.key_DIT] == item_dit)
+
+                            if np.sum(indices_dark) < 1:
+                                warnings.warn(f"No MASTER DARK frame found with the DIT value {item_dit}s corresponding to that of science data")
+                                self._download_archive("DARK", item_dit)
+                            
+                            indices_dark = (self.calib_info[self.key_caltype] == "DARK_MASTER") \
+                                        & (self.calib_info[self.key_DIT] == item_dit)
+                            file = self.calib_info[indices_dark][self.key_filename].iloc[0]
+                            dark = fits.getdata(os.path.join(self.calpath, file)) 
+
+                            indices_ron = (self.calib_info[self.key_caltype] == "DARK_RON") \
+                                        & (self.calib_info[self.key_DIT] == item_dit)
+                            file_ron = self.calib_info[indices_ron][self.key_filename].iloc[0]
+                            ron = fits.getdata(os.path.join(self.calpath, file_ron)) 
+                            
+                            for i in range(df_nods.shape[0]):
+                                filename = df_nods[self.key_filename].iloc[i]
+                                job = pool.apply_async(self._process_staring, 
+                                                    args=(filename, flat, bpm, 
+                                                        tw, dark, ron, object, item_wlen))
+                                pool_jobs.append(job)
+                        else:
+                            # nodding mode
+                            try:
+                                self.Nexp_per_nod = int(self.header_info[indices_nod_A]\
+                                            [self.key_nexp_per_nod].iloc[0])
+                            except:
+                                # Some headers missing the NEXP key
+                                self.Nexp_per_nod = int(nod_a_count//self.header_info[indices_nod_A][self.key_nabcycle].iloc[0])
+                            
+                            for i, row in enumerate(
+                                    range(0, df_nods.shape[0], self.Nexp_per_nod)):
+                                job = pool.apply_async(self._process_nodding, 
+                                                    args=(df_nods, i, row, flat, bpm, 
+                                                        tw, ron, object, item_wlen))
+                                pool_jobs.append(job)
             
-                # Loop over each DIT
-                for item_dit in unique_dit:
-                    print(f"Wavelength setting: {item_wlen}, "
-                          f"DIT value: {item_dit} s.")
-
-                    indices_nod_A = indices_wlen & \
-                            (self.header_info[self.key_DIT] == item_dit) & \
-                            (self.header_info[self.key_nodpos] == 'A')
-                    indices_nod_B = indices_wlen & \
-                            (self.header_info[self.key_DIT] == item_dit) & \
-                            (self.header_info[self.key_nodpos] == 'B')
-                    df_nods = self.header_info[indices_nod_A | indices_nod_B]\
-                                    .sort_values(self.key_filename)
-
-                    nod_a_count = sum(indices_nod_A)
-                    nod_b_count = sum(indices_nod_B)
-                    if nod_a_count == nod_b_count:
-                        print(f"Number of AB pairs: {nod_a_count}")
-                    else:
-                        print(f"Number of A and B files: {nod_a_count, nod_b_count}")
-
-                    if self.header_info[indices_nod_A][self.key_nabcycle].iloc[0] == 0 \
-                                        or self.obs_mode == 'STARE':
-                        # staring mode
-                        indices_dark = (self.calib_info[self.key_caltype] == "DARK_MASTER") \
-                                    & (self.calib_info[self.key_DIT] == item_dit)
-
-                        if np.sum(indices_dark) < 1:
-                            warnings.warn(f"No MASTER DARK frame found with the DIT value {item_dit}s corresponding to that of science data")
-                            self._download_archive("DARK", item_dit)
-                        
-                        indices_dark = (self.calib_info[self.key_caltype] == "DARK_MASTER") \
-                                    & (self.calib_info[self.key_DIT] == item_dit)
-                        file = self.calib_info[indices_dark][self.key_filename].iloc[0]
-                        dark = fits.getdata(os.path.join(self.calpath, file)) 
-
-                        indices_ron = (self.calib_info[self.key_caltype] == "DARK_RON") \
-                                    & (self.calib_info[self.key_DIT] == item_dit)
-                        file_ron = self.calib_info[indices_ron][self.key_filename].iloc[0]
-                        ron = fits.getdata(os.path.join(self.calpath, file_ron)) 
-                        
-                        for i in range(df_nods.shape[0]):
-                            filename = df_nods[self.key_filename].iloc[i]
-                            job = pool.apply_async(self._process_staring, 
-                                                args=(filename, flat, bpm, 
-                                                    tw, dark, ron, object, item_wlen))
-                            pool_jobs.append(job)
-                    else:
-                        # nodding mode
-                        try:
-                            self.Nexp_per_nod = int(self.header_info[indices_nod_A]\
-                                        [self.key_nexp_per_nod].iloc[0])
-                        except:
-                            # Some headers missing the NEXP key
-                            self.Nexp_per_nod = int(nod_a_count//self.header_info[indices_nod_A][self.key_nabcycle].iloc[0])
-                        
-                        for i, row in enumerate(
-                                range(0, df_nods.shape[0], self.Nexp_per_nod)):
-                            job = pool.apply_async(self._process_nodding, 
-                                                args=(df_nods, i, row, flat, bpm, 
-                                                    tw, ron, object, item_wlen))
-                            pool_jobs.append(job)
-        
-        for job in pool_jobs:
-            job.get() 
+            for job in pool_jobs:
+                job.get() 
 
 
     def _process_nodding(self, df_nods, i, row, flat, bpm, 
@@ -1601,9 +1599,6 @@ class CriresPipeline:
         # get updated product info
         self.product_info = pd.read_csv(self.product_file, sep=';')
 
-        # initialize a Pool for parallel
-        pool = Pool(processes=self.num_processes)
-        pool_jobs = []
 
         # Select the type of observations we want to work with
         indices = (self.product_info[self.key_caltype] == caltype)
@@ -1618,75 +1613,79 @@ class CriresPipeline:
             if len(unique_target) == 0:
                 raise RuntimeError("No reduced frames to extract")
 
-        # Loop over each target
-        for object in unique_target:
-            print(f"Processing target: {object} \n")
+        # initialize a Pool for parallel
+        with Pool(processes=self.num_processes) as pool:
+            pool_jobs = []
+            # Loop over each target
+            for object in unique_target:
+                print(f"Processing target: {object} \n")
 
-            indices_obj = indices & \
-                    (self.product_info[self.key_target_name] == object)
+                indices_obj = indices & \
+                        (self.product_info[self.key_target_name] == object)
 
-            # Check unique WLEN setting
-            unique_wlen = set()
-            for item in self.product_info[indices_obj][self.key_wlen]:
-                unique_wlen.add(item)
+                # Check unique WLEN setting
+                unique_wlen = set()
+                for item in self.product_info[indices_obj][self.key_wlen]:
+                    unique_wlen.add(item)
 
-            # Loop over each WLEN setting
-            for item_wlen in unique_wlen:
-                # print(f"Wavelength setting: {item_wlen}")
+                # Loop over each WLEN setting
+                for item_wlen in unique_wlen:
+                    # print(f"Wavelength setting: {item_wlen}")
+                    
+                    indices_wlen = indices_obj & \
+                                (self.product_info[self.key_wlen] == item_wlen)
                 
-                indices_wlen = indices_obj & \
-                            (self.product_info[self.key_wlen] == item_wlen)
-            
-                # Select the corresponding calibration files
-                indices_blaze = (self.calib_info[self.key_caltype] == "BLAZE") \
-                              & (self.calib_info[self.key_wlen] == item_wlen)
-                indices_tw = (self.calib_info[self.key_caltype] == "TRACE_TW") \
-                           & (self.calib_info[self.key_wlen] == item_wlen)
-                indices_slit = (self.calib_info[self.key_caltype] == "SLIT_TILT") \
-                             & (self.calib_info[self.key_wlen] == item_wlen)
-                indices_bpm = (self.calib_info[self.key_caltype] == "FLAT_BPM") \
+                    # Select the corresponding calibration files
+                    indices_blaze = (self.calib_info[self.key_caltype] == "BLAZE") \
+                                & (self.calib_info[self.key_wlen] == item_wlen)
+                    indices_tw = (self.calib_info[self.key_caltype] == "TRACE_TW") \
                             & (self.calib_info[self.key_wlen] == item_wlen)
-                # indices_wave = (self.calib_info[self.key_caltype] == "INIT_WLEN") & \
-                #                (self.calib_info[self.key_wlen] == item_wlen)
+                    indices_slit = (self.calib_info[self.key_caltype] == "SLIT_TILT") \
+                                & (self.calib_info[self.key_wlen] == item_wlen)
+                    indices_bpm = (self.calib_info[self.key_caltype] == "FLAT_BPM") \
+                                & (self.calib_info[self.key_wlen] == item_wlen)
+                    # indices_wave = (self.calib_info[self.key_caltype] == "INIT_WLEN") & \
+                    #                (self.calib_info[self.key_wlen] == item_wlen)
 
-                file = self.calib_info[indices_bpm][self.key_filename].iloc[0]
-                bpm = fits.getdata(os.path.join(self.calpath, file))
-                file = self.calib_info[indices_tw][self.key_filename].iloc[0]
-                tw = fits.getdata(os.path.join(self.calpath, file))
-                file = self.calib_info[indices_slit][self.key_filename].iloc[0]
-                slit = fits.getdata(os.path.join(self.calpath, file))
-                file = self.calib_info[indices_blaze][self.key_filename].iloc[0]
-                blaze = fits.getdata(os.path.join(self.calpath, file))
+                    file = self.calib_info[indices_bpm][self.key_filename].iloc[0]
+                    bpm = fits.getdata(os.path.join(self.calpath, file))
+                    file = self.calib_info[indices_tw][self.key_filename].iloc[0]
+                    tw = fits.getdata(os.path.join(self.calpath, file))
+                    file = self.calib_info[indices_slit][self.key_filename].iloc[0]
+                    slit = fits.getdata(os.path.join(self.calpath, file))
+                    file = self.calib_info[indices_blaze][self.key_filename].iloc[0]
+                    blaze = fits.getdata(os.path.join(self.calpath, file))
 
-                
-                # Loop over each observation
-                if object == std_object:
-                    for file in self.product_info[indices_wlen][self.key_filename]:
-                        job = pool.apply_async(self._process_extraction, 
-                                            args=(file, bpm, tw, slit, blaze, 
-                                                peak_frac, aper_prim, aper_comp, 
-                                                None, False, False, 
-                                                remove_sky_bkg, 
-                                                savename, debug))
-                        pool_jobs.append(job)
-                else:
-                    for file in self.product_info[indices_wlen][self.key_filename]:
-                        job = pool.apply_async(self._process_extraction, 
-                                            args=(file, bpm, tw, slit, blaze, 
-                                                peak_frac, aper_prim, aper_comp, 
-                                                companion_sep, remove_star_bkg,
-                                                extract_2d, remove_sky_bkg, 
-                                                savename, debug))
-                        pool_jobs.append(job)
-        
-        for job in pool_jobs:
-            job.get() 
+                    
+                    # Loop over each observation
+                    if object == std_object:
+                        for file in self.product_info[indices_wlen][self.key_filename]:
+                            job = pool.apply_async(self._process_extraction, 
+                                                args=(file, bpm, tw, slit, blaze, 
+                                                    peak_frac, aper_prim, aper_comp, 
+                                                    None, False, False, 
+                                                    remove_sky_bkg, 
+                                                    savename, debug))
+                            pool_jobs.append(job)
+                    else:
+                        for file in self.product_info[indices_wlen][self.key_filename]:
+                            job = pool.apply_async(self._process_extraction, 
+                                                args=(file, bpm, tw, slit, blaze, 
+                                                    peak_frac, aper_prim, aper_comp, 
+                                                    companion_sep, remove_star_bkg,
+                                                    extract_2d, remove_sky_bkg, 
+                                                    savename, debug))
+                            pool_jobs.append(job)
+            
+            for job in pool_jobs:
+                job.get() 
 
     def _process_extraction(self, file, bpm, tw, slit, blaze, 
                             peak_frac, aper_prim, aper_comp, 
                             companion_sep, remove_star_bkg, 
                             extract_2d, remove_sky_bkg, 
                             savename, debug):
+        
         with fits.open(os.path.join(self.outpath, file)) as hdu:
             hdr = hdu[0].header
             dt = hdu["FLUX"].data

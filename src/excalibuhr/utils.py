@@ -1498,7 +1498,6 @@ def extract_spec(det, det_err, badpix, trace, slit, blaze, spec_star,
     chi2: array
         reduced chi2 of the model (for diagnositic purposes)
     """
-
     # Correct for the slit curvature and trace curvature
     im = spectral_rectify_interp(det, badpix, trace, slit, debug=False)
     im_err = spectral_rectify_interp(det_err, badpix, trace, slit, debug=False)
