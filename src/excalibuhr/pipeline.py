@@ -1566,7 +1566,7 @@ class CriresPipeline:
                           remove_star_bkg=False, 
                           remove_sky_bkg=False, 
                           std_object=None,
-                          aper_prim=15, aper_comp=10, 
+                          aper_prim=20, aper_comp=10, 
                           extract_2d=False,
                           debug=False):    
         """
@@ -1794,10 +1794,7 @@ class CriresPipeline:
 
 
     @print_runtime
-    def refine_wlen_solution(self, run_skycalc=True, 
-                            data_type='Extr1D_PRIMARY', 
-                            object=None,
-                            debug=False):
+    def refine_wlen_solution(self, run_skycalc=True, debug=False):
         """
         Method for refining wavelength solution by manimizing 
         chi2 between the spectrum and the telluric transmission
@@ -1807,21 +1804,13 @@ class CriresPipeline:
         ----------
         run_skycalc: bool
             Whether to run ESO's skycalc to generate the telluric 
-            transmission model.
-        data_type: str
-            Label of the file type to worked on.
-            The default value is `Extr1D_PRIMARY`.
-        object: str
-            The name of the standard star whose spectra is used for
-            the wavelength solution optmization. If the target has
-            low S/N (<10) and there is no available standard star, 
-            set it to `None` and the refinement will not be performed. 
+            transmission model
         mode: str
             If mode is `linear`, then the wavelength solution is 
             corrected with a linear function. If mode is `quad`,
             the correction is a quadratic function.
         debug : bool
-            generate plots for debugging.
+            print polynomial fit coefficients.
 
         -------
         NoneType
@@ -1838,8 +1827,8 @@ class CriresPipeline:
         # get updated product info
         self.product_info = pd.read_csv(self.product_file, sep=';')
 
+        indices = (self.product_info[self.key_caltype] == 'Extr1D_PRIMARY') 
 
-        indices = (self.product_info[self.key_caltype] == data_type) 
         # Check unique WLEN setting
         unique_wlen = set()
         for item in self.product_info[indices][self.key_wlen]:
@@ -1852,12 +1841,9 @@ class CriresPipeline:
         indices_tellu = (self.calib_info[self.key_caltype] == "TELLU_SKYCALC") 
         if np.sum(indices_tellu) < 1:
             raise Exception("No Telluric transmission model found. Please set `run_skycalc` to `True`.") 
+        
         file = self.calib_info[indices_tellu][self.key_filename].iloc[0]
         tellu = fits.getdata(os.path.join(self.calpath, file))
-        # tellu[:,0] /= 1e3
-
-        # plt.plot(tellu[:,0], tellu[:,1])
-        # plt.show()
 
         for item_wlen in unique_wlen:
             print(f"Calibrating WLEN setting {item_wlen}:")
@@ -1870,32 +1856,36 @@ class CriresPipeline:
             
             indices_wlen = indices & \
                           (self.product_info[self.key_wlen] == item_wlen)
-            if object is not None:
-                indices_wlen = indices_wlen & \
-                        (self.product_info[self.key_target_name] == object)
-                if sum(indices_wlen) == 0:
-                    raise Exception(f"Extr1D data of {object} are not found in products")
+            
+            unique_target = set()
+            for item in self.product_info[indices_wlen][self.key_target_name]:
+                unique_target.add(item)
 
-            dt, dt_err = [], []
-            # sum available spectra 
-            for file in self.product_info[indices_wlen][self.key_filename]:
-                with fits.open(os.path.join(self.outpath, file)) as hdu:
-                    dt.append(hdu["FLUX"].data)
-                    dt_err.append(hdu["FLUX_ERR"].data)
-            dt, dt_err = su.combine_frames(dt, dt_err, collapse='sum')
+            for target in unique_target:
+                # select available data of the target
+                indices_obj = indices_wlen & \
+                            (self.product_info[self.key_target_name] == target)
+                dt, dt_err = [], []
+                for file in self.product_info[indices_obj][self.key_filename]:
+                    with fits.open(os.path.join(self.outpath, file)) as hdu:
+                        dt.append(hdu["FLUX"].data)
+                        dt_err.append(hdu["FLUX_ERR"].data)
+                # sum available spectra 
+                dt, dt_err = su.combine_frames(dt, dt_err, collapse='sum')
 
-            wlen_cal = self._loop_over_detector(su.wlen_solution, True,
-                        dt, dt_err, wlen_init, transm_spec=tellu, 
-                        debug=debug)
+                wlen_cal = self._loop_over_detector(su.wlen_solution, True,
+                            dt, dt_err, wlen_init, transm_spec=tellu, 
+                            debug=debug)
 
-            # print("\n Output files:")
-            file_name = os.path.join(self.corrpath, f'WLEN_{item_wlen}.fits')
-            su.wfits(file_name, ext_list={"WAVE": wlen_cal}, header=hdr)
-            self._add_to_product(f'obs_calibrated/WLEN_{item_wlen}.fits', 
-                        "CAL_WLEN")
+                file_name = os.path.join(self.calpath, f'WLEN_{item_wlen}_' \
+                                        + '_'.join(target.split())+'.fits')
+                hdr[self.key_target_name] = target
+                su.wfits(file_name, ext_list={"WAVE": wlen_cal}, header=hdr)
+                self._add_to_calib(f'WLEN_{item_wlen}_' \
+                                    + '_'.join(target.split())+'.fits', "CAL_WLEN")
 
-            self._plot_spec_by_order(file_name, dt, wlen_cal, 
-                                    transm_spec=tellu, show=debug)
+                self._plot_spec_by_order(file_name, dt, wlen_cal, 
+                                        transm_spec=tellu, show=debug)
         
 
     def save_extracted_data(self, combine=False):
@@ -1931,11 +1921,12 @@ class CriresPipeline:
 
             if len(unique_target) == 0:
                 continue
+            
             # Loop over each target
-            for object in unique_target:
+            for target in unique_target:
                 
                 indices_obj = indices & \
-                    (self.product_info[self.key_target_name] == object)
+                    (self.product_info[self.key_target_name] == target)
 
                 # Check unique WLEN setting
                 unique_wlen = set()
@@ -1950,18 +1941,26 @@ class CriresPipeline:
                             (self.product_info[self.key_wlen] == item_wlen)
 
                     indices_wave = \
-                        (self.product_info[self.key_caltype] == "CAL_WLEN")\
-                      & (self.product_info[self.key_wlen] == item_wlen)
+                          (self.calib_info[self.key_caltype] == "CAL_WLEN")\
+                        & (self.calib_info[self.key_wlen] == item_wlen) \
+                        & (self.calib_info[self.key_target_name] == target)
                     
                     if not np.any(indices_wave):
+                        print("No matching wavelength solution to the target .\n")
+                        print("The wavelength solution derived from other target is used.\n")
                         indices_wave = \
-                            (self.calib_info[self.key_caltype] == "INIT_WLEN") \
-                          & (self.calib_info[self.key_wlen] == item_wlen)
-                        file = self.calib_info[indices_wave][self.key_filename].iloc[0]
-                        wlen = fits.getdata(os.path.join(self.calpath, file))
-                    else:
-                        file = self.product_info[indices_wave][self.key_filename].iloc[0]
-                        wlen = fits.getdata(os.path.join(self.outpath, file))
+                                (self.calib_info[self.key_caltype] == "CAL_WLEN")\
+                                & (self.calib_info[self.key_wlen] == item_wlen)
+                        
+                        if not np.any(indices_wave):
+                            print("No calibrated wavelength solution available.\n")
+                            print("Initial wavelength solution is used.\n")
+                            indices_wave = \
+                                    (self.calib_info[self.key_caltype] == "INIT_WLEN") \
+                                    & (self.calib_info[self.key_wlen] == item_wlen)
+                        
+                    file = self.calib_info[indices_wave][self.key_filename].iloc[0]
+                    wlen = fits.getdata(os.path.join(self.calpath, file))
                     wlens.append(wlen)
 
                     dt, dt_err = [], []
@@ -2005,22 +2004,22 @@ class CriresPipeline:
 
                 l = label.split('_')[-1]
                 file_name = os.path.join(self.corrpath, 
-                            object.replace(" ", "") +\
+                            target.replace(" ", "") +\
                             f'_{l}_CRIRES_SPEC1D.fits')
                 su.wfits(file_name, ext_list={"FLUX": spec_series, 
                                               "FLUX_ERR": err_series,
                                               "WAVE": wlens}, 
                                     header=hdr)
                 self._add_to_product("obs_calibrated/" +\
-                                    object.replace(" ", "") +\
+                                    target.replace(" ", "") +\
                                     f'_{l}_CRIRES_SPEC1D.fits', 
                                      f"SPEC_{l}")
                 
                 if isinstance(snr_mid, float):
-                    print(f"Saved target {object} {l} with wavelength coverage {unique_wlen}; ",
+                    print(f"Saved target {target} {l} with wavelength coverage {unique_wlen}; ",
                             f"average S/N ~ {snr_mid:.0f}. \n")
                 else:
-                    print(f"Saved target {object} {l} with wavelength coverage {unique_wlen}; average S/N ~ ",
+                    print(f"Saved target {target} {l} with wavelength coverage {unique_wlen}; average S/N ~ ",
                             np.round(snr_mid).astype(int), " \n")
 
 
@@ -2138,7 +2137,7 @@ class CriresPipeline:
 
     @print_runtime
     def run_molecfit(self, data_type=None, object=None,
-                        wave_range=None, verbose=False) -> None:
+                        wave_range=None, verbose=True) -> None:
         """
         Method for running ESO's tool for telluric correction 
         `Molecfit`. 
@@ -2189,7 +2188,7 @@ class CriresPipeline:
         dt.wlen *= 1e-3
 
         su.molecfit(self.molpath, dt, wave_range, 
-                    savename=science_file.split('/')[-1], verbose=True)
+                    savename=science_file.split('/')[-1], verbose=verbose)
 
         self._add_to_product('molecfit/TELLURIC_DATA.dat', "TELLU_MOLECFIT")
 

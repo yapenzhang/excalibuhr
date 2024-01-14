@@ -1586,9 +1586,9 @@ def extract_spec(det, det_err, badpix, trace, slit, blaze, spec_star,
 def optimal_extraction(D_full, V_full, bpm_full, obj_cen, 
                        aper_half=20, filter_mode='poly',
                        badpix_clip=5, filter_width=121,
-                       max_iter=30, extr_level=0.95, 
-                        remove_bkg=False,
-                       gain=2., NDIT=1., etol=1e-6, debug=False):
+                       max_iter=30, extr_level=0.9, 
+                       remove_bkg=False, etol=1e-6, 
+                       gain=2., NDIT=1., debug=False):
     """
     Optimal extraction based on Horne(1986).
 
@@ -1624,6 +1624,16 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
         modeled slit function and reduced chi2 of the model (for plotting)
     """
 
+    # determine object center from the data
+    profile = np.nanmedian(D_full, axis=0)
+    # plt.plot(profile)
+    profile[:obj_cen-5] = -np.inf
+    profile[obj_cen+5:] = -np.inf
+    # print(obj_cen)
+    obj_cen = np.argmax(profile) 
+    # print(obj_cen)
+    # plt.plot(profile)
+    # plt.show()
 
     D = D_full[:,obj_cen-aper_half:obj_cen+aper_half+1] # Observation
     V = V_full[:,obj_cen-aper_half:obj_cen+aper_half+1] # Variance
@@ -1646,33 +1656,19 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
     # fit and remove bkg per wavelength channel
     if remove_bkg == True:
         
-        profile = np.nanmedian(D, axis=0)
-        profile[:len(spatial_x)//5] = 0
-        profile[len(spatial_x)//5*4:] = 0
-        cen0 = np.argmax(profile)
-
-        aper_mask = 8
-        bkg_poly_order = 4
+        aper_mask = 6
+        bkg_poly_order = 6
+        cen0 = len(spatial_x)//2
         mask = (spatial_x > cen0 - aper_mask) & (spatial_x < cen0 + aper_mask)
-        # plt.plot(spatial_x, profile)
-        # plt.plot(spatial_x[mask], profile[mask])
-        # plt.show()
-        # plt.imshow(D, aspect='auto', vmin=0, vmax=20)
-        # plt.show()
         bkg_model = np.zeros_like(D)
         for x in wave_x:
-            # if not np.all(mask_use):
-                D_poly, coeffs, _ = PolyfitClip(spatial_x[~mask], D[x, ~mask], order=bkg_poly_order)
-                A_matrix = np.vander(spatial_x-np.mean(spatial_x), bkg_poly_order)
-                y_model = np.dot(A_matrix, coeffs)
-                bkg_model[x] = y_model
-            # print(y_model)
-            # if np.all(np.isnan(y_model)):
-            #     plt.plot(spatial_x, D[x])
-            #     plt.plot(spatial_x[mask], D[x, mask])
-            #     plt.plot(spatial_x, y_model)
-            #     # plt.plot(spatial_x[~mask], D_poly)
-            #     plt.show()
+            y_model, _, _ = PolyfitClip(spatial_x, D[x], order=bkg_poly_order, mask=~mask)
+            bkg_model[x] = y_model
+            # plt.plot(spatial_x, D[x])
+            # plt.plot(spatial_x[mask], D[x, mask])
+            # plt.plot(spatial_x, y_model)
+            # # plt.plot(spatial_x[~mask], D_poly)
+            # plt.show()
         # plt.imshow(bkg_model, aspect='auto', vmin=-5, vmax=10)
         # plt.show()
         # plt.imshow(D-bkg_model, aspect='auto', vmin=0, vmax=50)
@@ -1680,6 +1676,8 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
         D -= bkg_model
         V_new += np.abs(bkg_model) / gain / NDIT
 
+        # profile = np.nanmedian(D, axis=0)
+        # plt.plot(profile)
 
     # simple sum collapse to a 1D spectrum
     f_std = np.nansum(D*np.logical_not(bpm).astype(float), axis=1)
@@ -1728,11 +1726,11 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
             P[:, indice[ind]:] = etol
         elif ind == len(indice):
             P[:, :indice[-1]+1] = etol
-    
     # Normalize the spatial profile per wavelength channel
     for w in wave_x:
         P[w] /= np.sum(P[w])
 
+    psf = np.mean(P, axis=0)
     # determine the extraction aperture by including 95% flux
     cdf = np.cumsum(psf)     
     extr_aper = (cdf > (1.-extr_level)/2.) & (cdf < (1.+extr_level)/2.)
@@ -1747,6 +1745,10 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
     # if debug:
     #     plt.imshow(P, aspect='auto')
     #     plt.show()
+    psf = np.mean(P, axis=0)
+
+    # plt.plot(psf*np.sum(profile))
+    # plt.show()
 
     # mask bad pixels
     M_bp = np.ones_like(np.logical_not(bpm))
@@ -1811,7 +1813,7 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
             break
 
     if debug:
-        print(ite)
+        # print(ite)
         plt.plot(f_opt)
         plt.show()
 
@@ -1824,9 +1826,10 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
     
     return f_opt, np.sqrt(var), D.T, P.T, np.sqrt(V_new).T, chi2_r
 
+
 def func_wlen_optimization(poly, *args):
     """
-    objective function for optimizing wavelength solutions
+    cost function for optimizing wavelength solutions
 
     Parameters
     ----------
@@ -2066,7 +2069,7 @@ def SpecConvolve_GL(in_wlen, in_flux, out_res, gamma, in_res=1e6):
     return flux_V
 
 
-def PolyfitClip(x, y, order, clip=4., max_iter=20):
+def PolyfitClip(x, y, order, mask=None, clip=4., max_iter=20):
     """
     Perform weighted least-square polynomial fit,
     iterratively cliping pixels above a certain sigma threshold
@@ -2082,6 +2085,8 @@ def PolyfitClip(x, y, order, clip=4., max_iter=20):
         sigma clip threshold
     max_iter: int 
         max number of iteration in sigma clip
+    mask: bool
+        boolean array with the masked values set to False.
 
     Returns
     ----------
@@ -2092,12 +2097,6 @@ def PolyfitClip(x, y, order, clip=4., max_iter=20):
         best fit polynomial coefficient
     """
     
-    # y_filtered = stats.sigma_clip(y, sigma=clip)
-    # if m is None:
-    #     mask = ~y_filtered.mask
-    # else:
-    #     mask = m & (~y_filtered.mask)
-
     # if np.sum(mask) < 0.1*len(mask):
     #     return np.zeros_like(y), np.zeros(order+1) #, m
     # xx = np.copy(x)
@@ -2118,13 +2117,13 @@ def PolyfitClip(x, y, order, clip=4., max_iter=20):
     x_mean = np.array(x) - np.nanmean(x) 
     A_full = np.vander(x_mean, order)
 
-    mask = np.ones_like(x_mean, dtype=bool)
+    if mask is None:
+        mask = np.ones_like(x_mean, dtype=bool)
+
     x_use = x_mean[mask]
     y_use = np.array(y)[mask]
 
     for i in range(max_iter):
-        x_use = x_use[mask]
-        y_use = y_use[mask]
         A_matrix = np.vander(x_use, order)
         coeffs = np.linalg.solve(np.dot(A_matrix.T, A_matrix), 
                                  np.dot(A_matrix.T, y_use))
@@ -2139,6 +2138,9 @@ def PolyfitClip(x, y, order, clip=4., max_iter=20):
         #     mask[np.argmax(np.abs(res))] = False
         else:
             break
+        x_use = x_use[mask]
+        y_use = y_use[mask]
+
     y_model = np.dot(A_full, coeffs)
     # print(coeffs, i)
     final_mask = (np.abs(y - y_model) > clip*np.std(res))

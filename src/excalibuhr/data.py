@@ -133,8 +133,12 @@ class SPEC2D:
         spec.flux[~mask] = np.nan
         chip_mask = np.sum(np.isnan(spec.flux), axis=1) < 0.9 * self.wlen.shape[-1]
         # remove fully masked orders
-        return self._copy(self.wlen[chip_mask], self.flux[chip_mask], 
+        if self.err is not None:
+            return self._copy(self.wlen[chip_mask], self.flux[chip_mask], 
                           self.err[chip_mask])
+        else:
+            return self._copy(self.wlen[chip_mask], self.flux[chip_mask])
+            
 
 
     def remove_order_edge(self, Nedge=10):
