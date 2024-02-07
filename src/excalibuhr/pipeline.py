@@ -1568,6 +1568,7 @@ class CriresPipeline:
                           std_object=None,
                           aper_prim=20, aper_comp=10, 
                           extract_2d=False,
+                          extr_level=0.9,
                           debug=False):    
         """
         Method for extracting. Apply AB pair subtraction,
@@ -1664,7 +1665,7 @@ class CriresPipeline:
                                                 args=(file, bpm, tw, slit, blaze, 
                                                     peak_frac, aper_prim, aper_comp, 
                                                     None, False, False, 
-                                                    remove_sky_bkg, 
+                                                    remove_sky_bkg, extr_level,
                                                     savename, debug))
                             pool_jobs.append(job)
                     else:
@@ -1673,7 +1674,7 @@ class CriresPipeline:
                                                 args=(file, bpm, tw, slit, blaze, 
                                                     peak_frac, aper_prim, aper_comp, 
                                                     companion_sep, remove_star_bkg,
-                                                    extract_2d, remove_sky_bkg, 
+                                                    extract_2d, remove_sky_bkg, extr_level,
                                                     savename, debug))
                             pool_jobs.append(job)
             
@@ -1683,7 +1684,7 @@ class CriresPipeline:
     def _process_extraction(self, file, bpm, tw, slit, blaze, 
                             peak_frac, aper_prim, aper_comp, 
                             companion_sep, remove_star_bkg, 
-                            extract_2d, remove_sky_bkg, 
+                            extract_2d, remove_sky_bkg, extr_level,
                             savename, debug):
         
         with fits.open(os.path.join(self.outpath, file)) as hdu:
@@ -1706,6 +1707,7 @@ class CriresPipeline:
                         self.gain, NDIT=ndit, extract_2d=extract_2d,
                         cen0=f0, remove_sky_bkg=remove_sky_bkg, 
                         remove_star_bkg=remove_star_bkg,
+                        extr_level=extr_level,
                         aper_half=aper_prim, debug=debug)
         flux_pri, err_pri, D, P, V, id_order, chi2_r = result
 
@@ -1748,6 +1750,7 @@ class CriresPipeline:
                             aper_half=aper_comp, 
                             remove_sky_bkg=remove_sky_bkg, 
                             remove_star_bkg=remove_star_bkg,
+                            extr_level=extr_level,
                             debug=debug)
             flux_sec, err_sec, D, P, V, id_order, chi2_r = result
 

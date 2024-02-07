@@ -282,8 +282,10 @@ class StellarGrid:
 
         # Set parameter ranges of the grid
         self.teff_grid = np.arange(2500, 4000, 100)
+        self.teff_grid = np.append(self.teff_grid, np.arange(4000, 8000, 250))
+
         self.logg_grid = np.array([3.0, 3.5, 4.0, 4.5, 5.0])
-        self.metal_grid = np.array([0, 0.25, 0.5, 0.75, 1.0])
+        # self.metal_grid = np.array([0, 0.25, 0.5, 0.75, 1.0])
 
         try:
             self.load_grid()
@@ -298,15 +300,16 @@ class StellarGrid:
         ncolumn = 4 #t, p, h2o, co
         marcs_grid = np.zeros((len(self.teff_grid), 
                                len(self.logg_grid), 
-                               len(self.metal_grid), 
+                            #    len(self.metal_grid), 
                                ncolumn, nlayer))
         for i, teff in enumerate(self.teff_grid):
             for j, logg in enumerate(self.logg_grid):
-                for k, z in enumerate(self.metal_grid):
+                # for k, z in enumerate(self.metal_grid):
+                    z = 0.
                     filename = f'p{teff:.0f}_g+{logg:.1f}_m0.0_t00_st_z+{z:.2f}_a+0.00_c+0.00_n+0.00_o+0.00_r+0.00_s+0.00.mod'
                     filename = os.path.join(self.gridpath, filename)
                     if not os.path.exists(filename):
-                        raise Exception("Marcs models not found.")
+                        raise Exception(f"Marcs model file '{filename}' not found.")
                     pt = np.genfromtxt(filename, skip_header=25, skip_footer=229)
                     molec = np.genfromtxt(filename, skip_header=140, skip_footer=114)
                     t = pt[:,4]
@@ -314,7 +317,7 @@ class StellarGrid:
                     # vmr_H2 = 1e1**molec[:,4]*1e-6/p
                     vmr_H2O = 1e1**molec[:,6]*1e-6/p
                     vmr_CO = 1e1**molec[:,9]*1e-6/p
-                    marcs_grid[i,j,k,:] = [t, p, vmr_H2O, vmr_CO]
+                    marcs_grid[i,j,:] = [t, p, vmr_H2O, vmr_CO]
 
         np.save(os.path.join(self.gridpath,'marcs_grid'), marcs_grid)
 
@@ -326,9 +329,15 @@ class StellarGrid:
         
     def interp_grid(self):
         interp = RegularGridInterpolator(
-                    (self.teff_grid, self.logg_grid, self.metal_grid), 
+                    (self.teff_grid, self.logg_grid), 
                     self.grid, bounds_error=False, fill_value=None)
         return interp
+    
+    def interp_PT(self, teff, logg):
+        pt = self.interp_grid()([teff, logg])
+        t = pt[0,0]
+        p = pt[0,1]
+        return p, t
     
 
 class LimbDarkGrid:

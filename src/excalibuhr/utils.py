@@ -1441,6 +1441,7 @@ def extract_spec(det, det_err, badpix, trace, slit, blaze, spec_star,
                     gain, NDIT=1, cen0=90, companion_sep=None, aper_half=20, 
                     extract_2d=False, 
                     remove_star_bkg=False, remove_sky_bkg=False, 
+                    extr_level=0.9,
                     debug=False):
     """
     Extract 1D spectra from detector images
@@ -1567,6 +1568,7 @@ def extract_spec(det, det_err, badpix, trace, slit, blaze, spec_star,
                                 aper_half=aper_half, 
                                 filter_mode=filter_mode,
                                 remove_bkg=remove_star_bkg,
+                                extr_level=extr_level,
                                 gain=gain, NDIT=NDIT, debug=debug) 
 
         flux.append(f_opt/blaze[o])
@@ -1627,8 +1629,8 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
     # determine object center from the data
     profile = np.nanmedian(D_full, axis=0)
     # plt.plot(profile)
-    profile[:obj_cen-5] = -np.inf
-    profile[obj_cen+5:] = -np.inf
+    profile[:obj_cen-4] = -np.inf
+    profile[obj_cen+4:] = -np.inf
     # print(obj_cen)
     obj_cen = np.argmax(profile) 
     # print(obj_cen)
@@ -1679,7 +1681,7 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
         # profile = np.nanmedian(D, axis=0)
         # plt.plot(profile)
 
-    # simple sum collapse to a 1D spectrum
+    # simple sum collapse to a 1D spectrum (box extraction)
     f_std = np.nansum(D*np.logical_not(bpm).astype(float), axis=1)
 
     # Normalize the image per spatial row with the simple 1D spectrum
@@ -1726,71 +1728,58 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
             P[:, indice[ind]:] = etol
         elif ind == len(indice):
             P[:, :indice[-1]+1] = etol
+
     # Normalize the spatial profile per wavelength channel
     for w in wave_x:
         P[w] /= np.sum(P[w])
 
-    psf = np.mean(P, axis=0)
-    # determine the extraction aperture by including 95% flux
-    cdf = np.cumsum(psf)     
-    extr_aper = (cdf > (1.-extr_level)/2.) & (cdf < (1.+extr_level)/2.)
-    extr_aper_not = (cdf < (1.-extr_level)/2.) | (cdf > (1.+extr_level)/2.)
-    # D[:, extr_aper_not] = 0.
-    V[:, extr_aper_not] = 1./etol
-    P[:, extr_aper_not] = etol
-    P[P==0] = etol
-    # if debug:
-    #     plt.plot(cdf)
-    #     plt.show()
-    # if debug:
-    #     plt.imshow(P, aspect='auto')
-    #     plt.show()
-    psf = np.mean(P, axis=0)
+    # bad pixel map with good pixels = 1 and bad pxiels = 0.
+    M_bp = np.ones_like(D, dtype=bool)
 
-    # plt.plot(psf*np.sum(profile))
-    # plt.show()
+    if extr_level is not None:
+        psf = np.mean(P, axis=0)
+        # determine the extraction aperture by including 95% flux
+        cdf = np.cumsum(psf)     
+        extr_aper = (cdf > (1.-extr_level)/2.) & (cdf < (1.+extr_level)/2.)
+        extr_aper_not = (cdf < (1.-extr_level)/2.) | (cdf > (1.+extr_level)/2.)
+        # D[:, extr_aper_not] = 0.
+        V[:, extr_aper_not] = 1./etol
+        P[:, extr_aper_not] = etol
+        P[P==0] = etol
+        # if debug:
+        #     plt.plot(cdf)
+        #     plt.show()
+        # if debug:
+        #     plt.imshow(P, aspect='auto')
+        #     plt.show()
+        psf = np.mean(P, axis=0)
 
-    # mask bad pixels
-    M_bp = np.ones_like(np.logical_not(bpm))
-    M_bp[:, extr_aper_not] = False
-    M_bp[:10, :] = False
-    M_bp[-10:, :] = False
-    norm_filtered = stats.sigma_clip((D/P)[:,extr_aper], sigma=3, axis=1)
-    M_bp[:, extr_aper] &= np.logical_not(norm_filtered.mask)
+        # plt.plot(psf*np.sum(profile))
+        # plt.show()
 
-    f_opt = np.sum(M_bp*P*D/V_new, axis=1) / (np.sum(M_bp*P*P/V_new, axis=1) + etol)
-    V_new = V + np.abs(P*np.tile(f_opt, (P.shape[1],1)).T) / gain / NDIT
-    var = 1. / (np.sum(M_bp*P*P/V_new, axis=1)+etol)
-    snr = np.nanmedian(f_opt/np.sqrt(var))
-    # print(snr)
+        # mask bad pixels
+        M_bp[:, extr_aper_not] = False
+        norm_filtered = stats.sigma_clip((D/P)[:,extr_aper], sigma=3, axis=1)
+        M_bp[:, extr_aper] &= np.logical_not(norm_filtered.mask)
 
-    # if debug:
-    #     fig, axes = plt.subplots(ncols=2, sharey=True)
-    #     axes[0].imshow(D/P, vmin=0, vmax=8e4, aspect='auto')
-    #     axes[1].imshow(M_bp, aspect='auto')
-    #     plt.show()
 
     if debug:
         plt.plot(f_std)
-        plt.plot(f_opt)
-        # plt.show()
 
     for ite in range(max_iter):
 
+        f_opt = np.sum(M_bp*P*D, axis=1) / (np.sum(M_bp*P*P, axis=1) + etol)
+        V_new = V + np.abs(P*f_opt[:,None]) / gain / NDIT
         # Residual of optimally extracted spectrum and the observation
-        Res = M_bp * (D - P*np.tile(f_opt, (P.shape[1],1)).T)**2/V_new
-        
-        # dirty fix to the issues of rejecting good pixels for bright sources
-        if snr > 200:
-            Res /= 4.
+        Res = M_bp * (D - P*f_opt[:,None])**2/V_new
 
+        # to avoid the Residuals driven by the bad pxiels.
         good_channels = np.all(Res<badpix_clip**2, axis=1)
         f_prox = interp1d(wave_x[good_channels], f_opt[good_channels], 
                     kind='cubic', bounds_error=False, fill_value=0.)(wave_x)
-        Res = M_bp * (D - P*np.tile(f_prox, (P.shape[1],1)).T)**2/V_new
-        if snr > 200:
-            Res /= 4.
+        Res = M_bp * (D - P*f_prox[:,None])**2/V_new
 
+        # only reject one bad pixel per wavelength channel at a time
         bad_channels = np.any(Res>badpix_clip**2, axis=1)
         for x in wave_x[bad_channels]:
             M_bp[x, np.argmax(Res[x]-badpix_clip**2)] = False
@@ -1803,12 +1792,6 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
         #     axes[1].imshow(M_bp, aspect='auto')
         #     plt.show()
 
-        # Optimally extracted spectrum, obtained by accounting
-        # for the profile and variance
-        f_opt = np.sum(M_bp*P*D/V_new, axis=1) / (np.sum(M_bp*P*P/V_new, axis=1) + etol)
-
-        # Calculate a new variance with the optimally extracted spectrum
-        V_new = V + np.abs(P*np.tile(f_opt, (P.shape[1],1)).T) / gain / NDIT
         if not np.any(bad_channels):
             break
 
@@ -1819,12 +1802,20 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
 
     # Rescale the variance by the reduced chi2
     chi2_r = np.nansum(Res)/(np.sum(M_bp)-len(f_opt))
+
     if chi2_r > 1:
         var = 1. / (np.sum(M_bp*P*P/V_new, axis=1)+etol) * chi2_r
     else:
         var = 1. / (np.sum(M_bp*P*P/V_new, axis=1)+etol)
     
+    # Optimally extracted spectrum
+    f_opt = np.sum(M_bp*P*D/V_new, axis=1) / (np.sum(M_bp*P*P/V_new, axis=1) + etol)
+    
+    # plt.plot(f_opt/np.sqrt(var))
+    # plt.show()
+
     return f_opt, np.sqrt(var), D.T, P.T, np.sqrt(V_new).T, chi2_r
+
 
 
 def func_wlen_optimization(poly, *args):
