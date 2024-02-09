@@ -17,7 +17,7 @@ from astropy.io import fits
 from astroquery.eso import Eso
 import skycalc_ipy
 import excalibuhr.utils as su
-from excalibuhr.data import SPEC2D
+from excalibuhr.data import SPEC, DETECTOR, wfits
 
 import matplotlib.pyplot as plt 
 
@@ -629,10 +629,14 @@ class CriresPipeline:
         plt.close(fig)
 
 
-    def _plot_extr_model(self, savename):
+    def _plot_extr2d_model(self, savename):
         self._set_plot_style()
-        D, P, V, id_det, id_order, chi2 = self._load_extr2D(savename+'.npz')
-        Ndet, Norder = chi2.shape[0], chi2.shape[1]
+        data = np.load(savename+'.npz')
+        D = data['data'][0]
+        P = data['data'][2]
+        id_det = data['id_det']
+        id_order = data['id_order']
+        Ndet, Norder = id_det.shape[0]+1, id_order.shape[1]+1
         fig, axes = plt.subplots(nrows=Norder*2, ncols=Ndet, 
                         figsize=(2*Norder, 14), sharex=True, sharey=True,  
                         constrained_layout=True)
@@ -651,8 +655,9 @@ class CriresPipeline:
                     vmin, vmax = np.percentile(data[~nans], (5, 95))
                     ax_d.imshow(data, vmin=vmin, vmax=vmax, aspect='auto')
                     ax_m.imshow(model, vmin=0, vmax=np.max(model), aspect='auto')
-                ax_d.set_title(r"Order {0}, $\chi_r^2$: {1:.2f}".format(
-                                        o//2, chi2[i, o//2]))
+                ax_d.set_title(f"Order {o//2}")
+                # ax_d.set_title(r"Order {0}, $\chi_r^2$: {1:.2f}".format(
+                #                         o//2, chi2[i, o//2]))
             axes[-1,i].set_xlabel(f"Detector {i}", size='large', fontweight='bold')
         axes[0,0].set_ylim((0, rows_crop))
         plt.savefig(savename+'.png')
@@ -714,7 +719,7 @@ class CriresPipeline:
             # Save the master dark, read-out noise, and bad-pixel maps
             file_name = os.path.join(self.calpath, 
                             f'DARK_MASTER_DIT{item}.fits')
-            su.wfits(file_name, ext_list={"FLUX": master}, header=hdr)
+            wfits(file_name, ext_list={"FLUX": master}, header=hdr)
             self._add_to_calib(f'DARK_MASTER_DIT{item}.fits', 
                             "DARK_MASTER")
             self._plot_det_image(file_name, f"DARK_MASTER, DIT={item:.1f}",
@@ -722,13 +727,13 @@ class CriresPipeline:
             
             file_name = os.path.join(self.calpath, 
                             f'DARK_RON_DIT{item}.fits')
-            su.wfits(file_name, ext_list={"FLUX": rons}, header=hdr)
+            wfits(file_name, ext_list={"FLUX": rons}, header=hdr)
             self._add_to_calib(f'DARK_RON_DIT{item}.fits', 
                             "DARK_RON")
 
             file_name = os.path.join(self.calpath, 
                             f'DARK_BPM_DIT{item}.fits')
-            su.wfits(file_name, ext_list={"FLUX": badpix.astype(int)}, header=hdr)
+            wfits(file_name, ext_list={"FLUX": badpix.astype(int)}, header=hdr)
             self._add_to_calib(f'DARK_BPM_DIT{item}.fits', 
                             "DARK_BPM")
 
@@ -820,12 +825,12 @@ class CriresPipeline:
             # Save the master flat and bad-pixel map
             file_name = os.path.join(self.calpath, 
                             f'FLAT_MASTER_{item_wlen}.fits')
-            su.wfits(file_name, ext_list={"FLUX": master}, header=hdr)
+            wfits(file_name, ext_list={"FLUX": master}, header=hdr)
             self._add_to_calib(f'FLAT_MASTER_{item_wlen}.fits', "FLAT_MASTER")
 
             file_name = os.path.join(self.calpath, 
                             f'FLAT_BPM_{item_wlen}.fits')
-            su.wfits(file_name, ext_list={"FLUX": badpix.astype(int)}, header=hdr)
+            wfits(file_name, ext_list={"FLUX": badpix.astype(int)}, header=hdr)
             self._add_to_calib(f'FLAT_BPM_{item_wlen}.fits', 
                             "FLAT_BPM")
             
@@ -915,7 +920,7 @@ class CriresPipeline:
             print("\n Output files:")
             # Save the polynomial coefficients
             file_name = os.path.join(self.calpath, f'TW_FLAT_{item_wlen}.fits')
-            su.wfits(file_name, ext_list={"FLUX": trace}, header=hdr)
+            wfits(file_name, ext_list={"FLUX": trace}, header=hdr)
             self._add_to_calib(f'TW_FLAT_{item_wlen}.fits', "TRACE_TW")
             
             self._plot_det_image(file_name, f"FLAT_MASTER_{item_wlen}", 
@@ -1042,7 +1047,7 @@ class CriresPipeline:
             # and an initial wavelength solution
             file_name = os.path.join(self.calpath, 
                             f'SLIT_TILT_{item_wlen}.fits')
-            su.wfits(file_name, ext_list={"FLUX": meta}, header=hdr)
+            wfits(file_name, ext_list={"FLUX": meta}, header=hdr)
             self._add_to_calib(f'SLIT_TILT_{item_wlen}.fits', "SLIT_TILT")
 
             self._plot_det_image(file_name, f"FPET_{item_wlen}", 
@@ -1050,7 +1055,7 @@ class CriresPipeline:
 
             file_name = os.path.join(self.calpath, 
                             f'INIT_WLEN_{item_wlen}.fits')
-            su.wfits(file_name, ext_list={"WAVE": wlen}, header=hdr)
+            wfits(file_name, ext_list={"WAVE": wlen}, header=hdr)
             self._add_to_calib(f'INIT_WLEN_{item_wlen}.fits', "INIT_WLEN")
             
 
@@ -1117,18 +1122,18 @@ class CriresPipeline:
             print("\n Output files:")
             file_name = os.path.join(self.calpath, 
                                     f'FLAT_NORM_{item_wlen}.fits')
-            su.wfits(file_name, ext_list={"FLUX": flat_norm}, header=hdr)
+            wfits(file_name, ext_list={"FLUX": flat_norm}, header=hdr)
             self._add_to_calib(f'FLAT_NORM_{item_wlen}.fits', "FLAT_NORM")
             self._plot_det_image(file_name, f"FLAT_NORM_{item_wlen}", 
                             flat_norm, tw=trace_update)
 
             file_name = os.path.join(self.calpath, f'BLAZE_{item_wlen}.fits')
-            su.wfits(file_name, ext_list={"FLUX": blazes}, header=hdr)
+            wfits(file_name, ext_list={"FLUX": blazes}, header=hdr)
             self._add_to_calib(f'BLAZE_{item_wlen}.fits', "BLAZE")
             self._plot_spec_by_order(file_name, blazes) 
 
             file_name = os.path.join(self.calpath, f'TW_FLAT_{item_wlen}.fits')
-            su.wfits(file_name, ext_list={"FLUX": trace_update}, header=hdr)
+            wfits(file_name, ext_list={"FLUX": trace_update}, header=hdr)
         
             
 
@@ -1373,7 +1378,7 @@ class CriresPipeline:
             file_name = os.path.join(self.nodpath, 
                             f"{self.obs_mode}_"+ object.replace(" ", "") + \
                             f"_{item_wlen}_{file_s}")
-            su.wfits(file_name, ext_list={"FLUX": frame_bkg_cor, 
+            wfits(file_name, ext_list={"FLUX": frame_bkg_cor, 
                                 "FLUX_ERR": err_bkg_cor}, header=hdr)
 
             print(f"\nProcessed file {file_s} at nod position {pos}")
@@ -1417,7 +1422,7 @@ class CriresPipeline:
         file_name = os.path.join(self.nodpath, 
                         f"{self.obs_mode}_"+ object.replace(" ", "") + \
                         f"_{item_wlen}_{file_s}")
-        su.wfits(file_name, ext_list={"FLUX": frame_bkg_cor, 
+        wfits(file_name, ext_list={"FLUX": frame_bkg_cor, 
                             "FLUX_ERR": err_bkg_cor}, header=hdr)
 
         self._add_to_product('/'.join(file_name.split('/')[-2:]),  
@@ -1545,7 +1550,7 @@ class CriresPipeline:
                     file_name = os.path.join(self.nodpath, 
                             "COMBINED_"+ object.replace(" ", "") + \
                             f"_{item_wlen}_{self.obs_mode}_{pos}.fits")
-                    su.wfits(file_name, ext_list={"FLUX": combined, 
+                    wfits(file_name, ext_list={"FLUX": combined, 
                                 "FLUX_ERR": combined_err}, header=hdr)
                     self._add_to_product('/'.join(file_name.split('/')[-2:]), 
                             f"{self.obs_mode}_COMBINED")
@@ -1709,7 +1714,7 @@ class CriresPipeline:
                         remove_star_bkg=remove_star_bkg,
                         extr_level=extr_level,
                         aper_half=aper_prim, debug=debug)
-        flux_pri, err_pri, D, P, V, id_order, chi2_r = result
+        flux_pri, err_pri, D, V, P = result
 
         #estimate snr of the primary spectra at the middle order
         mid_order = len(flux_pri[0])//2
@@ -1719,8 +1724,7 @@ class CriresPipeline:
         paths = file.split('/')
         paths[-1] = '_'.join(['Extr1D_PRIMARY', savename, paths[-1]])
         filename = os.path.join(self.outpath, '/'.join(paths))
-        su.wfits(filename, ext_list={"FLUX": flux_pri, 
-                                "FLUX_ERR": err_pri}, header=hdr)
+        wfits(filename, ext_list={"FLUX": flux_pri, "FLUX_ERR": err_pri}, header=hdr)
         if savename == '':
             self._add_to_product('/'.join(paths), 'Extr1D_PRIMARY', snr_mid)
         else:
@@ -1731,12 +1735,15 @@ class CriresPipeline:
             paths = file.split('/')
             paths[-1] =  '_'.join(['Extr2D_PRIMARY', savename, paths[-1][:-5]])
             filename2d = os.path.join(self.outpath, '/'.join(paths))
-            self._save_extr2D(filename2d, D, P, V, id_order, chi2_r)
+
+            extr2d = DETECTOR(data=[D, V, P], fields=['flux', 'var', 'psf'])
+            extr2d.save_extr2d(filename2d)
+            extr2d.plot_extr2d_model(filename2d)
+
             if savename == '':
                 self._add_to_product('/'.join(paths)+'.npz', 'Extr2D_PRIMARY')
             else:
                 self._add_to_product('/'.join(paths)+'.npz', '_'.join(['Extr2D_PRIMARY', savename]))
-            self._plot_extr_model(filename2d)
 
         if not companion_sep is None:
 
@@ -1752,12 +1759,12 @@ class CriresPipeline:
                             remove_star_bkg=remove_star_bkg,
                             extr_level=extr_level,
                             debug=debug)
-            flux_sec, err_sec, D, P, V, id_order, chi2_r = result
+            flux_sec, err_sec, D, V, P, ind_order = result
 
             paths = file.split('/')
             paths[-1] = '_'.join(['Extr1D_SECONDARY', savename, paths[-1]])
             filename = os.path.join(self.outpath, '/'.join(paths))
-            su.wfits(filename, ext_list={"FLUX": flux_sec, 
+            wfits(filename, ext_list={"FLUX": flux_sec, 
                                     "FLUX_ERR": err_sec}, header=hdr)
             if savename == '':
                 self._add_to_product('/'.join(paths), 'Extr1D_SECONDARY')
@@ -1768,32 +1775,16 @@ class CriresPipeline:
             paths = file.split('/')
             paths[-1] = '_'.join(['Extr2D_SECONDARY', savename, paths[-1][:-5]])
             filename2d = os.path.join(self.outpath, '/'.join(paths))
-            self._save_extr2D(filename2d, D, P, V, id_order, chi2_r)
+            
+            xtr2d = DETECTOR(data=[D, V, P], fields=['flux', 'var', 'psf'])
+            extr2d.save_extr2d(filename2d)
+            extr2d.plot_extr2d_model(filename2d)
+
             if savename == '':
                 self._add_to_product('/'.join(paths)+'.npz', 'Extr2D_SECONDARY')
             else:
                 self._add_to_product('/'.join(paths)+'.npz', '_'.join(['Extr2D_SECONDARY', savename]))
-            self._plot_extr_model(filename2d)
-
-
-    def _save_extr2D(self, filename, *ragged_list):
-        D, P, V, id_order, chi2 = ragged_list
-        D_stack, id_det = su.stack_ragged(D)
-        P_stack, id_det = su.stack_ragged(P)
-        V_stack, id_det = su.stack_ragged(V)
-        np.savez(filename, FLUX=D_stack, FLUX_ERR=V_stack,
-                        MODEL=P_stack, id_det=id_det, id_order=id_order,
-                        chi2=chi2)
-
-    def _load_extr2D(self, filename):
-        data = np.load(filename)
-        D = data['FLUX']
-        V = data['FLUX_ERR']
-        P = data['MODEL']
-        id_det = data['id_det']
-        id_order = data['id_order']
-        chi2 = data['chi2']
-        return D, P, V, id_det, id_order, chi2
+    
 
 
     @print_runtime
@@ -1883,7 +1874,7 @@ class CriresPipeline:
                 file_name = os.path.join(self.calpath, f'WLEN_{item_wlen}_' \
                                         + '_'.join(target.split())+'.fits')
                 hdr[self.key_target_name] = target
-                su.wfits(file_name, ext_list={"WAVE": wlen_cal}, header=hdr)
+                wfits(file_name, ext_list={"WAVE": wlen_cal}, header=hdr)
                 self._add_to_calib(f'WLEN_{item_wlen}_' \
                                     + '_'.join(target.split())+'.fits', "CAL_WLEN")
 
@@ -2009,7 +2000,7 @@ class CriresPipeline:
                 file_name = os.path.join(self.corrpath, 
                             target.replace(" ", "") +\
                             f'_{l}_CRIRES_SPEC1D.fits')
-                su.wfits(file_name, ext_list={"FLUX": spec_series, 
+                wfits(file_name, ext_list={"FLUX": spec_series, 
                                               "FLUX_ERR": err_series,
                                               "WAVE": wlens}, 
                                     header=hdr)
@@ -2027,7 +2018,7 @@ class CriresPipeline:
 
 
                 if combine:
-                    result = SPEC2D(wlen=wlens, flux=spec_series, err=err_series)
+                    result = SPEC(wlen=wlens, flux=spec_series, err=err_series)
                     result.save_spec1d(file_name[:-4]+'dat')
                     result.plot_spec1d(file_name[:-4]+'png')
 
@@ -2134,7 +2125,7 @@ class CriresPipeline:
 
         transm_spec = np.column_stack((wave.value, trans))
         out_file= os.path.join(self.calpath, "TRANSM_SPEC.fits")
-        su.wfits(out_file, ext_list={"FLUX": transm_spec})
+        wfits(out_file, ext_list={"FLUX": transm_spec})
         self._add_to_calib('TRANSM_SPEC.fits', "TELLU_SKYCALC")
 
 
@@ -2187,7 +2178,7 @@ class CriresPipeline:
                 (self.product_info[indices][self.key_target_name] == object)
 
         science_file = self.product_info[indices][self.key_filename].iloc[0]
-        dt = SPEC2D(filename=os.path.join(self.outpath, science_file))
+        dt = SPEC(filename=os.path.join(self.outpath, science_file))
         dt.wlen *= 1e-3
 
         su.molecfit(self.molpath, dt, wave_range, 

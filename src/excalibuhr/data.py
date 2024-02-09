@@ -1,5 +1,5 @@
 # File: src/excalibuhr/data.py
-__all__ = ['SPEC2D']
+__all__ = ['SPEC', 'DETECTOR']
 
 import numpy as np 
 import matplotlib.pyplot as plt 
@@ -10,7 +10,8 @@ from scipy import ndimage, signal
 import excalibuhr.utils as su 
 import copy 
 
-class SPEC2D:
+
+class SPEC:
     """
     Object for spectral data in 2D shape (N_chip x N_pixel)
     It contains the wavelength, flux, and error arrays. 
@@ -157,36 +158,14 @@ class SPEC2D:
         self.wlen_bins = data_wlen_bins
 
 
-    def make_covariance(self, amp, length, trunc_dist=5):
-
-        if np.array(amp).size == 1: 
-            amp = np.ones(self.Nchip) * amp[0]
-            length = np.ones(self.Nchip) * length[0]
-        elif np.array(amp).size != self.Nchip:
-            raise Exception("GP kernel parameters should have the same size as the number of data chips")
+    # def make_covariance_local(self, amp, mu, sigma, trunc_dist=5):
         
-        self.cov = []
-        delta_wave = np.abs(self.wlen[:,:,None] - self.wlen[:,None,:])
-
-        for i in range(self.Nchip):
-            cov = su.add_RBF_kernel(amp[i], length[i], delta_wave[i], 
-                                      self.err[i], trunc_dist=trunc_dist)
-            self.cov.append(cov)
-            
-
-    def make_covariance_local(self, amp, mu, sigma, trunc_dist=5):
-        
-        for a, m, s in zip(amp, mu, sigma):
-            # check which chip the local feature belongs to
-            indices = np.searchsorted(self.wlen[:,0], m)-1
-            cov_local = su.add_local_kernel(a, m, s, self.wlen[indices], trunc_dist=trunc_dist)
-            self.cov[indices] += cov_local
+    #     for a, m, s in zip(amp, mu, sigma):
+    #         # check which chip the local feature belongs to
+    #         indices = np.searchsorted(self.wlen[:,0], m)-1
+    #         cov_local = su.add_local_kernel(a, m, s, self.wlen[indices], trunc_dist=trunc_dist)
+    #         self.cov[indices] += cov_local
     
-    def make_spline_model(self, N_knots):
-        x_knots = np.array([np.linspace(self.wlen[i][0], self.wlen[i][-1], N_knots) for i in range(self.Nchip)])
-        M_spline = su.get_spline_model(x_knots, self.wlen)
-        splined = M_spline * self.flux[:, :, None]
-        return splined, M_spline
     
     def match_LSF(self, wlen_sharp, flux_sharp, chip_bin=3, kernel_size=20):
         spec_reconst = []
@@ -323,26 +302,6 @@ class SPEC2D:
             plt.show()
         return self
 
-    def _set_plot_style(self):
-        plt.rcParams.update(plt.rcParamsDefault)
-        plt.rcParams.update({
-            'font.size': 10,
-            "xtick.labelsize": 10,   
-            "ytick.labelsize": 10,   
-            "xtick.direction": 'in', 
-            "ytick.direction": 'in', 
-            'ytick.right': True,
-            'xtick.top': True,
-            "xtick.minor.visible": True,
-            "ytick.minor.visible": True,
-            # "xtick.major.size": 5,
-            # "xtick.minor.size": 2.5,
-            "lines.linewidth": 0.5,   
-            'image.origin': 'lower',
-            'image.cmap': 'cividis',
-            "savefig.dpi": 300,   
-            })
-
 
     def save_spec1d(self, savename):
         unraveled = []
@@ -357,7 +316,7 @@ class SPEC2D:
 
 
     def plot_spec1d(self, savename, show=False):
-        self._set_plot_style()
+        _set_plot_style()
         nrows = self.wlen.shape[0]//3
         if self.wlen.shape[0]%3 != 0:
             nrows += 1
@@ -406,3 +365,187 @@ class SPEC2D:
             axes[-1].set_ylabel('S/N')
             plt.savefig(savename[:-4]+'_SNR.png')
             plt.close(fig)
+
+
+class DETECTOR:
+    """
+    Object for detector data in 2D shape (N_spatial_pixel x N_spectral_pixel)
+
+    """
+
+    def __init__(self, data=None, fields=None, filename=None):
+        """
+        initilize the object either with arrays passed via `data`. 
+        fields of data may contain flux, variance, psf, etc.
+
+        """
+        if data is not None:
+            for i, key in enumerate(fields):
+                setattr(self, key, data[i])
+            self.Ndet = len(data[0])
+            self.Norder = len(data[0][0])
+        elif filename is not None:
+            self.load_extr2d(filename)
+
+
+    def save_extr2d(self, filename):
+        """
+        Method for saving the pipeline extracted 2D spectral data to .npz files.
+        The 2D data shape can vary in the spatial diemsion across different orders, 
+        therefore cannot be directly stored as numpy ndarray.
+        The data of all orders are stacked along the 0th axis and then saved as numpy arrays.   
+
+        Parameters
+        ----------
+        filename : str
+            Path to save the 2d data as a `.npz` file. A list of 2D data 
+            (such as flux, variance, fitted spatial profile) 
+            will be be stacked and saved.
+
+        Returns
+        -------
+        NoneType
+            None
+        """
+        all_stacked = {}
+        for key in self.__dict__.keys() - ['Ndet', 'Norder']:
+            dt = self.__getattribute__(key)
+            dt_stack, id_orders = [], []
+            for dt_per_det in dt:
+                order_stack, id_order = stack_ragged(dt_per_det)
+                dt_stack.append(order_stack)
+                id_orders.append(id_order)
+            dt_stack, id_dets = stack_ragged(dt_stack)
+            all_stacked[key] = dt_stack
+        all_stacked['id_dets'] = id_dets
+        all_stacked['id_orders'] = id_orders
+        np.savez(filename, **all_stacked)
+
+
+    def load_extr2d(self, filename):
+        """
+        Method for reading and unraveling the pipeline 2D extracted .npz files into arrays.
+
+        Parameters
+        ----------
+        filename : str
+            Path of the `EXTR2D` .npz file to load. The 2D data will be unraveled to the 4d 
+            shape of (N_detector, N_order, N_spatial_pixel, N_dispersion_pixel), and set as
+            the attributes of the class.
+
+        Returns
+        -------
+        NoneType
+            None
+        """
+
+        data = np.load(filename+'.npz')
+        id_dets = data['id_dets']
+        id_orders = data['id_orders']
+        self.Ndet, self.Norder = id_dets.shape[0]+1, id_orders.shape[1]+1
+        for key in data.keys() - ['id_dets', 'id_orders']:
+            dt = data[key]
+            D_unravel = []
+            D_det = np.split(dt, id_dets)
+            for i in range(self.Ndet):
+                D_order = np.split(D_det[i], id_orders[i])
+                D_unravel.append(D_order)
+            setattr(self, key, D_unravel)
+    
+    
+    def plot_extr2d_model(self, savename):
+        _set_plot_style()
+
+        fig, axes = plt.subplots(nrows=self.Norder*2, ncols=self.Ndet, 
+                        figsize=(2*self.Norder, 14), sharex=True, sharey=True,  
+                        constrained_layout=True)
+        for i in range(self.Ndet):
+            D_order = self.flux[i]
+            P_order = self.psf[i]
+            rows_crop = 0
+            for o in range(0, 2*self.Norder, 2):
+                ax_d, ax_m = axes[self.Norder*2-o-2, i], axes[self.Norder*2-o-1, i] 
+                data, model = D_order[o//2], P_order[o//2]
+                rows_crop = max(data.shape[0], rows_crop)
+                if data.size != 0:
+                    nans = np.isnan(data)
+                    vmin, vmax = np.percentile(data[~nans], (5, 95))
+                    ax_d.imshow(data, vmin=vmin, vmax=vmax, aspect='auto')
+                    ax_m.imshow(model, vmin=0, vmax=np.max(model), aspect='auto')
+                ax_d.set_title(f"Order {o//2}")
+            axes[-1,i].set_xlabel(f"Detector {i}", size='large', fontweight='bold')
+        axes[0,0].set_ylim((0, rows_crop))
+        plt.savefig(savename+'.png')
+        plt.close(fig)
+
+
+def wfits(fname, ext_list: dict, header=None):
+    """
+    write data to FITS primary and extensions, overwriting any old file
+    
+    Parameters
+    ----------
+    fname: str
+        path and filename to which the data is saved 
+    ext_list: dict
+        to save the data in the dictionary to FITS extension. Specify the datatype 
+        (e.g.  "FLUX", "FLUX_ERR", "WAVE", and "MODEL") in the key. 
+    header: FITS `header`
+        header information to be saved
+
+    Returns
+    -------
+    NoneType
+        None
+    """
+
+    primary_hdu = fits.PrimaryHDU(header=header)
+    new_hdul = fits.HDUList([primary_hdu])
+    if not ext_list is None:
+        for key, value in ext_list.items():
+            new_hdul.append(fits.ImageHDU(value, name=key))
+    new_hdul.writeto(fname, overwrite=True, output_verify='ignore') 
+
+
+def stack_ragged(array_list, axis=0):
+    """
+    stack arrays with same number of columns but different number of rows
+    into a new array and record the indices of each sub array.
+
+    Parameters
+    ----------
+    array_list: list
+        the list of array to be stacked
+
+    Returns
+    -------
+    stacked: array
+        the stacked array along the 0th axis
+    idx: array
+        the indices to retrieve back the sub arrays
+    """
+    lengths = [np.shape(a)[axis] for a in array_list]
+    idx = np.cumsum(lengths[:-1])
+    stacked = np.concatenate(array_list, axis=axis)
+    return stacked, idx
+
+
+def _set_plot_style():
+    plt.rcParams.update({
+        'font.size': 12,
+        "xtick.labelsize": 12,   
+        "ytick.labelsize": 12,   
+        "xtick.direction": 'in', 
+        "ytick.direction": 'in', 
+        'ytick.right': True,
+        'xtick.top': True,
+        "xtick.minor.visible": True,
+        "ytick.minor.visible": True,
+        # "xtick.major.size": 5,
+        # "xtick.minor.size": 2.5,
+        # "xtick.major.pad": 7,
+        "lines.linewidth": 0.5,   
+        'image.origin': 'lower',
+        'image.cmap': 'cividis',
+        "savefig.dpi": 300,   
+        })

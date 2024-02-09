@@ -16,32 +16,6 @@ import shutil
 import subprocess
 
 
-def wfits(fname, ext_list: dict, header=None):
-    """
-    write data to FITS primary and extensions, overwriting any old file
-    
-    Parameters
-    ----------
-    fname: str
-        path and filename to which the data is saved 
-    ext_list: dict
-        to save the data in the dictionary to FITS extension. Specify the datatype 
-        (e.g.  "FLUX", "FLUX_ERR", "WAVE", and "MODEL") in the key. 
-    header: FITS `header`
-        header information to be saved
-
-    Returns
-    -------
-    NoneType
-        None
-    """
-
-    primary_hdu = fits.PrimaryHDU(header=header)
-    new_hdul = fits.HDUList([primary_hdu])
-    if not ext_list is None:
-        for key, value in ext_list.items():
-            new_hdul.append(fits.ImageHDU(value, name=key))
-    new_hdul.writeto(fname, overwrite=True, output_verify='ignore') 
 
 def CCF_doppler(w_obs, f_obs, w_model, f_model, v_extent, dv):
     c = 2.99792458e5 #km/s
@@ -1538,7 +1512,7 @@ def extract_spec(det, det_err, badpix, trace, slit, blaze, spec_star,
     if companion_sep is not None:
         obj2_cen = obj_cen - companion_sep
 
-    flux, err, D, P, V, chi2 = [],[],[],[],[],[]
+    flux, err, D, P, V = [],[],[],[],[]
     for o, (im_sub, im_err_sub, bpm_sub) in enumerate(zip(im_subs, im_err_subs, bpm_subs)):
         
         if remove_sky_bkg:
@@ -1562,7 +1536,7 @@ def extract_spec(det, det_err, badpix, trace, slit, blaze, spec_star,
             center = obj2_cen
 
         # Extract a 1D spectrum using the optimal extraction algorithm
-        f_opt, f_err, D_sub, P_sub, V_sub, chi2_r = optimal_extraction(
+        f_opt, f_err, D_sub, V_sub, P_sub = optimal_extraction(
                                 im_sub.T, im_err_sub.T**2, bpm_sub.T, 
                                 obj_cen=int(np.round(center)), 
                                 aper_half=aper_half, 
@@ -1574,15 +1548,15 @@ def extract_spec(det, det_err, badpix, trace, slit, blaze, spec_star,
         flux.append(f_opt/blaze[o])
         err.append(f_err/blaze[o])
         D.append(D_sub)
-        P.append(P_sub)
         V.append(V_sub)
-        chi2.append(chi2_r)
+        P.append(P_sub)
+        # chi2.append(chi2_r)
 
-    D_stack, id_order = stack_ragged(D)
-    P_stack, id_order = stack_ragged(P)
-    V_stack, id_order = stack_ragged(V)
+    # D_stack, id_order = stack_ragged(D)
+    # P_stack, id_order = stack_ragged(P)
+    # V_stack, id_order = stack_ragged(V)
 
-    return flux, err, D_stack, P_stack, V_stack, id_order, chi2 
+    return flux, err, D, V, P #D_stack, V_stack, P_stack, id_order 
 
 
 def optimal_extraction(D_full, V_full, bpm_full, obj_cen, 
@@ -1814,7 +1788,7 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
     # plt.plot(f_opt/np.sqrt(var))
     # plt.show()
 
-    return f_opt, np.sqrt(var), D.T, P.T, np.sqrt(V_new).T, chi2_r
+    return f_opt, np.sqrt(var), D.T, V_new.T, P.T
 
 
 
@@ -2087,23 +2061,6 @@ def PolyfitClip(x, y, order, mask=None, clip=4., max_iter=20):
     coeffs: array
         best fit polynomial coefficient
     """
-    
-    # if np.sum(mask) < 0.1*len(mask):
-    #     return np.zeros_like(y), np.zeros(order+1) #, m
-    # xx = np.copy(x)
-    # yy = np.copy(y)
-    # if w is None:
-    #     ww = np.ones_like(xx)
-    # else:
-    #     ww = np.copy(w)
-
-    # poly = Poly.polyfit(xx[mask], yy[mask], order, w=ww[mask])
-    # y_model = Poly.polyval(xx, poly)
-    # if plotting:
-    #     plt.plot(yy)
-    #     plt.plot(y_model)
-    #     plt.show()
-    # print(poly)
 
     x_mean = np.array(x) - np.nanmean(x) 
     A_full = np.vander(x_mean, order)
@@ -2157,6 +2114,7 @@ def PolyfitClip(x, y, order, mask=None, clip=4., max_iter=20):
     #         break
     #     ite+=1
     return y_model, coeffs, final_mask
+
 
 def fit_continuum_clip(x, y, order, pixel_distance=50, sigma=1.5, max_iter=20):
     x_mean = x - np.nanmean(x) 
@@ -2347,38 +2305,44 @@ def get_spline_model(x_knots, x_samples, spline_degree=3):
 
 
 
-def stack_ragged(array_list, axis=0):
+def load_extr2D_old(filename):
     """
-    stack arrays with same number of columns but different number of rows
-    into a new array and record the indices of each sub array.
+    Method for reading the pipeline 2D extracted .npz files into arrays.
 
     Parameters
     ----------
-    array_list: list
-        the list of array to be stacked
+    filename : str
+        Path of the `EXTR2D` .npz file to load.
 
     Returns
     -------
-    stacked: array
-        the stacked array along the 0th axis
-    idx: array
-        the indices to retrieve back the sub arrays
+    D, P, V: list
+        The calibrated 2D data including both the spatial and dispersion dimension. 
+        The shape of the list is (N_detector, N_order, N_spatial_pixel, N_dispersion_pixel).
     """
-    lengths = [np.shape(a)[axis] for a in array_list]
-    idx = np.cumsum(lengths[:-1])
-    stacked = np.concatenate(array_list, axis=axis)
-    return stacked, idx
 
+    data = np.load(filename)
+    D = data['FLUX']
+    V = data['FLUX_ERR']
+    P = data['MODEL']
+    id_det = data['id_det']
+    id_order = data['id_order']
+    Ndet, Norder = id_det.shape[0]+1, id_order.shape[1]+1
+    D_det = np.split(D, id_det)
+    P_det = np.split(P, id_det)
+    V_det = np.split(V, id_det)
+    D_unravel, P_unravel, V_unravel = [], [], []
+    for i in range(Ndet):
+        D_order = np.split(D_det[i], id_order[i])
+        P_order = np.split(P_det[i], id_order[i])
+        V_order = np.split(V_det[i], id_order[i])
+        # for o in range(Norder):
+        #     data, model, var = D_order[o], P_order[o], V_order[o]
+        D_unravel.append(D_order)
+        P_unravel.append(P_order)
+        V_unravel.append(V_order)
 
-def load_extr2D(filename):
-        data = np.load(filename)
-        D = data['FLUX']
-        V = data['FLUX_ERR']
-        P = data['MODEL']
-        id_det = data['id_det']
-        id_order = data['id_order']
-        chi2 = data['chi2']
-        return D, P, V, id_det, id_order, chi2
+    return D_unravel, P_unravel, V_unravel
 
 
 def create_eso_recipe_config(eso_recipe, outpath, verbose):
@@ -2583,7 +2547,7 @@ def molecfit(input_path, spec, wave_range=None, savename=None, verbose=False):
     ----------
     input_path : str
         the working directory for molecfit.
-    spec: SPEC2D 
+    spec: SPEC
         input spectra for molecfit
     wave_range: list of tuple
         list of wavelength regions to be indcluded for the telluric fitting
@@ -2603,7 +2567,7 @@ def molecfit(input_path, spec, wave_range=None, savename=None, verbose=False):
 
     hdul_out = fits.HDUList([primary_hdu])
 
-    Nedge = 10 #avoid edges of the detectors
+    Nedge = 10 # avoid edges of the detectors
     w0 = spec.wlen[:,Nedge]
     w1 = spec.wlen[:,-Nedge]
     if wave_range is None:
