@@ -369,12 +369,19 @@ def order_trace(det, badpix, slitlen, sub_factor=64,
         # indices = signal.argrelmax(yy)[0]
         indices, _ = signal.find_peaks(yy, distance=10) 
 
+        # use the distance between peaks to distinguish in/between orders
         ind_distance = np.diff(indices)
         # print(ind_distance>0.9*slitlen, indices)
         upper_first = np.where(ind_distance > 0.8*slitlen)[0][-1] + 1
         ups_ind = np.arange(upper_first, 0.5, -2, dtype=int)[::-1]
         ups = indices[ups_ind]
         lows = indices[ups_ind-1]
+
+        # check if the bottom order is complete
+        distance = ups - lows
+        if distance[0] < order_length_min:
+            ups = ups[1:]
+            lows = lows[1:]
 
         # Find the y-coordinates of the edges, weighted by the 
         # significance of the signal (i.e. center-of-mass)
@@ -387,13 +394,13 @@ def order_trace(det, badpix, slitlen, sub_factor=64,
                             np.sum(yy[int(p-width):int(p+width+1)]) \
                             for p in ups]) + offset
 
-        # if debug:
-        #     plt.plot(yy)
-        #     for ind in cens_low:
-        #         plt.axvline(ind, color='k')
-        #     for ind in cens_up:
-        #         plt.axvline(ind, color='r')
-        #     plt.show()
+        if debug:
+            plt.plot(yy)
+            for ind in cens_low:
+                plt.axvline(ind, color='k')
+            for ind in cens_up:
+                plt.axvline(ind, color='r')
+            plt.show()
 
         # x and y coordinates of the trace edges
         xx_loc.append(xx_bin[i])
@@ -501,6 +508,9 @@ def measure_Gaussian_center(y, peaks, width):
         cen = gg_fit.mean_0.value
         center[i] = cen
 
+        # plt.plot(xx, y)
+        # plt.plot(xx, gg_fit(xx))
+        # plt.show()
     return center
 
 def slit_curve(fpet, une, badpix, trace, wlen_min, wlen_max, 
@@ -581,11 +591,16 @@ def slit_curve(fpet, une, badpix, trace, wlen_min, wlen_max,
             # measure the baseline of the spec to be 10% lowest values
             height = np.median(np.sort(spec_fpet.data[~mask])[:len(spec_fpet)//10])
 
-            # Find the peak pixels (along horizontal axis) 
+            # Find the peak pixels (along horizontal axis) the width can be a problem
             peaks, properties = signal.find_peaks(spec_fpet, distance=spacing, 
-                                        width=10, height=2*height) 
+                                        width=5, height=2*height) 
             # mask the peaks identified due to bad channels
             peaks = np.array([item for item in peaks if not item in badchannel])
+
+            # plt.plot(spec_fpet)
+            # for p in peaks:
+            #     plt.axvline(p)
+            # plt.show()
 
             # leave out lines around detector edge
             width = np.median(properties['widths'])
@@ -603,7 +618,6 @@ def slit_curve(fpet, une, badpix, trace, wlen_min, wlen_max,
                               [x+spacing for x in cens])
                 N_lines = len(peaks)
             
-
         slit_image = np.array(slit_image)
         # Index of bin to which each peak belongs
         indices = np.digitize(slit_image[:,0], bins)
@@ -663,7 +677,7 @@ def slit_curve(fpet, une, badpix, trace, wlen_min, wlen_max,
             plt.plot(np.diff(x_slit))
             plt.show()
             w_slit = Poly.polyval(Poly.polyval(x_slit, poly), grid_poly)
-            print(np.std(np.diff(w_slit)))
+            # print(np.std(np.diff(w_slit)))
             plt.plot(np.diff(w_slit))
             plt.show()
 
@@ -1411,7 +1425,7 @@ def remove_starlight(D_full, V_full, spec_star, cen0_p, cen1_p,
 
 
 
-def extract_spec(det, det_err, badpix, trace, slit, blaze, spec_star, 
+def extract_spec(det, det_err, badpix, trace, slit, blaze,
                     gain, NDIT=1, cen0=90, companion_sep=None, aper_half=20, 
                     extract_2d=False, 
                     remove_star_bkg=False, remove_sky_bkg=False, 
@@ -1435,11 +1449,6 @@ def extract_spec(det, det_err, badpix, trace, slit, blaze, spec_star,
         as a function of the dispersion axis
     blaze: array
         1D blaze function of each order
-    spec_star: array
-        in case of sub-stellar companion extraction and `remove_star_bkg=True`,
-        provide the extracted stellar spectra. This will be scaled according  
-        to the PSF and then removed from the science image before extracting
-        the companion spectra.
     gain: float
         detector gain
     NDIT: int
@@ -1488,33 +1497,30 @@ def extract_spec(det, det_err, badpix, trace, slit, blaze, spec_star,
     else:
         filter_mode = 'poly'
 
+    # cut images to orders
     im_subs, yy_indices = im_order_cut(im, trace)
     im_err_subs, yy_indices = im_order_cut(im_err, trace)
     bpm_subs, yy_indices = im_order_cut(badpix, trace)
-
-    # find out the location of the peak signal
-    obj_cen = cen0
-    if cen0 is None:
-        profile = np.nanmedian(im_subs[0], axis=1)
-        slitlen = min([len(im_sub) for im_sub in im_subs])
-        profiles = np.zeros((len(im_subs), slitlen))
-        for o, im_sub in enumerate(im_subs):
-            profiles[o] = np.nanmedian(im_sub, axis=1)[:slitlen]
-        profile = np.mean(profiles, axis=0)
+    
+    flux, err, D, P, V = [],[],[],[],[]
+    for o, (im_sub, im_err_sub, bpm_sub) in enumerate(zip(im_subs, im_err_subs, bpm_subs)):
+        
+        obj_cen = cen0
+        # find out the location of the peak signal in each order
+        profile = np.nanmedian(im_sub, axis=1)
         # avoid edges
         N_edge = 10
         profile[:N_edge] = 0.
         profile[-N_edge:] = 0.
-        obj_cen = np.argmax(profile)
+        if cen0 is None:
+            obj_cen = np.argmax(profile)
+        else:
+            # if the extraction location is given, then adjust slightly around it
+            profile[:obj_cen-4] = -np.inf
+            profile[obj_cen+4:] = -np.inf
+            obj_cen = np.argmax(profile) 
 
 
-    # Pixel-location of the companion target
-    if companion_sep is not None:
-        obj2_cen = obj_cen - companion_sep
-
-    flux, err, D, P, V = [],[],[],[],[]
-    for o, (im_sub, im_err_sub, bpm_sub) in enumerate(zip(im_subs, im_err_subs, bpm_subs)):
-        
         if remove_sky_bkg:
             im_sub, im_err_sub = remove_skylight(
                                 im_sub, im_err_sub**2, bpm_sub,
@@ -1529,16 +1535,14 @@ def extract_spec(det, det_err, badpix, trace, slit, blaze, spec_star,
         #                     gain=gain, debug=debug)
         #     aper_half = 5
 
-        if companion_sep is None:
-            center = obj_cen
-
-        else:
-            center = obj2_cen
+        # Pixel-location of the companion target
+        if companion_sep is not None:
+            obj_cen -= companion_sep
 
         # Extract a 1D spectrum using the optimal extraction algorithm
         f_opt, f_err, D_sub, V_sub, P_sub = optimal_extraction(
                                 im_sub.T, im_err_sub.T**2, bpm_sub.T, 
-                                obj_cen=int(np.round(center)), 
+                                obj_cen=int(np.round(obj_cen)), 
                                 aper_half=aper_half, 
                                 filter_mode=filter_mode,
                                 remove_bkg=remove_star_bkg,
@@ -1550,11 +1554,11 @@ def extract_spec(det, det_err, badpix, trace, slit, blaze, spec_star,
         D.append(D_sub)
         V.append(V_sub)
         P.append(P_sub)
-        # chi2.append(chi2_r)
 
     # D_stack, id_order = stack_ragged(D)
     # P_stack, id_order = stack_ragged(P)
     # V_stack, id_order = stack_ragged(V)
+    
 
     return flux, err, D, V, P #D_stack, V_stack, P_stack, id_order 
 
@@ -1601,12 +1605,12 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
     """
 
     # determine object center from the data
-    profile = np.nanmedian(D_full, axis=0)
-    # plt.plot(profile)
-    profile[:obj_cen-4] = -np.inf
-    profile[obj_cen+4:] = -np.inf
-    # print(obj_cen)
-    obj_cen = np.argmax(profile) 
+    # profile = np.nanmedian(D_full, axis=0)
+    # # plt.plot(profile)
+    # profile[:obj_cen-4] = -np.inf
+    # profile[obj_cen+4:] = -np.inf
+    # # print(obj_cen)
+    # obj_cen = np.argmax(profile) 
     # print(obj_cen)
     # plt.plot(profile)
     # plt.show()
@@ -1614,6 +1618,8 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
     D = D_full[:,obj_cen-aper_half:obj_cen+aper_half+1] # Observation
     V = V_full[:,obj_cen-aper_half:obj_cen+aper_half+1] # Variance
     bpm = bpm_full[:,obj_cen-aper_half:obj_cen+aper_half+1]
+
+
     
     if D.size == 0:
         # print("Trace falls outside of the detector")
@@ -1736,6 +1742,8 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
         norm_filtered = stats.sigma_clip((D/P)[:,extr_aper], sigma=3, axis=1)
         M_bp[:, extr_aper] &= np.logical_not(norm_filtered.mask)
 
+    # M_bp[:10] = False
+    # M_bp[-10:] = False
 
     if debug:
         plt.plot(f_std)
@@ -1788,6 +1796,7 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
     # plt.plot(f_opt/np.sqrt(var))
     # plt.show()
 
+    
     return f_opt, np.sqrt(var), D.T, V_new.T, P.T
 
 

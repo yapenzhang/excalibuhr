@@ -91,11 +91,28 @@ API reference of :class:`~excalibuhr.pipeline.CriresPipeline` class.
     
     * There are options to change the extraction aperture of the primary and companion (``aper_prim`` and ``aper_comp``). 
     
-    * If one needs the 2-dimensional data for dedicated analysis (e.g. in the case of spatially resolved but non widely separated companions), set ``extract_2d=True`` to save the intermediate data product. 
-
     * If telluric standard stars have been observed during the night, then specify the object name with the ``std_object`` parameter to use it for the refinement of wavelength solution.
 
     * The pipeline can also call `Molecfit <https://www.eso.org/sci/software/pipelines/skytools/molecfit>`_ to correct for telluric absorptions if setting ``run_molecfit=True``.
 
+
+
+Access the intermediate data product
+************************************
+
+When ``extract_2d=True`` in the ``obs_extract`` function, the calibrated 2-dimensional images is save to ``.npz`` files. This can be used for dedicated analysis on off-axis spectral data.
+
+.. code-block:: python
+
+    from excalibuhr.data import DETECTOR
+
+    extr2d = DETECTOR(filename='the_2d_product_file.npz')
+
+    flux2d = extr2d.flux 
+    variance2d = extr2d.var 
+    psf2d = extr2d.psf 
+
+    # These nested list contains the 2d images per detector and order. 
+    # The shape is (detector x order x spacial pixels x spectral channels).
 
 

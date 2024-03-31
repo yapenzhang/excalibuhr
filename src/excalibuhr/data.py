@@ -187,10 +187,10 @@ class SPEC:
         spec_denominator: SPEC2D object with the same wlen as the data
         """
 
-        if not np.allclose(self.wlen, spec_denominator.wlen):
-            pass
-        else:
-            return self._copy(flux=self.flux/spec_denominator.flux, 
+        # if not np.allclose(self.wlen, spec_denominator.wlen):
+        #     pass
+        # else:
+        return self._copy(flux=self.flux/spec_denominator.flux, 
                              err=self.err/spec_denominator.flux)
 
 
@@ -439,7 +439,7 @@ class DETECTOR:
             None
         """
 
-        data = np.load(filename+'.npz')
+        data = np.load(filename)
         id_dets = data['id_dets']
         id_orders = data['id_orders']
         self.Ndet, self.Norder = id_dets.shape[0]+1, id_orders.shape[1]+1

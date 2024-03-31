@@ -1267,58 +1267,58 @@ class CriresPipeline:
                         else:
                             # nodding mode
                             try:
-                                self.Nexp_per_nod = int(self.header_info[indices_nod_A]\
+                                Nexp_per_nod = int(self.header_info[indices_nod_A]\
                                             [self.key_nexp_per_nod].iloc[0])
                             except:
                                 # Some headers missing the NEXP key
-                                self.Nexp_per_nod = int(nod_a_count//self.header_info[indices_nod_A][self.key_nabcycle].iloc[0])
+                                Nexp_per_nod = int(nod_a_count//self.header_info[indices_nod_A][self.key_nabcycle].iloc[0])
                             
-                            for i, row in enumerate(
-                                    range(0, df_nods.shape[0], self.Nexp_per_nod)):
+                            for i, row in enumerate(range(0, df_nods.shape[0], Nexp_per_nod)):
                                 job = pool.apply_async(self._process_nodding, 
-                                                    args=(df_nods, i, row, flat, bpm, 
-                                                        tw, ron, object, item_wlen))
+                                                    args=(df_nods, i, row, Nexp_per_nod, 
+                                                          flat, bpm, tw, ron, object, item_wlen))
                                 pool_jobs.append(job)
             
             for job in pool_jobs:
                 job.get() 
 
 
-    def _process_nodding(self, df_nods, i, row, flat, bpm, 
+    def _process_nodding(self, df_nods, i, row, Nexp_per_nod, flat, bpm, 
                              tw, ron, object, item_wlen):
         # check the nodding position of the current frame
         pos = set()
-        for p in df_nods[self.key_nodpos].iloc[
-                        row:row+self.Nexp_per_nod]:
+        for p in df_nods[self.key_nodpos].iloc[row]:
+        # for p in df_nods[self.key_nodpos].iloc[
+        #                 row:row+Nexp_per_nod]:
             pos.add(p)
-        
-        if row+(-1)**(i%2)*self.Nexp_per_nod < df_nods.shape[0]:
+
+        if row+(-1)**(i%2)*Nexp_per_nod < df_nods.shape[0]:
             # Select background frames (the opposite nodding position) 
             # correspsonding to the current frame
             pos_bkg = set()
             for p in df_nods[self.key_nodpos].iloc[
-                    row+(-1)**(i%2)*self.Nexp_per_nod: \
-                    row+(-1)**(i%2)*self.Nexp_per_nod+self.Nexp_per_nod]:
+                    row+(-1)**(i%2)*Nexp_per_nod: \
+                    row+(-1)**(i%2)*Nexp_per_nod+Nexp_per_nod]:
                 pos_bkg.add(p)
 
             bkg_list = [os.path.join(self.rawpath, item) \
                         for item in df_nods[self.key_filename].iloc[
-                            row+(-1)**(i%2)*self.Nexp_per_nod: \
-                            row+(-1)**(i%2)*self.Nexp_per_nod+self.Nexp_per_nod]
+                            row+(-1)**(i%2)*Nexp_per_nod: \
+                            row+(-1)**(i%2)*Nexp_per_nod+Nexp_per_nod]
                         ]
         else:
             # in case the nodding cycle was interrupted, use the frame 
             # in the previous cycle as the background image.
             pos_bkg = set()
             for p in df_nods[self.key_nodpos].iloc[
-                    row+(-2)*self.Nexp_per_nod: \
-                    row+(-2)*self.Nexp_per_nod+self.Nexp_per_nod]:
+                    row+(-2)*Nexp_per_nod: \
+                    row+(-2)*Nexp_per_nod+Nexp_per_nod]:
                 pos_bkg.add(p)
                             
             bkg_list = [os.path.join(self.rawpath, item) \
                         for item in df_nods[self.key_filename].iloc[
-                            row+(-2)*self.Nexp_per_nod: \
-                            row+(-2)*self.Nexp_per_nod+self.Nexp_per_nod]
+                            row+(-2)*Nexp_per_nod: \
+                            row+(-2)*Nexp_per_nod+Nexp_per_nod]
                         ]
 
         # make sure not to subtract frames at the same nod position
@@ -1349,7 +1349,7 @@ class CriresPipeline:
                         
         # Select the nod position science image
         # Loop over the observations of the current nod position
-        for file in df_nods[self.key_filename].iloc[row:row+self.Nexp_per_nod]:
+        for file in df_nods[self.key_filename].iloc[row:row+Nexp_per_nod]:
             frame, frame_err = [], []
             with fits.open(os.path.join(self.rawpath, file)) as hdu:
                 hdr = hdu[0].header
@@ -1572,7 +1572,7 @@ class CriresPipeline:
                           remove_sky_bkg=False, 
                           std_object=None,
                           aper_prim=20, aper_comp=10, 
-                          extract_2d=False,
+                          extract_2d=True,
                           extr_level=0.9,
                           debug=False):    
         """
@@ -1708,7 +1708,7 @@ class CriresPipeline:
         # Extract 1D (and 2D) spectrum of the target
         result = self._loop_over_detector(
                         su.extract_spec, False,
-                        dt, dt_err, bpm, tw, slit, blaze, blaze, 
+                        dt, dt_err, bpm, tw, slit, blaze, 
                         self.gain, NDIT=ndit, extract_2d=extract_2d,
                         cen0=f0, remove_sky_bkg=remove_sky_bkg, 
                         remove_star_bkg=remove_star_bkg,
@@ -1750,7 +1750,7 @@ class CriresPipeline:
             # Extract a 1D spectrum for the secondary
             result = self._loop_over_detector(
                             su.extract_spec, False,
-                            dt, dt_err, bpm, tw, slit, blaze, flux_pri,
+                            dt, dt_err, bpm, tw, slit, blaze, 
                             self.gain, NDIT=ndit,
                             cen0=f0, extract_2d=extract_2d, 
                             companion_sep=companion_sep/self.pix_scale,
@@ -1759,7 +1759,7 @@ class CriresPipeline:
                             remove_star_bkg=remove_star_bkg,
                             extr_level=extr_level,
                             debug=debug)
-            flux_sec, err_sec, D, V, P, ind_order = result
+            flux_sec, err_sec, D, V, P = result
 
             paths = file.split('/')
             paths[-1] = '_'.join(['Extr1D_SECONDARY', savename, paths[-1]])
@@ -1776,7 +1776,7 @@ class CriresPipeline:
             paths[-1] = '_'.join(['Extr2D_SECONDARY', savename, paths[-1][:-5]])
             filename2d = os.path.join(self.outpath, '/'.join(paths))
             
-            xtr2d = DETECTOR(data=[D, V, P], fields=['flux', 'var', 'psf'])
+            extr2d = DETECTOR(data=[D, V, P], fields=['flux', 'var', 'psf'])
             extr2d.save_extr2d(filename2d)
             extr2d.plot_extr2d_model(filename2d)
 
@@ -1897,6 +1897,8 @@ class CriresPipeline:
         self._print_section("Save extracted spectra")
         
         self.corrpath = os.path.join(self.outpath, "obs_calibrated")
+        if not os.path.exists(self.corrpath):
+            os.makedirs(self.corrpath)
 
         # get updated product info
         self.product_info = pd.read_csv(self.product_file, sep=';')
@@ -1940,7 +1942,7 @@ class CriresPipeline:
                         & (self.calib_info[self.key_target_name] == target)
                     
                     if not np.any(indices_wave):
-                        print("No matching wavelength solution to the target .\n")
+                        print("No matching wavelength solution to the target.\n")
                         print("The wavelength solution derived from other target is used.\n")
                         indices_wave = \
                                 (self.calib_info[self.key_caltype] == "CAL_WLEN")\
