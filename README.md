@@ -14,6 +14,9 @@ Yapeng Zhang
 
 Sam de Regt
 
+Darío González Picos
+
+
 ## Contact
 
 Contributions, feature requests, or bug reports are welcome through [Github page](https://github.com/yapenzhang/excalibuhr) or email to yapzhang@caltech.edu 

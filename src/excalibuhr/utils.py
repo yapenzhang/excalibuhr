@@ -1567,7 +1567,7 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
                        aper_half=20, filter_mode='poly',
                        badpix_clip=5, filter_width=121,
                        max_iter=30, extr_level=0.9, 
-                       remove_bkg=False, etol=1e-6, 
+                       remove_bkg=False, etol=1e-20, 
                        gain=2., NDIT=1., debug=False):
     """
     Optimal extraction based on Horne(1986).
@@ -1742,15 +1742,17 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
         norm_filtered = stats.sigma_clip((D/P)[:,extr_aper], sigma=3, axis=1)
         M_bp[:, extr_aper] &= np.logical_not(norm_filtered.mask)
 
-    # M_bp[:10] = False
-    # M_bp[-10:] = False
+    M_bp[:10] = False
+    M_bp[-10:] = False
 
     if debug:
         plt.plot(f_std)
 
+    V_new = np.copy(V)
+
     for ite in range(max_iter):
 
-        f_opt = np.sum(M_bp*P*D, axis=1) / (np.sum(M_bp*P*P, axis=1) + etol)
+        f_opt = np.sum(M_bp*P*D/V_new, axis=1) / (np.sum(M_bp*P*P/V_new, axis=1) + etol)
         V_new = V + np.abs(P*f_opt[:,None]) / gain / NDIT
         # Residual of optimally extracted spectrum and the observation
         Res = M_bp * (D - P*f_opt[:,None])**2/V_new
@@ -1793,10 +1795,9 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
     # Optimally extracted spectrum
     f_opt = np.sum(M_bp*P*D/V_new, axis=1) / (np.sum(M_bp*P*P/V_new, axis=1) + etol)
     
-    # plt.plot(f_opt/np.sqrt(var))
+    # plt.plot(f_opt)
     # plt.show()
 
-    
     return f_opt, np.sqrt(var), D.T, V_new.T, P.T
 
 
