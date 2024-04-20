@@ -234,8 +234,11 @@ def flat_fielding(det, err, flat, debug=False):
     im_corr = np.copy(det)
     err_corr = np.copy(err)
     badpix = np.isnan(flat).astype(bool)
-    im_corr[~badpix] /= flat[~badpix]
-    err_corr[~badpix] /= flat[~badpix]
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        im_corr[~badpix] /= flat[~badpix]
+        err_corr[~badpix] /= flat[~badpix]
 
     return im_corr, err_corr
 
@@ -971,7 +974,7 @@ def spectral_rectify_interp(im_list, badpix, trace, slit_meta, reverse=False, de
 
         # ax1 = plt.subplot(211)
         # ax2 = plt.subplot(212, sharex=ax1)
-        # ax1.imshow(im_rect_spec[0, yy_grid, :], vmin=0, vmax=100)
+        # ax1.imshow(im_rect_spec[1, yy_grid, :], vmin=0, vmax=100)
         # ax2.imshow(bpm[yy_grid])
         # plt.show()
         with warnings.catch_warnings():
@@ -999,14 +1002,14 @@ def spectral_rectify_interp(im_list, badpix, trace, slit_meta, reverse=False, de
                 if reverse:
                     im_rect_spec[r, yy_grid[i]] = interp1d(x_isowlen[~mask], 
                                                         dt[~mask], 
-                                                        # kind='cubic', 
+                                                        kind='cubic', 
                                                         bounds_error=False, 
                                                         fill_value=np.nan
                                                         )(xx_grid)
                 else:
                     im_rect_spec[r, yy_grid[i]] = interp1d(xx_grid[~mask], 
                                                         dt[~mask], 
-                                                        # kind='cubic', 
+                                                        kind='cubic', 
                                                         bounds_error=False, 
                                                         fill_value=np.nan
                                                         )(x_isowlen)
@@ -1062,18 +1065,16 @@ def trace_rectify_interp(im_list, trace, debug=False):
 
         for x in xx_grid:
             data_col = im_rect[:,yy_grid,x]
-            mask = np.isnan(data_col[0]).astype(bool)
-            if np.sum(mask)>0.5*len(mask):
-                continue 
             for r, dt in enumerate(data_col):
+                mask = np.isnan(dt)
+                if np.sum(mask)>0.5*len(mask):
+                    continue 
                 im_rect[r,yy_grid,x] = interp1d(yy_grid[~mask], dt[~mask], 
                                                 kind='cubic', 
                                                 bounds_error=False, 
                                                 fill_value=np.nan
                                                 )(yy_grid+shifts[x])
-    if debug:
-        plt.imshow(np.log(im_rect[0]))
-        plt.show()
+
     return im_rect
 
 
@@ -1101,30 +1102,32 @@ def master_flat_norm(det, badpix, trace, slit_meta, slitlen=None, debug=False):
         normalized flat frame and blaze functions
     """
 
-    # Correct for the slit curvature
-    det_rect = spectral_rectify_interp(det, badpix, trace, slit_meta)
-    filtered_data = stats.sigma_clip(det_rect, sigma=5)
-    badpix_rect = filtered_data.mask | badpix
-    # measure the trace again
-    trace_update = order_trace(det_rect, badpix_rect, slitlen=slitlen)
+    # # Correct for the slit curvature
+    # det_rect = spectral_rectify_interp(det, badpix, trace, slit_meta)
+    # filtered_data = stats.sigma_clip(det_rect, sigma=5)
+    # badpix_rect = filtered_data.mask | badpix
+    # # measure the trace again
+    # trace_update = order_trace(det_rect, badpix_rect, slitlen=slitlen)
 
     # Retrieve the blaze function by mean-collapsing 
     # the master flat along the slit
-    blaze, blaze_image = extract_blaze(det_rect, badpix_rect, trace_update)
+    blaze, blaze_image = extract_blaze(det, badpix, trace)
+    # blaze, blaze_image = extract_blaze(det_rect, badpix_rect, trace_update)
 
-    blaze_image = spectral_rectify_interp(blaze_image, np.zeros_like(badpix), 
-                        trace_update, slit_meta, reverse=True)
-    
+    # blaze_image = spectral_rectify_interp(blaze_image, np.zeros_like(badpix), 
+    #                     trace_update, slit_meta, reverse=True)
+    # plt.imshow(blaze_image, vmin=1e1, vmax=2e4)
+    # plt.show()
     # Set low signal to NaN
     flat_norm = det / blaze_image
-    flat_norm[flat_norm<0.5] = np.nan
-    flat_norm[flat_norm>1.2] = np.nan
+    # flat_norm[flat_norm<0.9] = np.nan
+    # flat_norm[flat_norm>1.1] = np.nan
 
     # if debug:
-    #     plt.imshow(flat_norm, vmin=0.8, vmax=1.2)
-    #     plt.show()
+        # plt.imshow(flat_norm, vmin=0.8, vmax=1.2)
+        # plt.show()
 
-    return flat_norm, blaze, trace_update
+    return flat_norm, blaze, trace
 
 def extract_blaze(im, badpix, trace, f0=0.5, fw=0.48, sigma=3):
     """
@@ -1162,15 +1165,26 @@ def extract_blaze(im, badpix, trace, f0=0.5, fw=0.48, sigma=3):
                         for (up, low) in zip(yy_upper, yy_lower)]
 
         # Loop over each column
-        for i in range(len(indices)):
-            mask = badpix[indices[i],i] | np.isnan(im[indices[i],i])
-            if np.sum(mask)>0.9*len(mask):
+        for i, ind in enumerate(indices):
+            mask = badpix[ind,i] | np.isnan(im[ind,i])
+            if np.sum(mask)>0.5*len(mask):
                 blaze[i] = np.nan
             else:
+                # get the cross-dispersion mean value 
                 blaze[i], _, _ = stats.sigma_clipped_stats(
-                    im[indices[i],i][~mask], sigma=sigma)
-            blaze_image[indices[i],i] = blaze[i]
-        blaze_orders.append(blaze)
+                    im[ind,i][~mask], sigma=sigma)
+        
+        # smooth blaze
+        nans = np.isnan(blaze)
+        smoothed , _, _ = PolyfitClip(xx_grid, blaze, order=13, mask=~nans)
+        # plt.plot(xx_grid, blaze/np.nanmax(blaze))
+        # plt.plot(xx_grid, smoothed/np.nanmax(blaze))
+        # plt.show()
+            
+        for i, ind in enumerate(indices):
+            # put blaze back to 2D image
+            blaze_image[ind,i] = smoothed[i]
+        blaze_orders.append(smoothed)
 
     return blaze_orders, blaze_image
 
@@ -1425,11 +1439,14 @@ def remove_starlight(D_full, V_full, spec_star, cen0_p, cen1_p,
 
 
 
-def extract_spec(det, det_err, badpix, trace, slit, blaze,
-                    gain, NDIT=1, cen0=90, companion_sep=None, aper_half=20, 
+def extract_spec(det, det_err, badpix, trace, slit, blaze, gain, NDIT=1, 
+                    cen0=90, 
+                    companion_sep=None, 
+                    aper_half=20, 
                     extract_2d=False, 
-                    remove_star_bkg=False, remove_sky_bkg=False, 
                     extr_level=0.9,
+                    remove_star_bkg=False, 
+                    remove_sky_bkg=False, 
                     debug=False):
     """
     Extract 1D spectra from detector images
@@ -1483,13 +1500,15 @@ def extract_spec(det, det_err, badpix, trace, slit, blaze,
         reduced chi2 of the model (for diagnositic purposes)
     """
     # Correct for the slit curvature and trace curvature
-    im = spectral_rectify_interp(det, badpix, trace, slit, debug=False)
-    im_err = spectral_rectify_interp(det_err, badpix, trace, slit, debug=False)
-    
-    #TODO interpolation badpix?
+    det_rect = spectral_rectify_interp([det, det_err], badpix, trace, slit, debug=False)
+    im, im_err = det_rect
+
+    # plt.imshow(im_err, vmin=0, vmax=3e1, aspect='auto')
+    # plt.show()
+    #TODO how to deal with interpolation of badpix
 
     if extract_2d or remove_star_bkg or remove_sky_bkg:
-        dt_rect = trace_rectify_interp([im, im_err], trace, debug=False) 
+        dt_rect = trace_rectify_interp([im, im_err], trace, debug=True) 
         im, im_err = dt_rect
         filter_mode = 'median' # rectifying the trace using interpolation will 
         # introduce low frequency trend in the dispersion direction, 
@@ -1524,7 +1543,7 @@ def extract_spec(det, det_err, badpix, trace, slit, blaze,
         if remove_sky_bkg:
             im_sub, im_err_sub = remove_skylight(
                                 im_sub, im_err_sub**2, bpm_sub,
-                                obj_cen=int(np.round(obj_cen)), 
+                                obj_cen=obj_cen, 
                                 frac_mask=0.35,
                                 debug=debug)
         
@@ -1555,12 +1574,7 @@ def extract_spec(det, det_err, badpix, trace, slit, blaze,
         V.append(V_sub)
         P.append(P_sub)
 
-    # D_stack, id_order = stack_ragged(D)
-    # P_stack, id_order = stack_ragged(P)
-    # V_stack, id_order = stack_ragged(V)
-    
-
-    return flux, err, D, V, P #D_stack, V_stack, P_stack, id_order 
+    return flux, err, D, V, P 
 
 
 def optimal_extraction(D_full, V_full, bpm_full, obj_cen, 
@@ -1604,28 +1618,15 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
         modeled slit function and reduced chi2 of the model (for plotting)
     """
 
-    # determine object center from the data
-    # profile = np.nanmedian(D_full, axis=0)
-    # # plt.plot(profile)
-    # profile[:obj_cen-4] = -np.inf
-    # profile[obj_cen+4:] = -np.inf
-    # # print(obj_cen)
-    # obj_cen = np.argmax(profile) 
-    # print(obj_cen)
-    # plt.plot(profile)
-    # plt.show()
-
     D = D_full[:,obj_cen-aper_half:obj_cen+aper_half+1] # Observation
     V = V_full[:,obj_cen-aper_half:obj_cen+aper_half+1] # Variance
     bpm = bpm_full[:,obj_cen-aper_half:obj_cen+aper_half+1]
 
-
-    
     if D.size == 0:
         # print("Trace falls outside of the detector")
         return np.zeros(D.shape[0]), np.zeros(D.shape[0]), \
                 np.zeros(D.T.shape), np.zeros(D.T.shape), \
-                np.zeros(D.T.shape), np.nan
+                np.zeros(D.T.shape)
 
     D = np.nan_to_num(D, nan=etol)
     V = np.nan_to_num(V, nan=1./etol)
@@ -1637,9 +1638,14 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
 
     # fit and remove bkg per wavelength channel
     if remove_bkg == True:
-        
-        aper_mask = 6
-        bkg_poly_order = 6
+
+        # profile = np.nanmedian(D, axis=0)
+        # plt.plot(profile)
+
+        # may need to tweek this parameter
+        # 5th order polynomial gives the best performance so far
+        bkg_poly_order = 6 
+        aper_mask = 6 
         cen0 = len(spatial_x)//2
         mask = (spatial_x > cen0 - aper_mask) & (spatial_x < cen0 + aper_mask)
         bkg_model = np.zeros_like(D)
@@ -1651,15 +1657,21 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
             # plt.plot(spatial_x, y_model)
             # # plt.plot(spatial_x[~mask], D_poly)
             # plt.show()
-        # plt.imshow(bkg_model, aspect='auto', vmin=-5, vmax=10)
-        # plt.show()
-        # plt.imshow(D-bkg_model, aspect='auto', vmin=0, vmax=50)
-        # plt.show()
+        if debug:
+            ax1 = plt.subplot(311)
+            ax2 = plt.subplot(312, sharex=ax1)
+            ax3 = plt.subplot(313, sharex=ax1)
+            ax1.imshow(D.T, aspect='auto', vmin=0, vmax=20)
+            ax2.imshow(bkg_model.T, aspect='auto', vmin=0, vmax=20)
+            ax3.imshow(D.T-bkg_model.T, aspect='auto', vmin=0, vmax=20)
+            plt.show()
+
         D -= bkg_model
         V_new += np.abs(bkg_model) / gain / NDIT
 
         # profile = np.nanmedian(D, axis=0)
         # plt.plot(profile)
+        # plt.show()
 
     # simple sum collapse to a 1D spectrum (box extraction)
     f_std = np.nansum(D*np.logical_not(bpm).astype(float), axis=1)
@@ -1681,7 +1693,7 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
             # plt.show()
         elif filter_mode == 'median':
             # clip bad pixels
-            y_filtered = stats.sigma_clip(y, sigma=3)
+            y_filtered = stats.sigma_clip(y, sigma=3, maxiters=50)
             mask = np.logical_not(np.logical_or(bpm[:,x], y_filtered.mask))
             if np.sum(mask) < 0.5*len(wave_x):
                 P[:,x] = np.zeros_like(y)
@@ -1723,7 +1735,7 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
         extr_aper = (cdf > (1.-extr_level)/2.) & (cdf < (1.+extr_level)/2.)
         extr_aper_not = (cdf < (1.-extr_level)/2.) | (cdf > (1.+extr_level)/2.)
         # D[:, extr_aper_not] = 0.
-        V[:, extr_aper_not] = 1./etol
+        V_new[:, extr_aper_not] = 1./etol
         P[:, extr_aper_not] = etol
         P[P==0] = etol
         # if debug:
@@ -1739,17 +1751,16 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
 
         # mask bad pixels
         M_bp[:, extr_aper_not] = False
-        norm_filtered = stats.sigma_clip((D/P)[:,extr_aper], sigma=3, axis=1)
+        norm_filtered = stats.sigma_clip((D/P)[:,extr_aper], sigma=4, axis=1)
         M_bp[:, extr_aper] &= np.logical_not(norm_filtered.mask)
 
     M_bp[:10] = False
     M_bp[-10:] = False
 
-    if debug:
-        plt.plot(f_std)
+    # if debug:
+    #     plt.plot(f_std)
 
-    V_new = np.copy(V)
-
+    # iteratively reject bad pixels and update optimal spectrum and variance.
     for ite in range(max_iter):
 
         f_opt = np.sum(M_bp*P*D/V_new, axis=1) / (np.sum(M_bp*P*P/V_new, axis=1) + etol)
@@ -1757,11 +1768,13 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
         # Residual of optimally extracted spectrum and the observation
         Res = M_bp * (D - P*f_opt[:,None])**2/V_new
 
-        # to avoid the Residuals driven by the bad pxiels.
-        good_channels = np.all(Res<badpix_clip**2, axis=1)
-        f_prox = interp1d(wave_x[good_channels], f_opt[good_channels], 
-                    kind='cubic', bounds_error=False, fill_value=0.)(wave_x)
-        Res = M_bp * (D - P*f_prox[:,None])**2/V_new
+        # # to avoid the Residuals driven by the bad pxiels.
+        # good_channels = np.all(Res<badpix_clip**2, axis=1)
+        # plt.plot(wave_x, good_channels*np.max(f_opt))
+        # plt.show()
+        # f_prox = interp1d(wave_x[good_channels], f_opt[good_channels], 
+        #             kind='cubic', bounds_error=False, fill_value=0.)(wave_x)
+        # Res = M_bp * (D - P*f_prox[:,None])**2/V_new
 
         # only reject one bad pixel per wavelength channel at a time
         bad_channels = np.any(Res>badpix_clip**2, axis=1)
@@ -1786,7 +1799,7 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
 
     # Rescale the variance by the reduced chi2
     chi2_r = np.nansum(Res)/(np.sum(M_bp)-len(f_opt))
-
+    
     if chi2_r > 1:
         var = 1. / (np.sum(M_bp*P*P/V_new, axis=1)+etol) * chi2_r
     else:
@@ -1794,9 +1807,6 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
     
     # Optimally extracted spectrum
     f_opt = np.sum(M_bp*P*D/V_new, axis=1) / (np.sum(M_bp*P*P/V_new, axis=1) + etol)
-    
-    # plt.plot(f_opt)
-    # plt.show()
 
     return f_opt, np.sqrt(var), D.T, V_new.T, P.T
 
@@ -2577,21 +2587,20 @@ def molecfit(input_path, spec, wave_range=None, savename=None, verbose=False):
 
     hdul_out = fits.HDUList([primary_hdu])
 
-    Nedge = 10 # avoid edges of the detectors
-    w0 = spec.wlen[:,Nedge]
-    w1 = spec.wlen[:,-Nedge]
+    w0 = spec.wlen[:,0]
+    w1 = spec.wlen[:,-1]
     if wave_range is None:
         wmin, wmax = w0, w1
         map_chip = range(spec.wlen.shape[0])
     else:
-        mask = np.zeros_like(spec.wlen[:,Nedge:-Nedge])
+        mask = np.zeros_like(spec.wlen)
         for w_range in wave_range:
-            mask = np.logical_or((spec.wlen[:,Nedge:-Nedge] > w_range[0]) & 
-                                 (spec.wlen[:,Nedge:-Nedge] < w_range[1]), mask)
+            mask = np.logical_or((spec.wlen > w_range[0]) & 
+                                 (spec.wlen < w_range[1]), mask)
 
         # find min and max wavelength of each region
-        w_masked = spec.wlen[:,Nedge:-Nedge][mask]
-        indice_split = np.diff(w_masked) > Nedge * np.max(np.diff(spec.wlen))
+        w_masked = spec.wlen[mask]
+        indice_split = np.diff(w_masked) > 10*np.max(np.diff(spec.wlen))
         wmin = w_masked[np.append(True, indice_split)]
         wmax = w_masked[np.append(indice_split, True)]
 

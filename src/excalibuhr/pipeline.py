@@ -623,7 +623,7 @@ class CriresPipeline:
         axes[-1,0].set_ylabel('Flux')
         if transm_spec is not None:
             axes[-1,-1].legend()
-        plt.savefig(savename[:-4]+'png')
+        plt.savefig(savename+'.png')
         if show:
             plt.show()
         plt.close(fig)
@@ -1130,7 +1130,7 @@ class CriresPipeline:
             file_name = os.path.join(self.calpath, f'BLAZE_{item_wlen}.fits')
             wfits(file_name, ext_list={"FLUX": blazes}, header=hdr)
             self._add_to_calib(f'BLAZE_{item_wlen}.fits', "BLAZE")
-            self._plot_spec_by_order(file_name, blazes) 
+            self._plot_spec_by_order(file_name[:-5], blazes) 
 
             file_name = os.path.join(self.calpath, f'TW_FLAT_{item_wlen}.fits')
             wfits(file_name, ext_list={"FLUX": trace_update}, header=hdr)
@@ -1568,9 +1568,9 @@ class CriresPipeline:
                           object=None,
                           savename='',
                           peak_frac=None, companion_sep=None, 
-                          remove_star_bkg=False, 
-                          remove_sky_bkg=False, 
-                          std_object=None,
+                          remove_star_bkg=False,
+                          remove_sky_bkg=False,
+                        #   std_object=None,
                           aper_prim=20, aper_comp=10, 
                           extract_2d=True,
                           extr_level=0.9,
@@ -1598,9 +1598,6 @@ class CriresPipeline:
         """
 
         self._print_section("Extract spectra")
-
-        if self.obs_mode == 'STARE':
-            remove_sky_bkg = True
 
         # get updated product info
         self.product_info = pd.read_csv(self.product_file, sep=';')
@@ -1664,32 +1661,32 @@ class CriresPipeline:
 
                     
                     # Loop over each observation
-                    if object == std_object:
-                        for file in self.product_info[indices_wlen][self.key_filename]:
-                            job = pool.apply_async(self._process_extraction, 
-                                                args=(file, bpm, tw, slit, blaze, 
-                                                    peak_frac, aper_prim, aper_comp, 
-                                                    None, False, False, 
-                                                    remove_sky_bkg, extr_level,
-                                                    savename, debug))
-                            pool_jobs.append(job)
-                    else:
-                        for file in self.product_info[indices_wlen][self.key_filename]:
-                            job = pool.apply_async(self._process_extraction, 
-                                                args=(file, bpm, tw, slit, blaze, 
-                                                    peak_frac, aper_prim, aper_comp, 
-                                                    companion_sep, remove_star_bkg,
-                                                    extract_2d, remove_sky_bkg, extr_level,
-                                                    savename, debug))
-                            pool_jobs.append(job)
+                    # if object == std_object:
+                    #     for file in self.product_info[indices_wlen][self.key_filename]:
+                    #         job = pool.apply_async(self._process_extraction, 
+                    #                             args=(file, bpm, tw, slit, blaze, 
+                    #                                 peak_frac, aper_prim, aper_comp, 
+                    #                                 None, extract_2d, 
+                    #                                 remove_bkg, extr_level,
+                    #                                 savename, debug))
+                    #         pool_jobs.append(job)
+                    # else:
+                    for file in self.product_info[indices_wlen][self.key_filename]:
+                        job = pool.apply_async(self._process_extraction, 
+                                            args=(file, bpm, tw, slit, blaze, 
+                                                peak_frac, aper_prim, aper_comp, 
+                                                companion_sep, extract_2d, extr_level,
+                                                remove_star_bkg, remove_sky_bkg,
+                                                savename, debug))
+                        pool_jobs.append(job)
             
             for job in pool_jobs:
                 job.get() 
 
     def _process_extraction(self, file, bpm, tw, slit, blaze, 
                             peak_frac, aper_prim, aper_comp, 
-                            companion_sep, remove_star_bkg, 
-                            extract_2d, remove_sky_bkg, extr_level,
+                            companion_sep, extract_2d, extr_level,
+                            remove_star_bkg, remove_sky_bkg, 
                             savename, debug):
         
         with fits.open(os.path.join(self.outpath, file)) as hdu:
@@ -1701,7 +1698,7 @@ class CriresPipeline:
         ndit = hdr[self.key_NDIT]
            
         if peak_frac is not None:
-            f0 = peak_frac[pos]*slitlen/self.pix_scale
+            f0 = int(peak_frac[pos]*slitlen/self.pix_scale)
         else:
             f0 = None
 
@@ -1710,8 +1707,8 @@ class CriresPipeline:
                         su.extract_spec, False,
                         dt, dt_err, bpm, tw, slit, blaze, 
                         self.gain, NDIT=ndit, extract_2d=extract_2d,
-                        cen0=f0, remove_sky_bkg=remove_sky_bkg, 
-                        remove_star_bkg=remove_star_bkg,
+                        cen0=f0, remove_star_bkg=remove_star_bkg,
+                        remove_sky_bkg=remove_sky_bkg,
                         extr_level=extr_level,
                         aper_half=aper_prim, debug=debug)
         flux_pri, err_pri, D, V, P = result
@@ -1729,7 +1726,7 @@ class CriresPipeline:
             self._add_to_product('/'.join(paths), 'Extr1D_PRIMARY', snr_mid)
         else:
             self._add_to_product('/'.join(paths), '_'.join(['Extr1D_PRIMARY', savename]), snr_mid)
-        self._plot_spec_by_order(filename, flux_pri)
+        self._plot_spec_by_order(filename[:-5], flux_pri)
         
         if extract_2d:
             paths = file.split('/')
@@ -1755,8 +1752,8 @@ class CriresPipeline:
                             cen0=f0, extract_2d=extract_2d, 
                             companion_sep=companion_sep/self.pix_scale,
                             aper_half=aper_comp, 
-                            remove_sky_bkg=remove_sky_bkg, 
                             remove_star_bkg=remove_star_bkg,
+                            remove_sky_bkg=remove_sky_bkg,
                             extr_level=extr_level,
                             debug=debug)
             flux_sec, err_sec, D, V, P = result
@@ -1770,7 +1767,7 @@ class CriresPipeline:
                 self._add_to_product('/'.join(paths), 'Extr1D_SECONDARY')
             else:
                 self._add_to_product('/'.join(paths), '_'.join(['Extr1D_SECONDARY', savename]))
-            self._plot_spec_by_order(filename, flux_sec)
+            self._plot_spec_by_order(filename[:-5], flux_sec)
             
             paths = file.split('/')
             paths[-1] = '_'.join(['Extr2D_SECONDARY', savename, paths[-1][:-5]])
@@ -1788,7 +1785,7 @@ class CriresPipeline:
 
 
     @print_runtime
-    def refine_wlen_solution(self, run_skycalc=True, debug=False):
+    def refine_wlen_solution(self, poly_order=3, debug=False):
         """
         Method for refining wavelength solution by manimizing 
         chi2 between the spectrum and the telluric transmission
@@ -1796,9 +1793,6 @@ class CriresPipeline:
 
         Parameters
         ----------
-        run_skycalc: bool
-            Whether to run ESO's skycalc to generate the telluric 
-            transmission model
         mode: str
             If mode is `linear`, then the wavelength solution is 
             corrected with a linear function. If mode is `quad`,
@@ -1828,16 +1822,12 @@ class CriresPipeline:
         for item in self.product_info[indices][self.key_wlen]:
             unique_wlen.add(item)
 
-        if run_skycalc:
+        # get telluric transmission model
+        file = os.path.join(self.calpath, "TRANSM_SPEC.fits")
+        if not os.path.isfile(file):
             airmass = self.product_info[indices][self.key_airmass].max()
             self.run_skycalc(airmass=airmass)
-
-        indices_tellu = (self.calib_info[self.key_caltype] == "TELLU_SKYCALC") 
-        if np.sum(indices_tellu) < 1:
-            raise Exception("No Telluric transmission model found. Please set `run_skycalc` to `True`.") 
-        
-        file = self.calib_info[indices_tellu][self.key_filename].iloc[0]
-        tellu = fits.getdata(os.path.join(self.calpath, file))
+        tellu = fits.getdata(file)
 
         for item_wlen in unique_wlen:
             print(f"Calibrating WLEN setting {item_wlen}:")
@@ -1856,19 +1846,33 @@ class CriresPipeline:
                 unique_target.add(item)
 
             for target in unique_target:
+
                 # select available data of the target
                 indices_obj = indices_wlen & \
                             (self.product_info[self.key_target_name] == target)
+                
                 dt, dt_err = [], []
                 for file in self.product_info[indices_obj][self.key_filename]:
                     with fits.open(os.path.join(self.outpath, file)) as hdu:
                         dt.append(hdu["FLUX"].data)
                         dt_err.append(hdu["FLUX_ERR"].data)
+                
                 # sum available spectra 
                 dt, dt_err = su.combine_frames(dt, dt_err, collapse='sum')
 
+                # Convolve telluric model to the instrument resolution
+                slit_width = self.product_info[indices_obj][self.key_slitwid].iloc[0]
+                if slit_width == "w_0.2":
+                    spec_res = 120000.0
+                elif slit_width == "w_0.4":
+                    spec_res = 60000.0
+
+                tellu_conv = su.SpecConvolve(tellu[:,0], tellu[:,1], 
+                                out_res=spec_res, in_res=5e5)
+                tellu_conv = np.column_stack((tellu[:,0], tellu_conv))
+
                 wlen_cal = self._loop_over_detector(su.wlen_solution, True,
-                            dt, dt_err, wlen_init, transm_spec=tellu, 
+                            dt, dt_err, wlen_init, transm_spec=tellu_conv, 
                             debug=debug)
 
                 file_name = os.path.join(self.calpath, f'WLEN_{item_wlen}_' \
@@ -1878,8 +1882,8 @@ class CriresPipeline:
                 self._add_to_calib(f'WLEN_{item_wlen}_' \
                                     + '_'.join(target.split())+'.fits', "CAL_WLEN")
 
-                self._plot_spec_by_order(file_name, dt, wlen_cal, 
-                                        transm_spec=tellu, show=debug)
+                self._plot_spec_by_order(file_name[:-5], dt, wlen_cal, 
+                                        transm_spec=tellu_conv, show=debug)
         
 
     def save_extracted_data(self, combine=False):
@@ -1907,6 +1911,9 @@ class CriresPipeline:
         all_labels = self.product_info[self.key_caltype].unique()
         data_type = all_labels[pd.Series(all_labels).str.contains('Extr1D', case=False)]
 
+        # cut the detector edges 
+        Ncut = 10
+
         for label in data_type:
             indices = (self.product_info[self.key_caltype] == label)
             
@@ -1920,6 +1927,11 @@ class CriresPipeline:
             
             # Loop over each target
             for target in unique_target:
+
+                # output filename
+                l = label.split('_')[-1]
+                file_name = os.path.join(self.corrpath, 
+                            target.replace(" ", "") + f'_{l}_CRIRES_SPEC1D.fits')
                 
                 indices_obj = indices & \
                     (self.product_info[self.key_target_name] == target)
@@ -1969,6 +1981,8 @@ class CriresPipeline:
                     if combine:
                         # mean-combine each individual frames
                         dt, dt_err = su.combine_frames(dt, dt_err, collapse='mean')
+                        self._plot_spec_by_order(file_name[:-5]+'_'+item_wlen, dt, wlen)
+
                     specs.append(dt)
                     errs.append(dt_err)
                 
@@ -1979,11 +1993,13 @@ class CriresPipeline:
                 indice_sort = np.argsort(wmin)
                 wlens = wlens[indice_sort]
 
+                
                 if combine:
                     # reshape spectra in 2D shape: (N_chips, N_pixel)
                     spec_series = np.reshape(specs, (-1, npixel))[indice_sort]
                     err_series = np.reshape(errs, (-1, npixel))[indice_sort]
-                    
+                    spec_series = spec_series[:, Ncut:-Ncut]
+                    err_series = err_series[:, Ncut:-Ncut]
                     snr_mid = np.mean((spec_series/err_series)[wlens.shape[0]//2])
 
                 else:
@@ -1995,13 +2011,12 @@ class CriresPipeline:
                         err_series.append(np.reshape(errs[:,i,:,:,:], (-1, npixel))[indice_sort])
                     spec_series = np.array(spec_series)
                     err_series = np.array(err_series)
+                    spec_series = spec_series[:,:, Ncut:-Ncut]
+                    err_series = err_series[:,:, Ncut:-Ncut]
                     snr_mid = np.mean((spec_series/err_series)[:,wlens.shape[0]//2,:], axis=1)
 
+                wlens = wlens[:, Ncut:-Ncut]
 
-                l = label.split('_')[-1]
-                file_name = os.path.join(self.corrpath, 
-                            target.replace(" ", "") +\
-                            f'_{l}_CRIRES_SPEC1D.fits')
                 wfits(file_name, ext_list={"FLUX": spec_series, 
                                               "FLUX_ERR": err_series,
                                               "WAVE": wlens}, 
@@ -2010,6 +2025,11 @@ class CriresPipeline:
                                     target.replace(" ", "") +\
                                     f'_{l}_CRIRES_SPEC1D.fits', 
                                      f"SPEC_{l}")
+                if combine:
+                    np.savetxt(file_name[:-5]+'.dat', np.c_[wlens.flatten(), 
+                                                           spec_series.flatten(), 
+                                                           err_series.flatten()], 
+                                header="wave(nm) flux err")
                 
                 if isinstance(snr_mid, float):
                     print(f"Saved target {target} {l} with wavelength coverage {unique_wlen}; ",
@@ -2018,11 +2038,6 @@ class CriresPipeline:
                     print(f"Saved target {target} {l} with wavelength coverage {unique_wlen}; average S/N ~ ",
                             np.round(snr_mid).astype(int), " \n")
 
-
-                if combine:
-                    result = SPEC(wlen=wlens, flux=spec_series, err=err_series)
-                    result.save_spec1d(file_name[:-4]+'dat')
-                    result.plot_spec1d(file_name[:-4]+'png')
 
 
     def run_skycalc(self, airmass=1.0, pwv=2.5):
@@ -2051,7 +2066,7 @@ class CriresPipeline:
         sky_calc = skycalc_ipy.SkyCalc()
 
         wlen_id = self.header_info[indices][self.key_wlen].iloc[0]
-        slit_width = self.header_info[indices][self.key_slitwid].iloc[0]
+        # slit_width = self.header_info[indices][self.key_slitwid].iloc[0]
         # mjd_start = self.header_info[indices][self.key_mjd].iloc[0]
         # ra_mean = np.mean(self.header_info[self.key_ra][indices])
         # dec_mean = np.mean(self.header_info[self.key_dec][indices])
@@ -2093,14 +2108,14 @@ class CriresPipeline:
             )
 
         sky_calc["wgrid_mode"] = "fixed_spectral_resolution"
-        sky_calc["wres"] = 2e5
+        sky_calc["wres"] = 5e5
         sky_calc["pwv"] = pwv
         sky_calc['airmass'] = airmass 
 
-        print(f"  - Wavelength range (nm) = {sky_calc['wmin']} - {sky_calc['wmax']}")
-        print(f"  - lambda / Dlambda = {sky_calc['wres']}")
-        print(f"  - Airmass = {sky_calc['airmass']:.2f}")
-        print(f"  - PWV (mm) = {sky_calc['pwv']}\n")
+        # print(f"  - Wavelength range (nm) = {sky_calc['wmin']} - {sky_calc['wmax']}")
+        # print(f"  - lambda / Dlambda = {sky_calc['wres']}")
+        # print(f"  - Airmass = {sky_calc['airmass']:.2f}")
+        # print(f"  - PWV (mm) = {sky_calc['pwv']}\n")
 
         # Get telluric spectra from SkyCalc
 
@@ -2110,25 +2125,9 @@ class CriresPipeline:
 
         print(" [DONE]\n")
 
-        # Convolve spectra
-
-        if slit_width == "w_0.2":
-            spec_res = 120000.0
-        elif slit_width == "w_0.4":
-            spec_res = 60000.0
-        else:
-            raise ValueError(f"Slit width {slit_width} not recognized.")
-
-        print(f"Slit width = {slit_width}")
-        print(f"Smoothing spectrum to R = {spec_res}\n")
-
-        trans = su.SpecConvolve(wave.value, trans, 
-                        out_res=spec_res, in_res=sky_calc["wres"])
-
         transm_spec = np.column_stack((wave.value, trans))
         out_file= os.path.join(self.calpath, "TRANSM_SPEC.fits")
         wfits(out_file, ext_list={"FLUX": transm_spec})
-        self._add_to_calib('TRANSM_SPEC.fits', "TELLU_SKYCALC")
 
 
     @print_runtime
@@ -2250,7 +2249,7 @@ class CriresPipeline:
                     companion_sep=None, 
                     remove_star_bkg=False, 
                     aper_prim=20, aper_comp=10,
-                    std_object=None,
+                    # std_object=None,
                     extract_2d=False,
                     run_molecfit=False, 
                     debug=False,
@@ -2292,12 +2291,12 @@ class CriresPipeline:
                         companion_sep=companion_sep, 
                         remove_star_bkg=remove_star_bkg,
                         extract_2d=extract_2d,
-                        std_object=std_object,
+                        # std_object=std_object,
                         debug=debug,
                         savename=savename,
                         )
         
-        self.refine_wlen_solution(object=std_object)
+        self.refine_wlen_solution()
 
         self.save_extracted_data(combine=combine)
 

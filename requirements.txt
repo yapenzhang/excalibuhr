@@ -5,4 +5,3 @@ astropy
 matplotlib
 astroquery
 skycalc_ipy
-PyAstronomy
