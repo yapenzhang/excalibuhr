@@ -1863,12 +1863,12 @@ class CriresPipeline:
                 # Convolve telluric model to the instrument resolution
                 slit_width = self.product_info[indices_obj][self.key_slitwid].iloc[0]
                 if slit_width == "w_0.2":
-                    spec_res = 120000.0
+                    spec_res = 100000.0
                 elif slit_width == "w_0.4":
-                    spec_res = 60000.0
+                    spec_res = 50000.0
 
                 tellu_conv = su.SpecConvolve(tellu[:,0], tellu[:,1], 
-                                out_res=spec_res, in_res=5e5)
+                                out_res=spec_res, in_res=2e5)
                 tellu_conv = np.column_stack((tellu[:,0], tellu_conv))
 
                 wlen_cal = self._loop_over_detector(su.wlen_solution, True,
@@ -1911,7 +1911,7 @@ class CriresPipeline:
         all_labels = self.product_info[self.key_caltype].unique()
         data_type = all_labels[pd.Series(all_labels).str.contains('Extr1D', case=False)]
 
-        # cut the detector edges 
+        # mask the detector edges 
         Ncut = 10
 
         for label in data_type:
@@ -1998,9 +1998,9 @@ class CriresPipeline:
                     # reshape spectra in 2D shape: (N_chips, N_pixel)
                     spec_series = np.reshape(specs, (-1, npixel))[indice_sort]
                     err_series = np.reshape(errs, (-1, npixel))[indice_sort]
-                    spec_series = spec_series[:, Ncut:-Ncut]
-                    err_series = err_series[:, Ncut:-Ncut]
-                    snr_mid = np.mean((spec_series/err_series)[wlens.shape[0]//2])
+                    spec_series[:, :Ncut] = np.nan
+                    spec_series[:, -Ncut:] = np.nan
+                    snr_mid = np.nanmean((spec_series/err_series)[wlens.shape[0]//2])
 
                 else:
                     # reshape spectra in 3D shape: (N_frames, N_chips, N_pixel)
@@ -2011,11 +2011,10 @@ class CriresPipeline:
                         err_series.append(np.reshape(errs[:,i,:,:,:], (-1, npixel))[indice_sort])
                     spec_series = np.array(spec_series)
                     err_series = np.array(err_series)
-                    spec_series = spec_series[:,:, Ncut:-Ncut]
-                    err_series = err_series[:,:, Ncut:-Ncut]
-                    snr_mid = np.mean((spec_series/err_series)[:,wlens.shape[0]//2,:], axis=1)
+                    spec_series[:,:, :Ncut] = np.nan
+                    spec_series[:,:, -Ncut:] = np.nan
+                    snr_mid = np.nanmean((spec_series/err_series)[:,wlens.shape[0]//2,:], axis=1)
 
-                wlens = wlens[:, Ncut:-Ncut]
 
                 wfits(file_name, ext_list={"FLUX": spec_series, 
                                               "FLUX_ERR": err_series,
@@ -2037,6 +2036,7 @@ class CriresPipeline:
                 else:
                     print(f"Saved target {target} {l} with wavelength coverage {unique_wlen}; average S/N ~ ",
                             np.round(snr_mid).astype(int), " \n")
+
 
 
 
@@ -2130,21 +2130,21 @@ class CriresPipeline:
         wfits(out_file, ext_list={"FLUX": transm_spec})
 
 
+
     @print_runtime
-    def run_molecfit(self, data_type=None, object=None,
-                        wave_range=None, verbose=True) -> None:
+    def run_molecfit(self, object=None, data_type=None, wave_range=None, verbose=True):
         """
         Method for running ESO's tool for telluric correction 
         `Molecfit`. 
 
         Parameters
         ----------
+        object: str
+            Name of the star whose spectra is used for the telluric fitting. 
         data_type: str
             Label of the file type to fit for telluric absorption.
             The default value is `SPEC_PRIMARY`, i.e. the primary spectrum.
-        object: str
-            The name of the standard star whose spectra is used for
-            the telluric fitting. 
+            It can also be individual frames in time-series observations (TODO).
         wmin, wmax: list
             list of lower and upper limit for wavelength ranges (in um)
             for molecfit fitting
@@ -2182,17 +2182,82 @@ class CriresPipeline:
         dt = SPEC(filename=os.path.join(self.outpath, science_file))
         dt.wlen *= 1e-3
 
-        su.molecfit(self.molpath, dt, wave_range, 
-                    savename=science_file.split('/')[-1], verbose=verbose)
+        name = science_file.split('/')[-1] 
+        su.molecfit(self.molpath, dt, wave_range, savename=name, verbose=verbose)
+        
+        name = name.split('_')[0]
+        self._add_to_product(f'molecfit/TELLURIC_{name}.fits', "TELLU_MOLECFIT")
 
-        self._add_to_product('molecfit/TELLURIC_DATA.dat', "TELLU_MOLECFIT")
 
 
     @print_runtime
-    def apply_telluric_correction(self):
+    def spec_response_cal(self, object, temp, vsini, vsys, mask_wave=[(2164, 2169)]):
         """
-        Method for apply telluric correction to other science frames
-        using the output from `Molecfit`. 
+        Method for calibrating spectral shape using standard star observations.
+
+        Parameters
+        ----------
+        object: str
+            Name of the standard star whose spectrum is used for
+            the instrument response calibration. 
+        
+        Returns
+        -------
+        NoneType
+            None
+        """
+
+        self._print_section("Spectral shape calibration")
+        
+        self.corrpath = os.path.join(self.outpath, "obs_calibrated")
+        self.molpath = os.path.join(self.outpath, "molecfit")
+        if not os.path.exists(self.corrpath):
+            os.makedirs(self.corrpath)
+
+        # get updated product info
+        self.product_info = pd.read_csv(self.product_file, sep=';')
+
+        data_type = 'SPEC_PRIMARY'
+        indices_std =  (self.product_info[self.key_caltype] == data_type) & \
+                        (self.product_info[self.key_target_name] == object)
+
+        std_file = self.product_info[indices_std][self.key_filename].iloc[0]
+        std = SPEC(filename=os.path.join(self.outpath, std_file))
+
+        # tellu_file = os.path.join(self.calpath, "TRANSM_SPEC.fits")
+        # if not os.path.isfile(tellu_file):
+        #     airmass = self.product_info[indices_std][self.key_airmass].max()
+        #     self.run_skycalc(airmass=airmass)
+
+        # skycalc model is not sufficient, use molecfit model instead
+        indices_tellu =  (self.product_info[self.key_caltype] == 'TELLU_MOLECFIT') & \
+                        (self.product_info[self.key_target_name] == object)
+        if np.sum(indices_tellu) > 0:
+            tellu_file = self.product_info[indices_tellu][self.key_filename].iloc[0]
+        tellu = fits.getdata(os.path.join(self.outpath, tellu_file))
+
+        # # Convolve telluric model to the instrument resolution
+        # slit_width = self.product_info[indices_std][self.key_slitwid].iloc[0]
+        # if slit_width == "w_0.2":
+        #     spec_res = 100000.0
+        # elif slit_width == "w_0.4":
+        #     spec_res = 50000.0
+
+        # tellu[:,1] = su.SpecConvolve(tellu[:,0], tellu[:,1], 
+        #                 out_res=spec_res, in_res=2e5)
+
+        response = su.instrument_response(std, tellu, temp, vsini, vsys, mask_wave)
+
+        file_name = os.path.join(self.corrpath, "instrument_response.dat")
+        np.savetxt(file_name, response)
+
+
+
+    @print_runtime
+    def apply_correction(self):
+        """
+        Method for apply telluric and instrument response correction
+        using the output from `run_molecfit` and `spec_response_cal`. 
 
         Parameters
         ----------
@@ -2205,7 +2270,7 @@ class CriresPipeline:
             None
         """
 
-        self._print_section("Apply telluric correction")
+        self._print_section("Apply corrections")
 
         self.molpath = os.path.join(self.outpath, "molecfit")
         self.corrpath = os.path.join(self.outpath, "obs_calibrated")
@@ -2213,34 +2278,65 @@ class CriresPipeline:
         # get updated product info
         self.product_info = pd.read_csv(self.product_file, sep=';')
 
-        indices_tellu = (self.product_info[self.key_caltype] == 'TELLU_MOLECFIT')
-        if sum(indices_tellu) < 1:
-            raise Exception("No telluric model found")
+        # get instrument response
+        file_name = os.path.join(self.corrpath, "instrument_response.dat")
+        resp = np.genfromtxt(file_name)
 
-        tellu = np.genfromtxt(os.path.join(self.outpath, 
-            self.product_info[indices_tellu][self.key_filename].iloc[0]))
-        mwlen, mtrans = tellu[:,0], tellu[:,1]
+        # get labels containing 'SPEC'
+        all_labels = self.product_info[self.key_caltype].unique()
+        data_type = all_labels[pd.Series(all_labels).str.contains('SPEC', case=False)]
 
-        indices = np.zeros_like(indices_tellu, dtype=bool)
-        for data_type in ['SPEC_PRIMARY', 'SPEC_SECONDARY']:
-            indices = indices | (self.product_info[self.key_caltype] == data_type)
-        
-        for file in self.product_info[indices][self.key_filename]:
-            with fits.open(os.path.join(self.outpath, file)) as hdu:
-                specs = hdu["FLUX"].data
-                errs = hdu["FLUX_ERR"].data
-            specs /= mtrans
-            errs /= mtrans
+        for label in data_type:
 
-            #unravel spectra to a 1D array
-            w, f, f_err, w_even = su.util_unravel_spec(mwlen, specs, errs)
+            indices = (self.product_info[self.key_caltype] == label)
+            
+            # Check unique targets
+            unique_target = set()
+            for item in self.product_info[indices][self.key_target_name]:
+                unique_target.add(item)
 
-            file_name = os.path.join(self.corrpath, 
-                    file.split('/')[-1][:-7] + "1D_TELLURIC_CORR.dat")
-            header = "Wlen(nm) Flux Flux_err Wlen_even"
-            np.savetxt(file_name, np.c_[w, f, f_err, w_even], header=header)
+            if len(unique_target) == 0:
+                continue
+            
+            # Loop over each target
+            for target in unique_target:
 
-            print(f"Telluric corrected spectra saved to {self.corrpath}")
+                # get molecfit telluric model
+                indices_tellu = (self.product_info[self.key_caltype] == 'TELLU_MOLECFIT') & \
+                                (self.product_info[self.key_target_name] == target)
+                if sum(indices_tellu) < 1:
+                    raise Exception("No telluric model found")
+
+                tellu = fits.getdata(os.path.join(self.outpath, 
+                        self.product_info[indices_tellu][self.key_filename].iloc[0]))
+                w, mtrans = tellu[:,0], tellu[:,1]
+                # use molecfit wavelength
+
+                indices_obj = indices & (self.product_info[self.key_target_name] == target)
+
+                for file in self.product_info[indices_obj][self.key_filename]:
+                    with fits.open(os.path.join(self.outpath, file)) as hdu:
+                        specs = hdu["FLUX"].data
+                        errs = hdu["FLUX_ERR"].data
+
+                    f = np.ravel(specs)/mtrans/resp
+                    f_err = np.ravel(errs)/mtrans/resp
+
+                    # mask deep telluric lines
+                    mask = mtrans < 0.7
+                    f[mask] = np.nan
+
+                    file_name = os.path.join(self.corrpath, 
+                            file.split('/')[-1][:-7] + "1D_TELLURIC_CORR.dat")
+                    header = "wave flux err"
+                    np.savetxt(file_name, np.c_[w*1e-3, f, f_err], header=header)
+
+                    print(f"Telluric corrected spectra saved to {file_name.split('/')[-1]}")
+
+                    # plot spectra
+                    specs = np.reshape(f, (3, -1, specs.shape[-1]))
+                    waves = np.reshape(w, (3, -1, specs.shape[-1]))
+                    self._plot_spec_by_order(file_name[:-4], specs, waves)
 
 
     def run_recipes(self, combine=False,
@@ -2249,7 +2345,6 @@ class CriresPipeline:
                     companion_sep=None, 
                     remove_star_bkg=False, 
                     aper_prim=20, aper_comp=10,
-                    # std_object=None,
                     extract_2d=False,
                     run_molecfit=False, 
                     debug=False,
@@ -2291,7 +2386,6 @@ class CriresPipeline:
                         companion_sep=companion_sep, 
                         remove_star_bkg=remove_star_bkg,
                         extract_2d=extract_2d,
-                        # std_object=std_object,
                         debug=debug,
                         savename=savename,
                         )

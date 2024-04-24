@@ -118,44 +118,44 @@ class SPEC:
         else:
             return self.wlen.flatten(), self.flux.flatten(), None
 
-    def wlen_cut(self, w_list):
-        # w_list: list of wavelength ranges to keep.
-        w_list = np.array(w_list)
-        if w_list.ndim > 1:
-            cmin = w_list[:,0]
-            indices = np.argsort(cmin)
-            w_list = w_list[indices]
-        else:
-            w_list = w_list[np.newaxis,:]
-        mask = np.zeros_like(self.wlen, dtype=bool)
-        for cut in w_list:
-            mask = mask | ((self.wlen>cut[0]) & (self.wlen<cut[1]))
-        spec = self._copy()
-        spec.flux[~mask] = np.nan
-        chip_mask = np.sum(np.isnan(spec.flux), axis=1) < 0.9 * self.wlen.shape[-1]
-        # remove fully masked orders
-        if self.err is not None:
-            return self._copy(self.wlen[chip_mask], self.flux[chip_mask], 
-                          self.err[chip_mask])
-        else:
-            return self._copy(self.wlen[chip_mask], self.flux[chip_mask])
+    # def wlen_cut(self, w_list):
+    #     # w_list: list of wavelength ranges to keep.
+    #     w_list = np.array(w_list)
+    #     if w_list.ndim > 1:
+    #         cmin = w_list[:,0]
+    #         indices = np.argsort(cmin)
+    #         w_list = w_list[indices]
+    #     else:
+    #         w_list = w_list[np.newaxis,:]
+    #     mask = np.zeros_like(self.wlen, dtype=bool)
+    #     for cut in w_list:
+    #         mask = mask | ((self.wlen>cut[0]) & (self.wlen<cut[1]))
+    #     spec = self._copy()
+    #     spec.flux[~mask] = np.nan
+    #     chip_mask = np.sum(np.isnan(spec.flux), axis=1) < 0.9 * self.wlen.shape[-1]
+    #     # remove fully masked orders
+    #     if self.err is not None:
+    #         return self._copy(self.wlen[chip_mask], self.flux[chip_mask], 
+    #                       self.err[chip_mask])
+    #     else:
+    #         return self._copy(self.wlen[chip_mask], self.flux[chip_mask])
             
 
 
-    def remove_order_edge(self, Nedge=10):
-        if self.err is not None:
-            return self._copy(self.wlen[:, Nedge:-Nedge], self.flux[:, Nedge:-Nedge],
-                            self.err[:, Nedge:-Nedge])
-        else:
-            return self._copy(self.wlen[:, Nedge:-Nedge], self.flux[:, Nedge:-Nedge])
+    # def remove_order_edge(self, Nedge=10):
+    #     if self.err is not None:
+    #         return self._copy(self.wlen[:, Nedge:-Nedge], self.flux[:, Nedge:-Nedge],
+    #                         self.err[:, Nedge:-Nedge])
+    #     else:
+    #         return self._copy(self.wlen[:, Nedge:-Nedge], self.flux[:, Nedge:-Nedge])
 
 
-    def make_wlen_bins(self):
-        data_wlen_bins = np.zeros_like(self.wlen)
-        for i in range(self.Nchip):
-            data_wlen_bins[i][:-1] = np.diff(self.wlen[i])
-            data_wlen_bins[i][-1] = data_wlen_bins[i][-2]
-        self.wlen_bins = data_wlen_bins
+    # def make_wlen_bins(self):
+    #     data_wlen_bins = np.zeros_like(self.wlen)
+    #     for i in range(self.Nchip):
+    #         data_wlen_bins[i][:-1] = np.diff(self.wlen[i])
+    #         data_wlen_bins[i][-1] = data_wlen_bins[i][-2]
+    #     self.wlen_bins = data_wlen_bins
 
 
     # def make_covariance_local(self, amp, mu, sigma, trunc_dist=5):
@@ -167,89 +167,89 @@ class SPEC:
     #         self.cov[indices] += cov_local
     
     
-    def match_LSF(self, wlen_sharp, flux_sharp, chip_bin=3, kernel_size=20):
-        spec_reconst = []
-        spec_sharp = interp1d(wlen_sharp, flux_sharp, bounds_error=False, 
-                              fill_value=np.nanmean(flux_sharp))
-        for i in range(0, self.Nchip, chip_bin):
-            xx = self.wlen[i:i+chip_bin].flatten()
-            yy = self.flux[i:i+chip_bin].flatten()
-            flux_reconst, Kernel = su.find_kernel_SVD(
-                                        spec_sharp(xx), 
-                                        yy, 
-                                        kernel_size)
-            spec_reconst.append(flux_reconst)
-        return self._copy(self.wlen.flatten(), spec_reconst)
+    # def match_LSF(self, wlen_sharp, flux_sharp, chip_bin=3, kernel_size=20):
+    #     spec_reconst = []
+    #     spec_sharp = interp1d(wlen_sharp, flux_sharp, bounds_error=False, 
+    #                           fill_value=np.nanmean(flux_sharp))
+    #     for i in range(0, self.Nchip, chip_bin):
+    #         xx = self.wlen[i:i+chip_bin].flatten()
+    #         yy = self.flux[i:i+chip_bin].flatten()
+    #         flux_reconst, Kernel = su.find_kernel_SVD(
+    #                                     spec_sharp(xx), 
+    #                                     yy, 
+    #                                     kernel_size)
+    #         spec_reconst.append(flux_reconst)
+    #     return self._copy(self.wlen.flatten(), spec_reconst)
 
 
-    def spec_division(self, spec_denominator):
-        """
-        spec_denominator: SPEC2D object with the same wlen as the data
-        """
+    # def spec_division(self, spec_denominator):
+    #     """
+    #     spec_denominator: SPEC2D object with the same wlen as the data
+    #     """
 
-        # if not np.allclose(self.wlen, spec_denominator.wlen):
-        #     pass
-        # else:
-        return self._copy(flux=self.flux/spec_denominator.flux, 
-                             err=self.err/spec_denominator.flux)
-
-
-    def remove_blackbody(self, teff, debug=False):
-        from astropy.modeling import models
-        from astropy import units as u
-        bb = models.BlackBody(temperature=teff * u.K,
-                 scale=1.0 * u.watt / (u.m ** 2 * u.micron * u.sr))
-        norm = []
-        for i in range(self.Nchip):
-            flux_lambda = bb(self.wlen[i] * u.nm) * np.pi * u.steradian
-            norm.append(flux_lambda.value)
-        norm = np.array(norm)/np.median(norm)
-        if debug:
-            for i in range(self.Nchip):
-                plt.plot(self.wlen[i], self.flux[i], 'k')
-                plt.plot(self.wlen[i], self.flux[i]/norm[i],'r')
-            plt.show()
-        return self._copy(flux=self.flux/norm, err=self.err/norm)
+    #     # if not np.allclose(self.wlen, spec_denominator.wlen):
+    #     #     pass
+    #     # else:
+    #     return self._copy(flux=self.flux/spec_denominator.flux, 
+    #                          err=self.err/spec_denominator.flux)
 
 
-    def continuum_normalization(self, order=3, debug=False):
-        spec = self._copy()
-        for i in range(self.Nchip):
-            if order == 0:
-                nans = np.isnan(self.flux[i])
-                _, continuum = np.percentile(self.flux[i][~nans], (1, 99))
-            else:
-                continuum, _ = su.fit_continuum(self.wlen[i], self.flux[i], order)
-            spec.flux[i] /= continuum
-            spec.err[i] /= continuum
-            if debug:
-                plt.plot(self.wlen[i], self.flux[i], 'k')
-                plt.plot(self.wlen[i], continuum, 'r')
-        if debug:
-            plt.show()
-        return spec
+    # def remove_blackbody(self, teff, debug=False):
+    #     from astropy.modeling import models
+    #     from astropy import units as u
+    #     bb = models.BlackBody(temperature=teff * u.K,
+    #              scale=1.0 * u.watt / (u.m ** 2 * u.micron * u.sr))
+    #     norm = []
+    #     for i in range(self.Nchip):
+    #         flux_lambda = bb(self.wlen[i] * u.nm) * np.pi * u.steradian
+    #         norm.append(flux_lambda.value)
+    #     norm = np.array(norm)/np.median(norm)
+    #     if debug:
+    #         for i in range(self.Nchip):
+    #             plt.plot(self.wlen[i], self.flux[i], 'k')
+    #             plt.plot(self.wlen[i], self.flux[i]/norm[i],'r')
+    #         plt.show()
+    #     return self._copy(flux=self.flux/norm, err=self.err/norm)
 
-    def high_pass_filter(self, sigma=51, mask=None):
-        #or signal.savgol_filter
-        if mask is None:
-            mask = np.zeros_like(self.flux, dtype=bool)
-        spec = self._copy()
-        for i in range(self.Nchip):
-            spec.flux[i][~mask[i]] /= ndimage.gaussian_filter(self.flux[i][~mask[i]], sigma=sigma)
-            spec.err[i][~mask[i]] /= ndimage.gaussian_filter(self.flux[i][~mask[i]], sigma=sigma)
-            spec.flux[i] -= 1. #np.nanmean(spec.flux[i])
-            spec.flux[i][mask[i]] = 0.
-            # plt.plot(self.flux[i][~mask[i]])
-            # plt.plot(ndimage.gaussian_filter(self.flux[i][~mask[i]], sigma=sigma))
-            # plt.show()
-        return spec
 
-    def get_outlier_mask(self, clip=3):
-        outlier_mask = []
-        for i in range(self.Nchip):
-            filtered = stats.sigma_clip(self.flux[i], sigma=clip)
-            outlier_mask.append(filtered.mask | np.isnan(self.flux[i]))
-        self.mask = outlier_mask
+    # def continuum_normalization(self, order=3, debug=False):
+    #     spec = self._copy()
+    #     for i in range(self.Nchip):
+    #         if order == 0:
+    #             nans = np.isnan(self.flux[i])
+    #             _, continuum = np.percentile(self.flux[i][~nans], (1, 99))
+    #         else:
+    #             continuum, _ = su.fit_continuum(self.wlen[i], self.flux[i], order)
+    #         spec.flux[i] /= continuum
+    #         spec.err[i] /= continuum
+    #         if debug:
+    #             plt.plot(self.wlen[i], self.flux[i], 'k')
+    #             plt.plot(self.wlen[i], continuum, 'r')
+    #     if debug:
+    #         plt.show()
+    #     return spec
+
+    # def high_pass_filter(self, sigma=51, mask=None):
+    #     #or signal.savgol_filter
+    #     if mask is None:
+    #         mask = np.zeros_like(self.flux, dtype=bool)
+    #     spec = self._copy()
+    #     for i in range(self.Nchip):
+    #         spec.flux[i][~mask[i]] /= ndimage.gaussian_filter(self.flux[i][~mask[i]], sigma=sigma)
+    #         spec.err[i][~mask[i]] /= ndimage.gaussian_filter(self.flux[i][~mask[i]], sigma=sigma)
+    #         spec.flux[i] -= 1. #np.nanmean(spec.flux[i])
+    #         spec.flux[i][mask[i]] = 0.
+    #         # plt.plot(self.flux[i][~mask[i]])
+    #         # plt.plot(ndimage.gaussian_filter(self.flux[i][~mask[i]], sigma=sigma))
+    #         # plt.show()
+    #     return spec
+
+    # def get_outlier_mask(self, clip=3):
+    #     outlier_mask = []
+    #     for i in range(self.Nchip):
+    #         filtered = stats.sigma_clip(self.flux[i], sigma=clip)
+    #         outlier_mask.append(filtered.mask | np.isnan(self.flux[i]))
+    #     self.mask = outlier_mask
 
     # def remove_nans(self):
     #     spec = self._copy()
@@ -275,96 +275,96 @@ class SPEC:
     #     plt.show()
 
 
-    def noise_stat(self, spec_model, Nbins=20):
-        res = self._copy(flux=self.flux-spec_model.flux)
-        res = res.high_pass_filter()
-        x, y, _ = self.get_spec1d()
-        x, r, _ = res.get_spec1d()
-        r = np.abs(r/y)
-        ybins = np.linspace(np.min(y), np.max(y), Nbins)
-        ybinned = (ybins[1:]+ybins[:-1])/2.
-        indices = np.digitize(y, ybins)
-        rbinned = np.array([np.mean(r[indices==i]) for i in range(1, Nbins)])
-        rbinned_err = np.array([np.std(r[indices==i])/np.sqrt(np.sum(indices==i)) 
-                                for i in range(1, Nbins)])
-        return ybinned, rbinned, rbinned_err
+    # def noise_stat(self, spec_model, Nbins=20):
+    #     res = self._copy(flux=self.flux-spec_model.flux)
+    #     res = res.high_pass_filter()
+    #     x, y, _ = self.get_spec1d()
+    #     x, r, _ = res.get_spec1d()
+    #     r = np.abs(r/y)
+    #     ybins = np.linspace(np.min(y), np.max(y), Nbins)
+    #     ybinned = (ybins[1:]+ybins[:-1])/2.
+    #     indices = np.digitize(y, ybins)
+    #     rbinned = np.array([np.mean(r[indices==i]) for i in range(1, Nbins)])
+    #     rbinned_err = np.array([np.std(r[indices==i])/np.sqrt(np.sum(indices==i)) 
+    #                             for i in range(1, Nbins)])
+    #     return ybinned, rbinned, rbinned_err
 
 
-    def doppler_shift_dw(self, dw):
-        return self._copy(wlen=self.wlen+dw)
+    # def doppler_shift_dw(self, dw):
+    #     return self._copy(wlen=self.wlen+dw)
 
-    def wlen_calibration(self, transm_spec, debug=False):
-        self.wlen = su.wlen_solution(self.flux, self.err, self.wlen, transm_spec, debug=debug)
-        if debug:
-            for i in range(self.Nchip):
-                plt.plot(self.wlen[i], self.flux[i], 'k', alpha=0.8)
-            plt.plot(transm_spec[:,0], transm_spec[:,1], 'b', alpha=0.8)
-            plt.show()
-        return self
-
-
-    def save_spec1d(self, savename):
-        unraveled = []
-        if self.err is None:
-            arr = [self.wlen, self.flux]
-        else:
-            arr = [self.wlen, self.flux, self.err]
-        for dt in arr:
-            unraveled.append(dt.flatten())
-        header = "Wlen(nm) Flux Flux_err"
-        np.savetxt(savename, np.transpose(unraveled), header=header)
+    # def wlen_calibration(self, transm_spec, debug=False):
+    #     self.wlen = su.wlen_solution(self.flux, self.err, self.wlen, transm_spec, debug=debug)
+    #     if debug:
+    #         for i in range(self.Nchip):
+    #             plt.plot(self.wlen[i], self.flux[i], 'k', alpha=0.8)
+    #         plt.plot(transm_spec[:,0], transm_spec[:,1], 'b', alpha=0.8)
+    #         plt.show()
+    #     return self
 
 
-    def plot_spec1d(self, savename, show=False):
-        _set_plot_style()
-        nrows = self.wlen.shape[0]//3
-        if self.wlen.shape[0]%3 != 0:
-            nrows += 1
-        fig, axes = plt.subplots(nrows=nrows, ncols=1, 
-                        figsize=(12,nrows), constrained_layout=True)
-        if nrows == 1:
-            axes = [axes]
-        for i in range(nrows):
-            ax = axes[i]
-            wmin, wmax = self.wlen[i*3][0], self.wlen[min(i*3+2, self.wlen.shape[0]-1)][-1]
-            ymin, ymax = 1e8, 0
-            for j in range(min(3, self.wlen.shape[0]-3*i)):
-                x, y = self.wlen[i*3+j], self.flux[i*3+j]
-                ax.plot(x, y, 'k')
-                nans = np.isnan(y)
-                vmin, vmax = np.percentile(y[~nans], (1, 99))
-                ymin = min(vmin, ymin)
-                ymax = max(vmax, ymax)
-            ax.set_xlim((wmin, wmax))
-            ax.set_ylim((0.8*vmin, 1.2*vmax))
-        axes[-1].set_xlabel('Wavelength (nm)')
-        axes[nrows//2].set_ylabel('Flux')
-        plt.savefig(savename)
-        if show:
-            plt.show()
-        plt.close(fig)
+    # def save_spec1d(self, savename):
+    #     unraveled = []
+    #     if self.err is None:
+    #         arr = [self.wlen, self.flux]
+    #     else:
+    #         arr = [self.wlen, self.flux, self.err]
+    #     for dt in arr:
+    #         unraveled.append(dt.flatten())
+    #     header = "Wlen(nm) Flux Flux_err"
+    #     np.savetxt(savename, np.transpose(unraveled), header=header)
 
-        if self.err is not None:
-            fig, axes = plt.subplots(nrows=nrows, ncols=1, 
-                        figsize=(12,nrows), constrained_layout=True)
-            for i in range(nrows):
-                ax = axes[i]
-                # wmin, wmax = self.wlen[i*3][0], self.wlen[i*3+2][-1]
-                wmin, wmax = self.wlen[i*3][0], self.wlen[min(i*3+2, self.wlen.shape[0]-1)][-1]
-                ymin, ymax = 1, 0
-                for j in range(min(3, self.wlen.shape[0]-3*i)):
-                    x, y, z = self.wlen[i*3+j], self.flux[i*3+j], self.err[i*3+j]
-                    ax.plot(x, y/z, 'k')
-                    nans = np.isnan(y/z)
-                    vmin, vmax = np.percentile((y/z)[~nans], (10, 90))
-                    ymin = min(vmin, ymin)
-                    ymax = max(vmax, ymax)
-                ax.set_xlim((wmin, wmax))
-                ax.set_ylim((0.4*vmin, 1.3*vmax))
-            axes[-1].set_xlabel('Wavelength (nm)')
-            axes[-1].set_ylabel('S/N')
-            plt.savefig(savename[:-4]+'_SNR.png')
-            plt.close(fig)
+
+    # def plot_spec1d(self, savename, show=False):
+    #     _set_plot_style()
+    #     nrows = self.wlen.shape[0]//3
+    #     if self.wlen.shape[0]%3 != 0:
+    #         nrows += 1
+    #     fig, axes = plt.subplots(nrows=nrows, ncols=1, 
+    #                     figsize=(12,nrows), constrained_layout=True)
+    #     if nrows == 1:
+    #         axes = [axes]
+    #     for i in range(nrows):
+    #         ax = axes[i]
+    #         wmin, wmax = self.wlen[i*3][0], self.wlen[min(i*3+2, self.wlen.shape[0]-1)][-1]
+    #         ymin, ymax = 1e8, 0
+    #         for j in range(min(3, self.wlen.shape[0]-3*i)):
+    #             x, y = self.wlen[i*3+j], self.flux[i*3+j]
+    #             ax.plot(x, y, 'k')
+    #             nans = np.isnan(y)
+    #             vmin, vmax = np.percentile(y[~nans], (1, 99))
+    #             ymin = min(vmin, ymin)
+    #             ymax = max(vmax, ymax)
+    #         ax.set_xlim((wmin, wmax))
+    #         ax.set_ylim((0.8*vmin, 1.2*vmax))
+    #     axes[-1].set_xlabel('Wavelength (nm)')
+    #     axes[nrows//2].set_ylabel('Flux')
+    #     plt.savefig(savename)
+    #     if show:
+    #         plt.show()
+    #     plt.close(fig)
+
+    #     if self.err is not None:
+    #         fig, axes = plt.subplots(nrows=nrows, ncols=1, 
+    #                     figsize=(12,nrows), constrained_layout=True)
+    #         for i in range(nrows):
+    #             ax = axes[i]
+    #             # wmin, wmax = self.wlen[i*3][0], self.wlen[i*3+2][-1]
+    #             wmin, wmax = self.wlen[i*3][0], self.wlen[min(i*3+2, self.wlen.shape[0]-1)][-1]
+    #             ymin, ymax = 1, 0
+    #             for j in range(min(3, self.wlen.shape[0]-3*i)):
+    #                 x, y, z = self.wlen[i*3+j], self.flux[i*3+j], self.err[i*3+j]
+    #                 ax.plot(x, y/z, 'k')
+    #                 nans = np.isnan(y/z)
+    #                 vmin, vmax = np.percentile((y/z)[~nans], (10, 90))
+    #                 ymin = min(vmin, ymin)
+    #                 ymax = max(vmax, ymax)
+    #             ax.set_xlim((wmin, wmax))
+    #             ax.set_ylim((0.4*vmin, 1.3*vmax))
+    #         axes[-1].set_xlabel('Wavelength (nm)')
+    #         axes[-1].set_ylabel('S/N')
+    #         plt.savefig(savename[:-4]+'_SNR.png')
+    #         plt.close(fig)
 
 
 class DETECTOR:

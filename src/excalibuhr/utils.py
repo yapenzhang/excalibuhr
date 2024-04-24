@@ -3,6 +3,7 @@
 import numpy as np
 from astropy.io import fits
 from astropy import stats
+from astropy import constants as const
 from astropy.modeling import models, fitting
 from numpy.polynomial import polynomial as Poly
 from scipy import ndimage, signal, optimize
@@ -14,7 +15,34 @@ import warnings
 import os
 import shutil
 import subprocess
+import requests
 
+def wfits(fname, ext_list: dict, header=None):
+    """
+    write data to FITS primary and extensions, overwriting any old file
+    
+    Parameters
+    ----------
+    fname: str
+        path and filename to which the data is saved 
+    ext_list: dict
+        to save the data in the dictionary to FITS extension. Specify the datatype 
+        (e.g.  "FLUX", "FLUX_ERR", "WAVE", and "MODEL") in the key. 
+    header: FITS `header`
+        header information to be saved
+
+    Returns
+    -------
+    NoneType
+        None
+    """
+
+    primary_hdu = fits.PrimaryHDU(header=header)
+    new_hdul = fits.HDUList([primary_hdu])
+    if not ext_list is None:
+        for key, value in ext_list.items():
+            new_hdul.append(fits.ImageHDU(value, name=key))
+    new_hdul.writeto(fname, overwrite=True, output_verify='ignore') 
 
 
 def CCF_doppler(w_obs, f_obs, w_model, f_model, v_extent, dv):
@@ -933,7 +961,7 @@ def spectral_rectify_interp(im_list, badpix, trace, slit_meta, reverse=False, de
     Parameters
     ----------
     im_list: array
-        input image or a list of images to be corrected
+        input image or a list of image and variance to be corrected
     badpix: array
         bad pixel map corresponding to the image
     trace: array
@@ -967,59 +995,49 @@ def spectral_rectify_interp(im_list, badpix, trace, slit_meta, reverse=False, de
     # Loop over each order
     for (yy_grid, poly_full) in zip(yy_indices, slit_poly):
 
+        # only focus on the positive part of the signal 
+        # doesn't work in the case of wide companions
+        # profile = np.nanmedian(im_rect_spec[0, yy_grid], axis=1)
+        # if np.argmax(profile) - len(yy_grid)//2 < 0:
+        #     yy_half = yy_grid[:len(yy_grid)//3*2]
+        #     profile = profile[:len(yy_grid)//3*2]
+        # else:
+        #     yy_half = yy_grid[len(yy_grid)//3*2:]
+        #     profile = profile[len(yy_grid)//3*2:]
+
         # create the grid for the tilted slit 
         isowlen_grid = np.zeros((len(yy_grid), len(xx_grid)))
         for x in range(len(xx_grid)):
             isowlen_grid[:, x] = Poly.polyval(yy_grid, poly_full[x])
 
-        # ax1 = plt.subplot(211)
-        # ax2 = plt.subplot(212, sharex=ax1)
-        # ax1.imshow(im_rect_spec[1, yy_grid, :], vmin=0, vmax=100)
-        # ax2.imshow(bpm[yy_grid])
-        # plt.show()
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=RuntimeWarning)
-            med = np.nanmedian(im_rect_spec[0, yy_grid], axis=0)
-
         # Loop over each row in the order
-        for i, (x_isowlen, mask) in enumerate(zip(isowlen_grid, 
-                                                bpm[yy_grid])):
+        for i, (x_isowlen, mask) in enumerate(zip(isowlen_grid, bpm[yy_grid])):
+            
             if np.sum(mask)>0.5*len(mask):
                 continue
-            data_row = im_rect_spec[:, yy_grid[i], :]
 
-            filtered_data, _, final_mask = PolyfitClip(xx_grid, data_row[0]/med, order=6, clip=5)
-            mask = np.logical_or(mask, final_mask)
+            data_row = im_rect_spec[:, yy_grid[i]]
 
-            # plt.plot(xx_grid, data_row[0]/med)
-            # plt.plot(xx_grid, filtered_data)
-            # plt.plot(xx_grid, mask)
-            # plt.show()
-            # plt.plot(xx_grid, im_rect_spec[0, yy_grid[i]])
-            
             # Correct for the slit-curvature by interpolating onto the grid
+            # loop over each image
             for r, dt in enumerate(data_row):
                 if reverse:
                     im_rect_spec[r, yy_grid[i]] = interp1d(x_isowlen[~mask], 
                                                         dt[~mask], 
-                                                        kind='cubic', 
+                                                        kind='linear', 
                                                         bounds_error=False, 
                                                         fill_value=np.nan
                                                         )(xx_grid)
                 else:
                     im_rect_spec[r, yy_grid[i]] = interp1d(xx_grid[~mask], 
                                                         dt[~mask], 
-                                                        kind='cubic', 
+                                                        kind='linear', 
                                                         bounds_error=False, 
                                                         fill_value=np.nan
                                                         )(x_isowlen)
-            # plt.plot(xx_grid, med)
-            # plt.plot(xx_grid, data_row[0]/med-1.)
-            # plt.plot(xx_grid, im_rect_spec[0, yy_grid[i]])
-            # plt.show()
                                                        
     if debug:
-        plt.imshow(im_rect_spec[0], vmin=0, vmax=1e2)
+        plt.imshow(im_rect_spec[0], vmin=0, vmax=1e3)
         plt.show()
     
     if np.array(im_list).ndim == 2:
@@ -1070,7 +1088,7 @@ def trace_rectify_interp(im_list, trace, debug=False):
                 if np.sum(mask)>0.5*len(mask):
                     continue 
                 im_rect[r,yy_grid,x] = interp1d(yy_grid[~mask], dt[~mask], 
-                                                kind='cubic', 
+                                                kind='linear', 
                                                 bounds_error=False, 
                                                 fill_value=np.nan
                                                 )(yy_grid+shifts[x])
@@ -1638,10 +1656,7 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
 
     # fit and remove bkg per wavelength channel
     if remove_bkg == True:
-
-        # profile = np.nanmedian(D, axis=0)
-        # plt.plot(profile)
-
+        
         # may need to tweek this parameter
         # 5th order polynomial gives the best performance so far
         bkg_poly_order = 6 
@@ -1649,11 +1664,16 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
         cen0 = len(spatial_x)//2
         mask = (spatial_x > cen0 - aper_mask) & (spatial_x < cen0 + aper_mask)
         bkg_model = np.zeros_like(D)
+
+        filtered_data = stats.sigma_clip(D[:, ~mask], sigma=3, axis=1)
+        bpm[:,~mask] = np.logical_or(bpm[:,~mask], filtered_data.mask)
+
         for x in wave_x:
-            y_model, _, _ = PolyfitClip(spatial_x, D[x], order=bkg_poly_order, mask=~mask)
+            m = np.logical_or(mask, bpm[x])
+            y_model, _, _ = PolyfitClip(spatial_x, D[x], order=bkg_poly_order, mask=(~m))
             bkg_model[x] = y_model
             # plt.plot(spatial_x, D[x])
-            # plt.plot(spatial_x[mask], D[x, mask])
+            # plt.plot(spatial_x[~m], D[x, ~m])
             # plt.plot(spatial_x, y_model)
             # # plt.plot(spatial_x[~mask], D_poly)
             # plt.show()
@@ -1669,9 +1689,6 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
         D -= bkg_model
         V_new += np.abs(bkg_model) / gain / NDIT
 
-        # profile = np.nanmedian(D, axis=0)
-        # plt.plot(profile)
-        # plt.show()
 
     # simple sum collapse to a 1D spectrum (box extraction)
     f_std = np.nansum(D*np.logical_not(bpm).astype(float), axis=1)
@@ -1738,21 +1755,24 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
         V_new[:, extr_aper_not] = 1./etol
         P[:, extr_aper_not] = etol
         P[P==0] = etol
-        # if debug:
         #     plt.plot(cdf)
         #     plt.show()
-        # if debug:
-        #     plt.imshow(P, aspect='auto')
-        #     plt.show()
-        psf = np.mean(P, axis=0)
-
-        # plt.plot(psf*np.sum(profile))
-        # plt.show()
 
         # mask bad pixels
         M_bp[:, extr_aper_not] = False
-        norm_filtered = stats.sigma_clip((D/P)[:,extr_aper], sigma=4, axis=1)
+        if np.sum(extr_aper) < 7:
+            # when aperture is small, sigma_clip along one axis is not effective
+            norm_filtered = stats.sigma_clip((D/P)[:,extr_aper], sigma=4)
+        else:
+            norm_filtered = stats.sigma_clip((D/P)[:,extr_aper], sigma=4, axis=1)
         M_bp[:, extr_aper] &= np.logical_not(norm_filtered.mask)
+        # ax1 = plt.subplot(131)
+        # ax2 = plt.subplot(132, sharey=ax1)
+        # ax3 = plt.subplot(133, sharey=ax1)
+        # ax1.imshow((D)[:,extr_aper], aspect='auto', vmin=0, vmax=2e2)
+        # ax2.imshow((D/P)[:,extr_aper], aspect='auto', vmin=0, vmax=50)
+        # ax3.imshow(norm_filtered.mask, aspect='auto')
+        # plt.show()
 
     M_bp[:10] = False
     M_bp[-10:] = False
@@ -1764,17 +1784,18 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
     for ite in range(max_iter):
 
         f_opt = np.sum(M_bp*P*D/V_new, axis=1) / (np.sum(M_bp*P*P/V_new, axis=1) + etol)
+        # plt.plot(f_opt)
         V_new = V + np.abs(P*f_opt[:,None]) / gain / NDIT
         # Residual of optimally extracted spectrum and the observation
         Res = M_bp * (D - P*f_opt[:,None])**2/V_new
 
-        # # to avoid the Residuals driven by the bad pxiels.
-        # good_channels = np.all(Res<badpix_clip**2, axis=1)
+        # to avoid the Residuals driven by the bad pxiels.
+        good_channels = np.all(Res<badpix_clip**2, axis=1)
         # plt.plot(wave_x, good_channels*np.max(f_opt))
         # plt.show()
-        # f_prox = interp1d(wave_x[good_channels], f_opt[good_channels], 
-        #             kind='cubic', bounds_error=False, fill_value=0.)(wave_x)
-        # Res = M_bp * (D - P*f_prox[:,None])**2/V_new
+        f_prox = interp1d(wave_x[good_channels], f_opt[good_channels], 
+                    kind='linear', bounds_error=False, fill_value=0.)(wave_x)
+        Res = M_bp * (D - P*f_prox[:,None])**2/V_new
 
         # only reject one bad pixel per wavelength channel at a time
         bad_channels = np.any(Res>badpix_clip**2, axis=1)
@@ -1793,7 +1814,7 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
             break
 
     if debug:
-        # print(ite)
+        print(ite)
         plt.plot(f_opt)
         plt.show()
 
@@ -2169,6 +2190,7 @@ def fit_continuum_clip(x, y, order, pixel_distance=50, sigma=1.5, max_iter=20):
 
     return y_model, coeffs
 
+
 def fit_continuum(x, y, order, pixel_distance=500):
     x_mean = x - np.nanmean(x) 
     A_full = np.vander(x_mean, order)
@@ -2276,6 +2298,7 @@ def add_local_kernel(amp, mu, sigma, wlen, trunc_dist=4):
 
     return sigma_ij_sparse
 
+
 def get_spline_model(x_knots, x_samples, spline_degree=3):
     """
     https://github.com/jruffio/breads
@@ -2325,44 +2348,114 @@ def get_spline_model(x_knots, x_samples, spline_degree=3):
 
 
 
-def load_extr2D_old(filename):
-    """
-    Method for reading the pipeline 2D extracted .npz files into arrays.
+def rot_int_cmj(wave, flux, vsini, epsilon=0.6, nr=10, ntheta=100, dif = 0.0):
+	"""
 
-    Parameters
-    ----------
-    filename : str
-        Path of the `EXTR2D` .npz file to load.
+	Adapted from Carvalho & Johns-Krull (2023).
+	See https://github.com/Adolfo1519/RotBroadInt
 
-    Returns
-    -------
-    D, P, V: list
-        The calibrated 2D data including both the spatial and dispersion dimension. 
-        The shape of the list is (N_detector, N_order, N_spatial_pixel, N_dispersion_pixel).
-    """
+	A routine to quickly rotationally broaden a spectrum in linear time.
+	INPUTS:
+	s - input spectrum
+	w - wavelength scale of the input spectrum
+	vsini (km/s) - projected rotational velocity
 
-    data = np.load(filename)
-    D = data['FLUX']
-    V = data['FLUX_ERR']
-    P = data['MODEL']
-    id_det = data['id_det']
-    id_order = data['id_order']
-    Ndet, Norder = id_det.shape[0]+1, id_order.shape[1]+1
-    D_det = np.split(D, id_det)
-    P_det = np.split(P, id_det)
-    V_det = np.split(V, id_det)
-    D_unravel, P_unravel, V_unravel = [], [], []
-    for i in range(Ndet):
-        D_order = np.split(D_det[i], id_order[i])
-        P_order = np.split(P_det[i], id_order[i])
-        V_order = np.split(V_det[i], id_order[i])
-        # for o in range(Norder):
-        #     data, model, var = D_order[o], P_order[o], V_order[o]
-        D_unravel.append(D_order)
-        P_unravel.append(P_order)
-        V_unravel.append(V_order)
+	OUTPUT:
+	ns - a rotationally broadened spectrum on the wavelength scale w
+	OPTIONAL INPUTS:
+	eps (default = 0.6) - the coefficient of the limb darkening law
+	nr (default = 10) - the number of radial bins on the projected disk
 
-    return D_unravel, P_unravel, V_unravel
+	ntheta (default = 100) - the number of azimuthal bins in the largest radial annulus
+	note: the number of bins at each r is int(r*ntheta) where r < 1
+	
+	dif (default = 0) - the differential rotation coefficient, applied according to the law
+	Omeg(th)/Omeg(eq) = (1 - dif/2 - (dif/2) cos(2 th)). Dif = .675 nicely reproduces the law 
+	proposed by Smith, 1994, A&A, Vol. 287, p. 523-534, to unify WTTS and CTTS. Dif = .23 is 
+	similar to observed solar differential rotation. Note: the th in the above expression is 
+	the stellar co-latitude, not the same as the integration variable used below. This is a 
+	disk integration routine.
+	"""
+
+	ns = np.copy(flux)*0.0
+	tarea = 0.0
+	dr = 1./nr
+	for j in range(0, nr):
+		r = dr/2.0 + j*dr
+		area = ((r + dr/2.0)**2 - (r - dr/2.0)**2)/int(ntheta*r) * (1.0 - epsilon + epsilon*np.cos(np.arcsin(r)))
+		for k in range(0,int(ntheta*r)):
+			th = np.pi/int(ntheta*r) + k * 2.0*np.pi/int(ntheta*r)
+			if dif != 0:
+				vl = vsini * r * np.sin(th) * (1.0 - dif/2.0 - dif/2.0*np.cos(2.0*np.arccos(r*np.cos(th))))
+				ns += area * np.interp(wave + wave*vl/2.99792458e5, wave, flux)
+				tarea += area
+			else:
+				vl = r * vsini * np.sin(th)
+				ns += area * np.interp(wave + wave*vl/2.99792458e5, wave, flux)
+				tarea += area
+		  
+	return ns/tarea
+
+
+def get_PHOENIX_stellar_model(temp, wave_cut, logg=4.0):
+
+    src_path = os.path.dirname(os.path.abspath(__file__))
+    wave_file = os.path.join(src_path, '../../data/WAVE_PHOENIX-ACES-AGSS-COND-2011.fits')
+    wave = fits.getdata(wave_file) * 1e-1 #nm
+
+    url = 'https://phoenix.astro.physik.uni-goettingen.de/data/v2.0/HiResFITS/PHOENIX-ACES-AGSS-COND-2011/Z-0.0/' 
+    filename = f'lte{temp:05d}-{logg:.2f}-0.0.PHOENIX-ACES-AGSS-COND-2011-HiRes.fits'
+    if not os.path.isfile(filename):
+        print(f"Downloading PHOENIX stellar model T={temp} K")
+        r = requests.get(url+filename)
+        with open(filename, "wb") as f:
+            f.write(r.content)
+        print("[DONE]")
+    flux = fits.getdata(filename)  #'erg/s/cm^2/cm'
+    indices = (wave > wave_cut[0]) & (wave < wave_cut[1])
+    f = flux[indices]/np.median(flux[indices])
+    w = wave[indices]
+
+    return w, f
+
+
+def instrument_response(std, tellu, temp, vsini, vsys=0., mask_wave=[]):
+
+    wave, flux, _ = std.get_spec1d()
+    flux_tellu_interp = tellu[:,1] #interp1d(tellu[:,0], tellu[:,1])(wave)
+
+    # get phoenix stellar model
+    wave_model, flux_model = get_PHOENIX_stellar_model(temp, wave_cut=[wave[0]-100, wave[-1]+100])
+    # rotationally broaden and rv shift
+    flux_model = rot_int_cmj(wave_model, flux_model, vsini)
+    w_shift = wave * (1. - vsys/const.c.to("km/s").value)
+    flux_model_interp = interp1d(wave_model, flux_model)(w_shift)
+
+    # plt.plot(wave, flux)
+    # plt.plot(wave, flux_tellu_interp)
+    # plt.plot(wave, flux_model_interp)
+    # plt.show()
+    
+    # instrument response
+    transm = flux/flux_model_interp/flux_tellu_interp
+    transm = np.reshape(transm, std.wlen.shape)
+
+    flux_tellu = np.reshape(flux_tellu_interp, std.wlen.shape)
+
+    inst_res = []
+    for i, x in enumerate(std.wlen):
+        y = transm[i]
+        mask = flux_tellu[i] < 0.5
+        for w_range in mask_wave:
+            mask = np.logical_or((x > w_range[0]) & (x < w_range[1]), mask)
+
+        y_model, _, _ = PolyfitClip(x, y, order=6, mask=~mask, clip=3, max_iter=50)
+        inst_res.append(y_model)
+        plt.plot(x[~mask], y[~mask], color='k')
+        plt.plot(x[~mask], y_model[~mask], color='r')
+    plt.show()
+
+    return np.ravel(inst_res)
 
 
 def create_eso_recipe_config(eso_recipe, outpath, verbose):
@@ -2558,6 +2651,7 @@ def create_eso_recipe_config(eso_recipe, outpath, verbose):
         if not verbose:
             print(" [DONE]")
 
+
 def molecfit(input_path, spec, wave_range=None, savename=None, verbose=False):
     """
     A wrapper of molecfit for telluric correction
@@ -2571,6 +2665,8 @@ def molecfit(input_path, spec, wave_range=None, savename=None, verbose=False):
         input spectra for molecfit
     wave_range: list of tuple
         list of wavelength regions to be indcluded for the telluric fitting
+    savename : str
+        the filename for the input files and fitting results.
     verbose : bool
         Print output produced by ``esorex``.
 
@@ -2587,8 +2683,8 @@ def molecfit(input_path, spec, wave_range=None, savename=None, verbose=False):
 
     hdul_out = fits.HDUList([primary_hdu])
 
-    w0 = spec.wlen[:,0]
-    w1 = spec.wlen[:,-1]
+    w0 = [spec.wlen[i][~np.isnan(spec.flux[i])][0] for i in range(len(spec.wlen))]
+    w1 = [spec.wlen[i][~np.isnan(spec.flux[i])][-1] for i in range(len(spec.wlen))]
     if wave_range is None:
         wmin, wmax = w0, w1
         map_chip = range(spec.wlen.shape[0])
@@ -2597,7 +2693,7 @@ def molecfit(input_path, spec, wave_range=None, savename=None, verbose=False):
         for w_range in wave_range:
             mask = np.logical_or((spec.wlen > w_range[0]) & 
                                  (spec.wlen < w_range[1]), mask)
-
+        mask &= (~np.isnan(spec.flux))
         # find min and max wavelength of each region
         w_masked = spec.wlen[mask]
         indice_split = np.diff(w_masked) > 10*np.max(np.diff(spec.wlen))
@@ -2762,16 +2858,19 @@ def molecfit(input_path, spec, wave_range=None, savename=None, verbose=False):
     if not verbose:
         print(" [DONE]")
 
+    name = savename.split('_')[0]
     best_params = fits.getdata(file_best_par, 1)
-    np.savetxt(os.path.join(input_path, 'BEST_FIT_PARAMETERS.txt'), 
+    np.savetxt(os.path.join(input_path, f'BEST_FIT_PARAMETERS_{name}.txt'), 
                     best_params.tolist()[:-2], fmt='%s')
     
-    print("Summary saved in 'BEST_FIT_PARAMETERS.txt'")
+    # print("Summary saved in 'BEST_FIT_PARAMETERS.txt'")
 
     # save telluric model
     tellu = fits.getdata(os.path.join(input_path, 'TELLURIC_DATA.fits'))
-    np.savetxt(os.path.join(input_path, 'TELLURIC_DATA.dat'),
-                np.c_[tellu['lambda']*1e3, tellu['mtrans'], 
-                    #   tellu['flux'], tellu['cflux']
-                    ],
-                    header='#Wavelength(nm) Transmission')
+    file_name = os.path.join(input_path, f'TELLURIC_{name}.fits')
+    wfits(file_name, ext_list={"TRANSM":np.c_[tellu['lambda']*1e3, 
+                                              tellu['mtrans']]}, 
+                    header=spec.header)
+
+
+
