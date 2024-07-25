@@ -1,5 +1,5 @@
 # File: src/excalibuhr/data.py
-__all__ = ['SPEC', 'DETECTOR']
+__all__ = ['SPEC', 'SERIES', 'DETECTOR']
 
 import numpy as np 
 import matplotlib.pyplot as plt 
@@ -11,6 +11,47 @@ import excalibuhr.utils as su
 import copy 
 
 
+class SERIES:
+    """
+    Object for spectral data in 2D shape (N_chip x N_pixel)
+    It contains the wavelength, flux, and error arrays. 
+    It has several methods for manipulating and analyzing the data.
+    """
+
+    def __init__(self, filename=None, wlen=None, flux=None, err=None, header=None):
+        if filename is not None:
+            ext = filename.split('.')[-1]
+            if ext == "fits":
+                with fits.open(filename) as hdu:
+                    self.header = hdu[0].header
+                    self.flux = hdu['FLUX'].data
+                    self.err = hdu['FLUX_ERR'].data
+                    self.wlen = hdu['WAVE'].data
+        elif wlen is not None:
+            self.wlen = wlen
+            self.flux = flux
+            self.err = err
+            self.header = header
+        
+        self.data = [SPEC(wlen=self.wlen, flux=self.flux[i], 
+                          err=self.err[i], header=self.header
+                          ) for i in range(len(self.flux))]
+
+    def __iter__(self):
+        return self.data.__iter__()
+    
+
+    def __getitem__(self, indices):
+        if isinstance(indices, int):
+            return self.data[indices]
+        else:
+            return SERIES(specs=[self.data[ind] for ind in indices])
+
+
+    def __len__(self):
+        return len(self.data)
+
+
 class SPEC:
     """
     Object for spectral data in 2D shape (N_chip x N_pixel)
@@ -18,8 +59,7 @@ class SPEC:
     It has several methods for manipulating and analyzing the data.
     """
 
-    def __init__(self, wlen=None, flux=None, err=None,
-                 filename=None, fmt="ext3") -> None:
+    def __init__(self, filename=None, wlen=None, flux=None, err=None, header=None):
         """
         initilize the object either with arrays passed via variables, 
         `wlen`, `flux`, and `err`, or with data read from text files 
@@ -32,23 +72,24 @@ class SPEC:
         if filename is not None:
             ext = filename.split('.')[-1]
             if ext == "fits":
-                if fmt == "ext3":
-                    with fits.open(filename) as hdu:
-                        self.header = hdu[0].header
-                        self.flux = hdu['FLUX'].data
-                        self.err = hdu['FLUX_ERR'].data
-                        self.wlen = hdu['WAVE'].data
-                elif fmt == "molecfit":
-                    w, f, f_err = [], [], []
-                    with fits.open(filename) as hdu:
-                        self.header = hdu[0].header
-                        for i in range(1, len(hdu)):
-                            w.append(hdu[i].data['WAVE'])
-                            f.append(hdu[i].data['FLUX'])
-                            f_err.append(hdu[i].data['FLUX_ERR'])
-                    self.flux = np.array(f)
-                    self.err = np.array(f_err)
-                    self.wlen = np.array(w)
+                # if fmt == "ext3":
+                with fits.open(filename) as hdu:
+                    self.header = hdu[0].header
+                    self.flux = hdu['FLUX'].data
+                    self.err = hdu['FLUX_ERR'].data
+                    self.wlen = hdu['WAVE'].data
+                
+                # elif fmt == "molecfit":
+                #     w, f, f_err = [], [], []
+                #     with fits.open(filename) as hdu:
+                #         self.header = hdu[0].header
+                #         for i in range(1, len(hdu)):
+                #             w.append(hdu[i].data['WAVE'])
+                #             f.append(hdu[i].data['FLUX'])
+                #             f_err.append(hdu[i].data['FLUX_ERR'])
+                #     self.flux = np.array(f)
+                #     self.err = np.array(f_err)
+                #     self.wlen = np.array(w)
             else:
                 try:
                     self.wlen, self.flux, self.err = \
@@ -62,6 +103,7 @@ class SPEC:
             self.wlen = wlen
             self.flux = flux
             self.err = err
+            self.header = header
             self.reformat_data()
 
 
@@ -87,6 +129,7 @@ class SPEC:
             if self.err is not None:
                 self.err = np.reshape(self.err, (Nchip, -1)) 
         elif self.wlen.ndim == 3:
+            # detector x order x spec
             self.wlen.reshape((-1, self.wlen.shape[-1]))
             self.flux.reshape((-1, self.flux.shape[-1]))
             if self.err is not None:

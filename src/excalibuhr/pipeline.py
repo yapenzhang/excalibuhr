@@ -17,7 +17,7 @@ from astropy.io import fits
 from astroquery.eso import Eso
 import skycalc_ipy
 import excalibuhr.utils as su
-from excalibuhr.data import SPEC, DETECTOR, wfits
+from excalibuhr.data import SPEC, SERIES, DETECTOR, wfits
 
 import matplotlib.pyplot as plt 
 
@@ -56,11 +56,6 @@ class CriresPipeline:
             number of parallel processes for processing nodding and extraction
         header_keys: dict
             The needed keyword names in the header of input ``.fits`` files.
-
-        Returns
-        -------
-        NoneType
-            None
         """
 
         self._print_section(
@@ -73,7 +68,8 @@ class CriresPipeline:
         self.rawpath = os.path.join(self.workpath, self.night, "raw")
         self.calpath = os.path.join(self.workpath, self.night, "cal")
         self.outpath = os.path.join(self.workpath, self.night, "out")
-        self.nodpath = os.path.join(self.outpath, "obs_intermediate")
+        self.framepath = os.path.join(self.outpath, "frame")
+        self.combpath = os.path.join(self.outpath, "combined")
         self.calib_file = os.path.join(self.nightpath, "calib_info.txt") 
         self.header_file = os.path.join(self.nightpath, "header_info.txt")
         self.product_file = os.path.join(self.nightpath, "product_info.txt")
@@ -95,6 +91,7 @@ class CriresPipeline:
                     'key_ra': 'RA',
                     'key_dec': 'DEC',
                     'key_airmass': 'ESO TEL AIRM END',
+                    # 'key_seeing': 'ESO TEL AMBI FWHM END',
                     'key_DIT': 'ESO DET SEQ1 DIT',
                     'key_NDIT': 'ESO DET NDIT',
                     'key_nodpos': 'ESO SEQ NODPOS',
@@ -141,9 +138,11 @@ class CriresPipeline:
         if not os.path.exists(self.rawpath):
             os.makedirs(self.rawpath)
 
-        if not os.path.exists(self.nodpath):
-            os.makedirs(self.nodpath)
+        if not os.path.exists(self.framepath):
+            os.makedirs(self.framepath)
 
+        if not os.path.exists(self.combpath):
+            os.makedirs(self.combpath)
 
         # If present, read the info files
         if os.path.isfile(self.header_file):
@@ -173,22 +172,16 @@ class CriresPipeline:
             df_prod.to_csv(self.product_file, index=False, sep=';')
 
 
-    def download_rawdata_eso(self, login, facility = 'eso', 
-                instrument ='crires', **filters):
+    def download_rawdata_eso(self, login, **filters):
         """
-        Method for downloading raw data from eso archive using astroquery
+        Method for downloading raw data from eso archive using `astroquery`.
 
         Parameters
         ----------
         login : str
             username to login to the ESO User Portal Services
         filters: 
-            optional parameters for data filtering, e.g. prog_id
-
-        Returns
-        -------
-        NoneType
-            None
+            optional parameters for data filtering, e.g. `prog_id='...'`, `target='...'`
         """
 
         self._print_section("Downloading rawdata from ESO arhive")
@@ -197,41 +190,33 @@ class CriresPipeline:
         for key in filters.keys():
             print(key + ': '+ filters[key])
 
-        if facility == 'eso':
-
-
-            eso = Eso()
-            eso.login(login)
-            table = eso.query_instrument(
-                instrument, column_filters={'night': self.night, **filters}
-                ) 
-            data_files = eso.retrieve_data(
-                table['DP.ID'], destination=self.rawpath, 
-                continuation=False, with_calib='raw', 
-                request_all_objects=True, unzip=False)
-            os.chdir(self.rawpath)
-            for filename in glob.glob("*.xml"):
-                os.remove(filename)
-            for filename in glob.glob("*.txt"):
-                os.remove(filename)
-            try:
-                os.system("uncompress *.Z")
-            except:
-                raise OSError("uncompress not found. Please install gzip \
-                    or ncompress, finish uncompress manually, and proceed \
-                    to next steps.")
-            os.chdir(self.workpath)
+        eso = Eso()
+        eso.login(login)
+        table = eso.query_instrument(
+            'crires', column_filters={'night': self.night, **filters}
+            ) 
+        data_files = eso.retrieve_data(
+            table['DP.ID'], destination=self.rawpath, 
+            continuation=False, with_calib='raw', 
+            request_all_objects=True, unzip=False)
+        os.chdir(self.rawpath)
+        for filename in glob.glob("*.xml"):
+            os.remove(filename)
+        for filename in glob.glob("*.txt"):
+            os.remove(filename)
+        try:
+            os.system("uncompress *.Z")
+        except:
+            raise OSError("uncompress not found. Please install gzip \
+                or ncompress, finish uncompress manually, and proceed \
+                to next steps.")
+        os.chdir(self.workpath)
 
 
     def extract_header(self):
         """
         Method for extracting header information of raw data to a 
-        ``DataFrame`` and a text file.
-
-        Returns
-        -------
-        NoneType
-            None
+        ``pandas.DataFrame`` and a cvs text file.
         """
 
         self._print_section("Extracting Observation details")
@@ -247,6 +232,7 @@ class CriresPipeline:
             header_dict[key_item] = []
 
         for file_item in raw_files:
+
             header = fits.getheader(file_item)
 
             # Rename files for better readability
@@ -277,11 +263,6 @@ class CriresPipeline:
             filename to be added to the table
         cal_type: str 
             type of the calibration file, e.g. `DARK_MASTER`, `FLAT_MASTER`
-
-        Returns
-        -------
-        NoneType
-            None
         """
         print(f"{cal_type}: cal/{file}")
         header = fits.getheader(os.path.join(self.calpath, file))
@@ -351,11 +332,6 @@ class CriresPipeline:
             Boundary character for around the section title.
         extra_line : bool
             Extra new line at the beginning.
-
-        Returns
-        -------
-        NoneType
-            None
         """
 
         if extra_line:
@@ -381,11 +357,6 @@ class CriresPipeline:
         det_dit : float, None
             The detector integration time (DIT) in case
             ``dpr_type="DARK"``. Can be set to ``None`` otherwise.
-
-        Returns
-        -------
-        NoneType
-            None
         """
 
         from astropy import units as u
@@ -666,21 +637,20 @@ class CriresPipeline:
 
 
     @print_runtime
-    def cal_dark(self, clip=5, collapse='median'):
+    def cal_dark(self, clip=5, combine_mode='median'):
         """
-        Method for combining dark frames according to DIT.
+        Method for combining dark frames per DIT while producing readout noise and bad pixel map. 
 
         Parameters
         ----------
         clip : int
-            sigma of bad pixel clipping
-        collapse: str
-            the way of combining dark frames: `mean` or `median`
+            sigma clipping threshold for rejecting bad pixels
+        combine_mode: str
+            the way of combining raw dark frames by `mean` or `median`; median combine by defalut.
 
-        Returns
-        -------
-        NoneType
-            None
+        See Also
+        --------
+        :func:`utils.util_master_dark`
         """
 
         self._print_section("Create DARK_MASTER")
@@ -713,7 +683,7 @@ class CriresPipeline:
             # Per detector, median-combine the darks
             # determine the bad pixels and readout noise
             master, rons, badpix = su.util_master_dark(dt, badpix_clip=clip,
-                                    collapse=collapse)
+                                    combine_mode=combine_mode)
             
             print("\n Output files:")
             # Save the master dark, read-out noise, and bad-pixel maps
@@ -743,21 +713,20 @@ class CriresPipeline:
 
     
     @print_runtime
-    def cal_flat_raw(self, clip=5, collapse='median'):
+    def cal_flat_raw(self, clip=5, combine_mode='median'):
         """
-        Method for combining raw flat frames according to wavelngth setting.
+        Method for combining raw flat frames per wavelngth setting and producing bad pixel map.
 
         Parameters
         ----------
         clip : int
-            sigma of bad pixel clipping
-        collapse: str
-            the way of combining multiple frames: `mean` or `median`
+            sigma clipping threshold for rejecting bad pixels
+        combine_mode: str
+            the way of combining raw flat frames by `mean` or `median`; median combine by defalut.
 
-        Returns
-        -------
-        NoneType
-            None
+        See Also
+        --------
+        :func:`utils.util_master_flat`
         """
 
         self._print_section("Create FLAT_MASTER")
@@ -815,7 +784,7 @@ class CriresPipeline:
                 dark = np.zeros_like(dt[0])
             # Per detector, median-combine the flats and determine the bad pixels
             master, badpix = su.util_master_flat(dt, dark, 
-                            badpix_clip=clip, collapse=collapse)
+                            badpix_clip=clip, combine_mode=combine_mode)
             
             print(f"WLEN setting {item_wlen} -> " 
                   f"{np.sum(badpix)/badpix.size*100.:.1f}"
@@ -834,6 +803,7 @@ class CriresPipeline:
             self._add_to_calib(f'FLAT_BPM_{item_wlen}.fits', 
                             "FLAT_BPM")
             
+
     def _loop_over_detector(self, util_func, verbose, *dt_list, **kwargs):
         """
         Method for looping over detectors.
@@ -875,17 +845,11 @@ class CriresPipeline:
     @print_runtime
     def cal_flat_trace(self, debug=False):
         """
-        Method for identifying traces of spectral order in `MASTER FLAT`.
+        Method for identifying traces of spectral order in the master FLAT frame.
 
-        Parameters
-        ----------
-        sub_factor : int
-            binning factor along the dispersion axis.
-
-        Returns
-        -------
-        NoneType
-            None
+        See Also
+        --------
+        :func:`utils.order_trace`
         """
 
         self._print_section("Trace spectral orders")
@@ -930,19 +894,13 @@ class CriresPipeline:
     @print_runtime
     def cal_slit_curve(self, debug=False):
         """
-        Method for tracing slit curvature in the `FPET` calibration frame.
+        Method for tracing slit curvature in the Fabry-Pérot Etalon (FPET) calibration frame.
         Determine initial wavelength solution by mapping FPET lines to 
         an evenly spaced wavelength grid.
 
-        Parameters
-        ----------
-        debug : bool
-            generate plots for debugging.
-
-        Returns
-        -------
-        NoneType
-            None
+        See Also
+        --------
+        :func:`utils.slit_curve`
         """
 
         self._print_section("Trace slit curvature")
@@ -1063,17 +1021,11 @@ class CriresPipeline:
     def cal_flat_norm(self, debug=False):
         """
         Method for creating normalized flat field and 
-        extracting blaze function
+        extracting blaze function in each order.
 
-        Parameters
-        ----------
-        debug : bool
-            generate plots for debugging.
-
-        Returns
-        -------
-        NoneType
-            None
+        See Also
+        --------
+        :func:`utils.master_flat_norm`
         """
 
         self._print_section("Normalize flat; Extract blaze")
@@ -1140,15 +1092,10 @@ class CriresPipeline:
     @print_runtime
     def obs_nodding(self):
         """
-        Method for processing nodding frames. Apply AB pair subtraction,
-        readout artifacts correction, and flat fielding.
-        If `obs_mode='nod'`, it subtracts the two nodding positions to remove sky background. 
-        If `obs_mode='stare'`, the A and B nodding frames will be treated separately. 
-
-        Returns
-        -------
-        NoneType
-            None
+        Method for calibrating and processing science frames. 
+        If `obs_mode='nod'`, it subtracts the AB nodding pairs to remove sky background. 
+        If `obs_mode='stare'`, each frame will be treated separately and 
+        the sky background removal will be performed at a later stage. 
         """
 
         self._print_section(f"Process {self.obs_mode} frames")
@@ -1375,7 +1322,7 @@ class CriresPipeline:
                                 frame_bkg_cor, err_bkg_cor, flat)
             
             file_s = file.split('_')[-1]
-            file_name = os.path.join(self.nodpath, 
+            file_name = os.path.join(self.framepath, 
                             f"{self.obs_mode}_"+ object.replace(" ", "") + \
                             f"_{item_wlen}_{file_s}")
             wfits(file_name, ext_list={"FLUX": frame_bkg_cor, 
@@ -1419,7 +1366,7 @@ class CriresPipeline:
                             frame_bkg_cor, err_bkg_cor, flat)
         
         file_s = file.split('_')[-1]
-        file_name = os.path.join(self.nodpath, 
+        file_name = os.path.join(self.framepath, 
                         f"{self.obs_mode}_"+ object.replace(" ", "") + \
                         f"_{item_wlen}_{file_s}")
         wfits(file_name, ext_list={"FLUX": frame_bkg_cor, 
@@ -1435,7 +1382,7 @@ class CriresPipeline:
     @print_runtime
     def obs_nodding_combine(self, combine_mode='mean', clip=3):
         """
-        Method for combining multiple nodding exposures to single A or B frame.
+        Method for combining multiple nodding exposures at each nodding position A and B.
 
         Parameters
         ----------
@@ -1446,10 +1393,9 @@ class CriresPipeline:
         clip: int
             sigma clipping threshold for rejecting bad pixels
         
-        Returns
-        -------
-        NoneType
-            None
+        See Also
+        --------
+        :func:`utils.combine_frames`
         """
 
         self._print_section("Combine nodding frames")
@@ -1493,12 +1439,6 @@ class CriresPipeline:
                 indices_wlen = indices_obj & \
                             (self.product_info[self.key_wlen] == item_wlen)
 
-                # indices_tw = (self.calib_info[self.key_caltype] == "TRACE_TW") \
-                #            & (self.calib_info[self.key_wlen] == item_wlen)
-
-                # file = self.calib_info[indices_tw][self.key_filename].iloc[0]
-                # tw = fits.getdata(os.path.join(self.calpath, file))
-
                 # Loop over the nodding positions
                 INT_total = 0.
                 for pos in ['A', 'B']:
@@ -1517,7 +1457,7 @@ class CriresPipeline:
                             if np.isclose(hdr[self.key_jitter], 0):
                                 dt, dt_err = hdu["FLUX"].data, hdu["FLUX_ERR"].data
                             else:
-                                # apply integer shift only to align frames
+                                # apply integer shift to align frames
                                 dt, dt_err = su.align_jitter(
                                     hdu["FLUX"].data, hdu["FLUX_ERR"].data, 
                                     int(np.round(hdr[self.key_jitter]/self.pix_scale)))
@@ -1547,7 +1487,7 @@ class CriresPipeline:
                                         weights=weights)
                     
                     # Save the combined obs_nodding observation
-                    file_name = os.path.join(self.nodpath, 
+                    file_name = os.path.join(self.combpath, 
                             "COMBINED_"+ object.replace(" ", "") + \
                             f"_{item_wlen}_{self.obs_mode}_{pos}.fits")
                     wfits(file_name, ext_list={"FLUX": combined, 
@@ -1570,31 +1510,51 @@ class CriresPipeline:
                           peak_frac=None, companion_sep=None, 
                           remove_star_bkg=False,
                           remove_sky_bkg=False,
-                        #   std_object=None,
                           aper_prim=20, aper_comp=10, 
                           extract_2d=True,
                           extr_level=0.9,
                           debug=False):    
         """
-        Method for extracting. Apply AB pair subtraction,
-        readout artifacts correction, and flat fielding.
+        Method for extracting 1D spectrum from the 2D science frames. It works on either 
+        combined frames or individual exposures, as specified by the `caltype` option.
+        It extracts all targets taken during the night if not specified with the `object` parameter.  
 
         Parameters
         ----------
         caltype: str
             Label of the file type to worked on: `NODDING_COMBINED` or `NODDING_FRAME`.
+        object: str
+            name of the target to extract 1D spectrum. If not specified, all targets will be extracted.
+        savename: str
+            customed label for the extratced spectrum (optional).
         peak_frac: dict
-            the fraction of target signal along the slit at A and B 
-            nodding position (`frac`=0 at the bottom, and 1 at the top) 
+            the fraction of target signal along the slit at A and B nodding position 
+            (a fraction of 0 is at the bottom of the slit and 1 at the top).
+            If not specified, the code will determine the peak location from the whitelight PSF of the data. 
         companion_sep: float
             separation of the companion in arcsec
+        remove_star_bkg: bool
+            whether to remove the stellar background near the resolved companion using polynomials 
+            at each wavelength channel.
+        remove_sky_bkg: bool
+            whether to remove the sky background. This will be performed for the observations in 'STARE' mode.
+        aper_prim: int
+            half of extraction aperture in pixel for the primary star
+        aper_comp: int
+            half of extraction aperture in pixel for the companion
+        extr_level: float
+            the extraction aperture will be automatically refined to include a sepcified fraction of 
+            the total flux in the derived PSF of the data. By default it encompasses 90% of the flux.
+        extract_2d: bool
+            if True, the curvature of the trace in the 2D images will be corrected and 
+            the intermediate 2D data will be saved to .npz files. 
         debug : bool
             generate plots for debugging.
 
-        Returns
-        -------
-        NoneType
-            None
+        See Also
+        --------
+        :func:`utils.extract_spec`
+        :func:`utils.optimal_extraction`
         """
 
         self._print_section("Extract spectra")
@@ -1673,7 +1633,8 @@ class CriresPipeline:
                     # else:
                     for file in self.product_info[indices_wlen][self.key_filename]:
                         job = pool.apply_async(self._process_extraction, 
-                                            args=(file, bpm, tw, slit, blaze, 
+                                            args=(file, caltype.split('_')[1], 
+                                                  bpm, tw, slit, blaze, 
                                                 peak_frac, aper_prim, aper_comp, 
                                                 companion_sep, extract_2d, extr_level,
                                                 remove_star_bkg, remove_sky_bkg,
@@ -1683,7 +1644,7 @@ class CriresPipeline:
             for job in pool_jobs:
                 job.get() 
 
-    def _process_extraction(self, file, bpm, tw, slit, blaze, 
+    def _process_extraction(self, file, filetype, bpm, tw, slit, blaze, 
                             peak_frac, aper_prim, aper_comp, 
                             companion_sep, extract_2d, extr_level,
                             remove_star_bkg, remove_sky_bkg, 
@@ -1723,9 +1684,9 @@ class CriresPipeline:
         filename = os.path.join(self.outpath, '/'.join(paths))
         wfits(filename, ext_list={"FLUX": flux_pri, "FLUX_ERR": err_pri}, header=hdr)
         if savename == '':
-            self._add_to_product('/'.join(paths), 'Extr1D_PRIMARY', snr_mid)
+            self._add_to_product('/'.join(paths), f'Extr1D_{filetype}_PRIMARY', snr_mid)
         else:
-            self._add_to_product('/'.join(paths), '_'.join(['Extr1D_PRIMARY', savename]), snr_mid)
+            self._add_to_product('/'.join(paths), '_'.join(['Extr1D', filetype, savename]), snr_mid)
         self._plot_spec_by_order(filename[:-5], flux_pri)
         
         if extract_2d:
@@ -1738,9 +1699,9 @@ class CriresPipeline:
             extr2d.plot_extr2d_model(filename2d)
 
             if savename == '':
-                self._add_to_product('/'.join(paths)+'.npz', 'Extr2D_PRIMARY')
+                self._add_to_product('/'.join(paths)+'.npz', f'Extr2D_{filetype}_PRIMARY')
             else:
-                self._add_to_product('/'.join(paths)+'.npz', '_'.join(['Extr2D_PRIMARY', savename]))
+                self._add_to_product('/'.join(paths)+'.npz', '_'.join(['Extr2D', filetype, savename]))
 
         if not companion_sep is None:
 
@@ -1764,9 +1725,9 @@ class CriresPipeline:
             wfits(filename, ext_list={"FLUX": flux_sec, 
                                     "FLUX_ERR": err_sec}, header=hdr)
             if savename == '':
-                self._add_to_product('/'.join(paths), 'Extr1D_SECONDARY')
+                self._add_to_product('/'.join(paths), f'Extr1D_{filetype}_SECONDARY')
             else:
-                self._add_to_product('/'.join(paths), '_'.join(['Extr1D_SECONDARY', savename]))
+                self._add_to_product('/'.join(paths), '_'.join(['Extr1D', filetype, savename]))
             self._plot_spec_by_order(filename[:-5], flux_sec)
             
             paths = file.split('/')
@@ -1778,44 +1739,31 @@ class CriresPipeline:
             extr2d.plot_extr2d_model(filename2d)
 
             if savename == '':
-                self._add_to_product('/'.join(paths)+'.npz', 'Extr2D_SECONDARY')
+                self._add_to_product('/'.join(paths)+'.npz', f'Extr2D_{filetype}_SECONDARY')
             else:
-                self._add_to_product('/'.join(paths)+'.npz', '_'.join(['Extr2D_SECONDARY', savename]))
+                self._add_to_product('/'.join(paths)+'.npz', '_'.join(['Extr2D', filetype, savename]))
     
 
 
     @print_runtime
-    def refine_wlen_solution(self, poly_order=3, debug=False):
+    def refine_wlen_solution(self, debug=False):
         """
         Method for refining wavelength solution by manimizing 
         chi2 between the spectrum and the telluric transmission
         template on a order-by-order basis.
+        The calibrated spectrum of each target is saved to a fits file.
 
-        Parameters
-        ----------
-        mode: str
-            If mode is `linear`, then the wavelength solution is 
-            corrected with a linear function. If mode is `quad`,
-            the correction is a quadratic function.
-        debug : bool
-            print polynomial fit coefficients.
-
-        -------
-        NoneType
-            None
+        See Also
+        --------
+        :func:`utils.wlen_solution`
         """
 
         self._print_section("Refine wavelength solution")
 
-        # Create the calibrated directory if it does not exist yet
-        self.corrpath = os.path.join(self.outpath, "obs_calibrated")
-        if not os.path.exists(self.corrpath):
-            os.makedirs(self.corrpath)
-
         # get updated product info
         self.product_info = pd.read_csv(self.product_file, sep=';')
 
-        indices = (self.product_info[self.key_caltype] == 'Extr1D_PRIMARY') 
+        indices = (self.product_info[self.key_caltype] == 'Extr1D_COMBINED_PRIMARY') 
 
         # Check unique WLEN setting
         unique_wlen = set()
@@ -1886,175 +1834,178 @@ class CriresPipeline:
                                         transm_spec=tellu_conv, show=debug)
         
 
-    def save_extracted_data(self, combine=False):
-        """
-        Method for saving extracted spectra and calibrated wavelength.
-        to the folder `obs_calibrated`. And save the flattened array to
-        `.dat` files, including 3 columns: Wlen(nm), Flux, Flux_err. 
+    # def save_extracted_data(self, combine=False):
+    #     """
+    #     Method for saving extracted spectra and calibrated wavelength.
+    #     to the folder `obs_calibrated`. And save the flattened array to
+    #     `.dat` files, including 3 columns: Wlen(nm), Flux, Flux_err. 
 
-        Returns
-        -------
-        NoneType
-            None
-        """
+    #     Returns
+    #     -------
+    #     NoneType
+    #         None
+    #     """
 
         self._print_section("Save extracted spectra")
         
-        self.corrpath = os.path.join(self.outpath, "obs_calibrated")
-        if not os.path.exists(self.corrpath):
-            os.makedirs(self.corrpath)
+        # self.corrpath = os.path.join(self.outpath, "obs_calibrated")
+        # if not os.path.exists(self.corrpath):
+        #     os.makedirs(self.corrpath)
 
         # get updated product info
-        self.product_info = pd.read_csv(self.product_file, sep=';')
+        # self.product_info = pd.read_csv(self.product_file, sep=';')
 
         # get labels containing 'Extr1D'
         all_labels = self.product_info[self.key_caltype].unique()
-        data_type = all_labels[pd.Series(all_labels).str.contains('Extr1D', case=False)]
+        data_frame = all_labels[pd.Series(all_labels).str.contains('Extr1D_FRAME', case=False)]
+        data_comb = all_labels[pd.Series(all_labels).str.contains('Extr1D_COMBINED', case=False)]
 
         # mask the detector edges 
         Ncut = 10
 
-        for label in data_type:
-            indices = (self.product_info[self.key_caltype] == label)
-            
-            # Check unique targets
-            unique_target = set()
-            for item in self.product_info[indices][self.key_target_name]:
-                unique_target.add(item)
-
-            if len(unique_target) == 0:
-                continue
-            
-            # Loop over each target
-            for target in unique_target:
-
-                # output filename
-                l = label.split('_')[-1]
-                file_name = os.path.join(self.corrpath, 
-                            target.replace(" ", "") + f'_{l}_CRIRES_SPEC1D.fits')
+        for data_type in [data_frame, data_comb]:
+            for label in data_type:
+                indices = (self.product_info[self.key_caltype] == label)
                 
-                indices_obj = indices & \
-                    (self.product_info[self.key_target_name] == target)
+                # Check unique targets
+                unique_target = set()
+                for item in self.product_info[indices][self.key_target_name]:
+                    unique_target.add(item)
 
-                # Check unique WLEN setting
-                unique_wlen = set()
-                for item in self.product_info[indices_obj][self.key_wlen]:
-                    unique_wlen.add(item)
+                if len(unique_target) == 0:
+                    continue
                 
+                # Loop over each target
+                for target in unique_target:
 
-                wlens, specs, errs = [],[],[]
-                for item_wlen in unique_wlen:
-                    
-                    indices_wlen = indices_obj & \
-                            (self.product_info[self.key_wlen] == item_wlen)
+                    # output filename
+                    l = label.split('_')[-1]
+                    if data_type == data_comb:
+                        file_name = os.path.join(self.combpath, 
+                            '_'.join(['SPEC', target.replace(" ", ""), l]))
+                    else:
+                        file_name = os.path.join(self.framepath, 
+                            '_'.join(['SPEC_SERIES', target.replace(" ", ""), l]))
+                        
+                    indices_obj = indices & \
+                        (self.product_info[self.key_target_name] == target)
 
-                    indices_wave = \
-                          (self.calib_info[self.key_caltype] == "CAL_WLEN")\
-                        & (self.calib_info[self.key_wlen] == item_wlen) \
-                        & (self.calib_info[self.key_target_name] == target)
+                    # Check unique WLEN setting
+                    unique_wlen = set()
+                    for item in self.product_info[indices_obj][self.key_wlen]:
+                        unique_wlen.add(item)
                     
-                    if not np.any(indices_wave):
-                        print("No matching wavelength solution to the target.\n")
-                        print("The wavelength solution derived from other target is used.\n")
+
+                    wlens, specs, errs = [],[],[]
+                    for item_wlen in unique_wlen:
+                        
+                        indices_wlen = indices_obj & \
+                                (self.product_info[self.key_wlen] == item_wlen)
+
                         indices_wave = \
-                                (self.calib_info[self.key_caltype] == "CAL_WLEN")\
-                                & (self.calib_info[self.key_wlen] == item_wlen)
+                            (self.calib_info[self.key_caltype] == "CAL_WLEN")\
+                            & (self.calib_info[self.key_wlen] == item_wlen) \
+                            & (self.calib_info[self.key_target_name] == target)
                         
                         if not np.any(indices_wave):
-                            print("No calibrated wavelength solution available.\n")
-                            print("Initial wavelength solution is used.\n")
+                            print("No matching wavelength solution to the target.\n")
+                            print("The wavelength solution derived from other target is used.\n")
                             indices_wave = \
-                                    (self.calib_info[self.key_caltype] == "INIT_WLEN") \
+                                    (self.calib_info[self.key_caltype] == "CAL_WLEN")\
                                     & (self.calib_info[self.key_wlen] == item_wlen)
-                        
-                    file = self.calib_info[indices_wave][self.key_filename].iloc[0]
-                    wlen = fits.getdata(os.path.join(self.calpath, file))
-                    wlens.append(wlen)
+                            
+                            if not np.any(indices_wave):
+                                print("No calibrated wavelength solution available.\n")
+                                print("Initial wavelength solution is used.\n")
+                                indices_wave = \
+                                        (self.calib_info[self.key_caltype] == "INIT_WLEN") \
+                                        & (self.calib_info[self.key_wlen] == item_wlen)
+                            
+                        file = self.calib_info[indices_wave][self.key_filename].iloc[0]
+                        wlen = fits.getdata(os.path.join(self.calpath, file))
+                        wlens.append(wlen)
 
-                    dt, dt_err = [], []
-                    for file in self.product_info[indices_wlen][self.key_filename]:
-                        with fits.open(os.path.join(self.outpath, file)) as hdu:
-                            hdr = hdu[0].header
-                            dt.append(hdu["FLUX"].data)
-                            dt_err.append(hdu["FLUX_ERR"].data)
-                    nframe = len(dt)
-                    if combine:
-                        # mean-combine each individual frames
-                        dt, dt_err = su.combine_frames(dt, dt_err, collapse='mean')
-                        self._plot_spec_by_order(file_name[:-5]+'_'+item_wlen, dt, wlen)
+                        dt, dt_err = [], []
+                        for file in self.product_info[indices_wlen][self.key_filename]:
+                            with fits.open(os.path.join(self.outpath, file)) as hdu:
+                                hdr = hdu[0].header
+                                dt.append(hdu["FLUX"].data)
+                                dt_err.append(hdu["FLUX_ERR"].data)
+                        nframe = len(dt)
+                        if data_type == data_comb:
+                            # mean-combine each individual frames
+                            dt, dt_err = su.combine_frames(dt, dt_err, collapse='mean')
+                            self._plot_spec_by_order(file_name+'_'+item_wlen, dt, wlen)
 
-                    specs.append(dt)
-                    errs.append(dt_err)
-                
-                wlens = np.array(wlens)
-                npixel = wlens.shape[-1]
-                wlens = np.reshape(wlens, (-1, npixel))
-                wmin = wlens[:,0] 
-                indice_sort = np.argsort(wmin)
-                wlens = wlens[indice_sort]
+                        specs.append(dt)
+                        errs.append(dt_err)
+                    
+                    wlens = np.array(wlens)
+                    npixel = wlens.shape[-1]
+                    wlens = np.reshape(wlens, (-1, npixel))
+                    wmin = wlens[:,0] 
+                    indice_sort = np.argsort(wmin)
+                    wlens = wlens[indice_sort]
 
-                
-                if combine:
-                    # reshape spectra in 2D shape: (N_chips, N_pixel)
-                    spec_series = np.reshape(specs, (-1, npixel))[indice_sort]
-                    err_series = np.reshape(errs, (-1, npixel))[indice_sort]
-                    spec_series[:, :Ncut] = np.nan
-                    spec_series[:, -Ncut:] = np.nan
-                    snr_mid = np.nanmean((spec_series/err_series)[wlens.shape[0]//2])
+                    
+                    if data_type == data_comb:
+                        # reshape spectra in 2D shape: (N_chips, N_pixel)
+                        spec_series = np.reshape(specs, (-1, npixel))[indice_sort]
+                        err_series = np.reshape(errs, (-1, npixel))[indice_sort]
+                        spec_series[:, :Ncut] = np.nan
+                        spec_series[:, -Ncut:] = np.nan
+                        snr_mid = np.nanmean((spec_series/err_series)[wlens.shape[0]//2])
 
-                else:
-                    # reshape spectra in 3D shape: (N_frames, N_chips, N_pixel)
-                    spec_series, err_series = [], []
-                    specs, errs = np.array(specs), np.array(errs)
-                    for i in range(nframe):
-                        spec_series.append(np.reshape(specs[:,i,:,:,:], (-1, npixel))[indice_sort])
-                        err_series.append(np.reshape(errs[:,i,:,:,:], (-1, npixel))[indice_sort])
-                    spec_series = np.array(spec_series)
-                    err_series = np.array(err_series)
-                    spec_series[:,:, :Ncut] = np.nan
-                    spec_series[:,:, -Ncut:] = np.nan
-                    snr_mid = np.nanmean((spec_series/err_series)[:,wlens.shape[0]//2,:], axis=1)
+                    else:
+                        # reshape spectra in 3D shape: (N_frames, N_chips, N_pixel)
+                        spec_series, err_series = [], []
+                        specs, errs = np.array(specs), np.array(errs)
+                        for i in range(nframe):
+                            spec_series.append(np.reshape(specs[:,i,:,:,:], (-1, npixel))[indice_sort])
+                            err_series.append(np.reshape(errs[:,i,:,:,:], (-1, npixel))[indice_sort])
+                        spec_series = np.array(spec_series)
+                        err_series = np.array(err_series)
+                        spec_series[:,:, :Ncut] = np.nan
+                        spec_series[:,:, -Ncut:] = np.nan
+                        snr_mid = np.nanmean((spec_series/err_series)[:,wlens.shape[0]//2,:], axis=1)
 
 
-                wfits(file_name, ext_list={"FLUX": spec_series, 
-                                              "FLUX_ERR": err_series,
-                                              "WAVE": wlens}, 
-                                    header=hdr)
-                self._add_to_product("obs_calibrated/" +\
-                                    target.replace(" ", "") +\
-                                    f'_{l}_CRIRES_SPEC1D.fits', 
-                                     f"SPEC_{l}")
-                if combine:
-                    np.savetxt(file_name[:-5]+'.dat', np.c_[wlens.flatten(), 
-                                                           spec_series.flatten(), 
-                                                           err_series.flatten()], 
-                                header="wave(nm) flux err")
-                
-                if isinstance(snr_mid, float):
-                    print(f"Saved target {target} {l} with wavelength coverage {unique_wlen}; ",
-                            f"average S/N ~ {snr_mid:.0f}. \n")
-                else:
-                    print(f"Saved target {target} {l} with wavelength coverage {unique_wlen}; average S/N ~ ",
-                            np.round(snr_mid).astype(int), " \n")
+                    wfits(file_name+'.fits', ext_list={"FLUX": spec_series, 
+                                                "FLUX_ERR": err_series,
+                                                "WAVE": wlens}, 
+                                        header=hdr)
+                    self._add_to_product('/'.join(file_name.split('/')[-2:])+'.fits', 
+                                    '_'.join(['SPEC']+label.split('_')[-2:]))
+                    if data_type == data_comb:
+                        np.savetxt(file_name+'.dat', np.c_[wlens.flatten(), 
+                                                            spec_series.flatten(), 
+                                                            err_series.flatten()], 
+                                    header="wave flux err")
+                    
+                    if isinstance(snr_mid, float):
+                        print(f"Saved target {target} {l} with wavelength coverage {unique_wlen}; ",
+                                f"average S/N ~ {snr_mid:.0f}. \n")
+                    else:
+                        print(f"Saved target {target} {l} with wavelength coverage {unique_wlen}; average S/N ~ ",
+                                np.round(snr_mid).astype(int), " \n")
 
 
 
 
     def run_skycalc(self, airmass=1.0, pwv=2.5):
         """
-        Method for running the Python wrapper of SkyCalc
-        (see https://skycalc-ipy.readthedocs.io).
+        Method for running the Python wrapper of `SkyCalc` to obtain the telluric transmission template.
 
         Parameters
         ----------
+        airmass : float
+            airmass 
         pwv : float
-            Precipitable water vapor (default: 5) that is used for
-            the telluric spectrum. 
+            Precipitable water vapor (default: 2.5 mm)
 
-        Returns
-        -------
-        NoneType
-            None
+        See Also
+        --------
+        https://skycalc-ipy.readthedocs.io
         """
 
         self._print_section("Obtain telluric transmission with SkyCalc")
@@ -2066,19 +2017,18 @@ class CriresPipeline:
         sky_calc = skycalc_ipy.SkyCalc()
 
         wlen_id = self.header_info[indices][self.key_wlen].iloc[0]
-        # slit_width = self.header_info[indices][self.key_slitwid].iloc[0]
-        # mjd_start = self.header_info[indices][self.key_mjd].iloc[0]
-        # ra_mean = np.mean(self.header_info[self.key_ra][indices])
-        # dec_mean = np.mean(self.header_info[self.key_dec][indices])
+        mjd_start = self.header_info[indices][self.key_mjd].iloc[0]
+        ra_mean = self.header_info[self.key_ra][indices].iloc[0]
+        dec_mean = self.header_info[self.key_dec][indices].iloc[0]
 
-        # sky_calc.get_almanac_data(
-        #     ra=ra_mean,
-        #     dec=dec_mean,
-        #     date=None,
-        #     mjd=mjd_start,
-        #     observatory="paranal",
-        #     update_values=True,
-        # )
+        sky_calc.get_almanac_data(
+            ra=ra_mean,
+            dec=dec_mean,
+            date=None,
+            mjd=mjd_start,
+            observatory="paranal",
+            update_values=True,
+        )
 
         sky_calc["msolflux"] = 130
 
@@ -2134,64 +2084,93 @@ class CriresPipeline:
     @print_runtime
     def run_molecfit(self, object=None, data_type=None, wave_range=None, verbose=True):
         """
-        Method for running ESO's tool for telluric correction 
-        `Molecfit`. 
+        Method for running ESO's tool for telluric correction `Molecfit`. 
 
         Parameters
         ----------
         object: str
             Name of the star whose spectra is used for the telluric fitting. 
+            Default is to carry out fitting for every target.
         data_type: str
             Label of the file type to fit for telluric absorption.
-            The default value is `SPEC_PRIMARY`, i.e. the primary spectrum.
-            It can also be individual frames in time-series observations (TODO).
-        wmin, wmax: list
+            The default value is `SPEC_COMBINED_PRIMARY`, i.e. the primary spectrum.
+            It can also be individual frames in time-series observations.
+        wave_range: list of tuple
             list of lower and upper limit for wavelength ranges (in um)
             for molecfit fitting
         verbose : bool
             Print output produced by ``esorex``.
         
-        Returns
-        -------
-        NoneType
-            None
+        See Also
+        --------
+        :func:`utils.molecfit`
         """
 
         self._print_section("Run Molecfit")
 
         # Create the molecfit directory if it does not exist yet
         self.molpath = os.path.join(self.outpath, "molecfit")
-        # input_path = os.path.join(self.molpath, "input")
         if not os.path.exists(self.molpath):
             os.makedirs(self.molpath)
-        # if not os.path.exists(input_path):
-        #     os.makedirs(input_path)
+
 
         # get updated product info
         self.product_info = pd.read_csv(self.product_file, sep=';')
 
         if data_type is None:
-            data_type = 'SPEC_PRIMARY'
+            data_type = 'SPEC_COMBINED_PRIMARY'
         indices = (self.product_info[self.key_caltype] == data_type)
 
         if not object is None:
             indices = indices & \
                 (self.product_info[indices][self.key_target_name] == object)
 
-        science_file = self.product_info[indices][self.key_filename].iloc[0]
-        dt = SPEC(filename=os.path.join(self.outpath, science_file))
-        dt.wlen *= 1e-3
+        for science_file in self.product_info[indices][self.key_filename]:
 
-        name = science_file.split('/')[-1] 
-        su.molecfit(self.molpath, dt, wave_range, savename=name, verbose=verbose)
-        
-        name = name.split('_')[0]
-        self._add_to_product(f'molecfit/TELLURIC_{name}.fits', "TELLU_MOLECFIT")
+            name = science_file.split('/')[-1] 
+            target = name.split('_')[0]
+
+            if data_type == 'SPEC_COMBINED_PRIMARY':
+                dt = SPEC(filename=os.path.join(self.outpath, science_file))
+                dt.wlen *= 1e-3
+                su.molecfit(self.molpath, dt, wave_range, savename=name, verbose=verbose)
+
+                
+                file_best_par = fits.getdata(os.path.join(self.molpath, 'BEST_FIT_PARAMETERS.fits'))
+                best_params = fits.getdata(file_best_par, 1)
+                np.savetxt(os.path.join(self.molpath, f'BEST_FIT_PARAMETERS_{target}.txt'), 
+                                best_params.tolist()[:-2], fmt='%s')
+
+                # save telluric model
+                tellu = fits.getdata(os.path.join(self.molpath, 'TELLURIC_DATA.fits'))
+                file_name = os.path.join(self.molpath, f'TELLURIC_{target}.fits')
+                wfits(file_name, ext_list={"WAVE":tellu['lambda']*1e3, 
+                                           "FLUX":tellu['mtrans']}, 
+                                header=dt.header)
+
+            elif data_type == 'SPEC_FRAME_PRIMARY':
+                dt_series = SERIES(filename=os.path.join(self.outpath, science_file))
+                trans_model = []
+                for dt in dt_series:
+                    dt.wlen *= 1e-3
+                    su.molecfit(self.molpath, dt, wave_range, savename=name, verbose=verbose)
+
+                    tellu = fits.getdata(os.path.join(self.molpath, 'TELLURIC_DATA.fits'))
+                    trans_model.append(tellu['mtrans'])
+
+                file_name = os.path.join(self.molpath, f'TELLURIC_{target}.fits')
+                wfits(file_name, ext_list={"WAVE": tellu['lambda']*1e3, 
+                                           "FLUX": trans_model}, 
+                                header=dt_series.header)
+            
+            self._add_to_product(f'molecfit/TELLURIC_{target}.fits', "TELLU_MOLECFIT")
 
 
 
     @print_runtime
-    def spec_response_cal(self, object, temp, vsini, vsys, mask_wave=[(2164, 2169)]):
+    def spec_response_cal(self, object, temp, vsini, vsys, 
+                          mask_wave=[(2164, 2169)], debug=False
+                        ):
         """
         Method for calibrating spectral shape using standard star observations.
 
@@ -2200,91 +2179,95 @@ class CriresPipeline:
         object: str
             Name of the standard star whose spectrum is used for
             the instrument response calibration. 
+        temp: int
+            effective temperature of the standard star
+        vsini: float
+            rotational broadenning of the standard star
+        vsys: float
+            systemic and barycentric  velocity correction for the standard star   
+        mask_wave: list of tuple
+            list of lower and upper limit for wavelength ranges (in nm) that need to 
+            be masked when estimating the isntrument response.
+            They are usually Hydrogen lines of the stellar spectrum.
+
         
-        Returns
-        -------
-        NoneType
-            None
+        See Also
+        --------
+        :func:`utils.instrument_response`
         """
 
-        self._print_section("Spectral shape calibration")
+        self._print_section("Spectral response")
         
-        self.corrpath = os.path.join(self.outpath, "obs_calibrated")
-        self.molpath = os.path.join(self.outpath, "molecfit")
-        if not os.path.exists(self.corrpath):
-            os.makedirs(self.corrpath)
-
         # get updated product info
         self.product_info = pd.read_csv(self.product_file, sep=';')
 
-        data_type = 'SPEC_PRIMARY'
+        data_type = 'SPEC_COMBINED_PRIMARY'
         indices_std =  (self.product_info[self.key_caltype] == data_type) & \
                         (self.product_info[self.key_target_name] == object)
 
         std_file = self.product_info[indices_std][self.key_filename].iloc[0]
         std = SPEC(filename=os.path.join(self.outpath, std_file))
 
-        # tellu_file = os.path.join(self.calpath, "TRANSM_SPEC.fits")
-        # if not os.path.isfile(tellu_file):
-        #     airmass = self.product_info[indices_std][self.key_airmass].max()
-        #     self.run_skycalc(airmass=airmass)
+        tellu_file = os.path.join(self.calpath, "TRANSM_SPEC.fits")
+        if not os.path.isfile(tellu_file):
+            airmass = self.product_info[indices_std][self.key_airmass].max()
+            self.run_skycalc(airmass=airmass)
 
-        # skycalc model is not sufficient, use molecfit model instead
-        indices_tellu =  (self.product_info[self.key_caltype] == 'TELLU_MOLECFIT') & \
-                        (self.product_info[self.key_target_name] == object)
-        if np.sum(indices_tellu) > 0:
-            tellu_file = self.product_info[indices_tellu][self.key_filename].iloc[0]
-        tellu = fits.getdata(os.path.join(self.outpath, tellu_file))
+        # Convolve telluric model to the instrument resolution
+        slit_width = self.product_info[indices_std][self.key_slitwid].iloc[0]
+        if slit_width == "w_0.2":
+            spec_res = 100000.0
+        elif slit_width == "w_0.4":
+            spec_res = 50000.0
 
-        # # Convolve telluric model to the instrument resolution
-        # slit_width = self.product_info[indices_std][self.key_slitwid].iloc[0]
-        # if slit_width == "w_0.2":
-        #     spec_res = 100000.0
-        # elif slit_width == "w_0.4":
-        #     spec_res = 50000.0
+        tellu = fits.getdata(tellu_file)
+        tellu[:,1] = su.SpecConvolve(tellu[:,0], tellu[:,1], 
+                        out_res=spec_res, in_res=2e5)
 
-        # tellu[:,1] = su.SpecConvolve(tellu[:,0], tellu[:,1], 
-        #                 out_res=spec_res, in_res=2e5)
+        # # skycalc model is not sufficient, use molecfit model instead
+        # indices_tellu =  (self.product_info[self.key_caltype] == 'TELLU_MOLECFIT') & \
+        #                 (self.product_info[self.key_target_name] == object)
+        # if np.sum(indices_tellu) > 0:
+        #     tellu_file = self.product_info[indices_tellu][self.key_filename].iloc[0]
+        # with fits.open(os.path.join(self.outpath, tellu_file)) as hdu:
+        #     tellu = hdu['FLUX'].data
 
-        response = su.instrument_response(std, tellu, temp, vsini, vsys, mask_wave)
+        response, tellu_std = su.instrument_response(std, tellu, 
+                                        temp, vsini, vsys, 
+                                        mask_wave, debug=debug)
 
-        file_name = os.path.join(self.corrpath, "instrument_response.dat")
-        np.savetxt(file_name, response)
+        file_name = os.path.join(self.calpath, "RESPONSE.dat")
+        np.savetxt(file_name, np.c_[response, tellu_std])
 
 
 
     @print_runtime
-    def apply_correction(self):
+    def apply_correction(self, use_molecift=False):
         """
         Method for apply telluric and instrument response correction
         using the output from `run_molecfit` and `spec_response_cal`. 
+        The corrected spectrum is save to a text file.
 
         Parameters
         ----------
-        
-            
-        
-        Returns
-        -------
-        NoneType
-            None
+        use_molecfit: bool
+            If True, it uses the telluric model generated by `molecfit`. Otherwise, 
+            the standard stellar spectrum is used to correct for the telluric.
+
         """
 
         self._print_section("Apply corrections")
-
-        self.molpath = os.path.join(self.outpath, "molecfit")
-        self.corrpath = os.path.join(self.outpath, "obs_calibrated")
 
         # get updated product info
         self.product_info = pd.read_csv(self.product_file, sep=';')
 
         # get instrument response
-        file_name = os.path.join(self.corrpath, "instrument_response.dat")
-        resp = np.genfromtxt(file_name)
+        file_name = os.path.join(self.calpath, "RESPONSE.dat")
+        resp, tellu_std = np.genfromtxt(file_name, unpack=1)
 
         # get labels containing 'SPEC'
         all_labels = self.product_info[self.key_caltype].unique()
-        data_type = all_labels[pd.Series(all_labels).str.contains('SPEC', case=False)]
+        data_type = all_labels[pd.Series(all_labels).str.contains('SPEC_COMBINED', case=False)]
 
         for label in data_type:
 
@@ -2301,16 +2284,19 @@ class CriresPipeline:
             # Loop over each target
             for target in unique_target:
 
-                # get molecfit telluric model
-                indices_tellu = (self.product_info[self.key_caltype] == 'TELLU_MOLECFIT') & \
-                                (self.product_info[self.key_target_name] == target)
-                if sum(indices_tellu) < 1:
-                    raise Exception("No telluric model found")
+                if use_molecift:
+                    # get molecfit telluric model
+                    indices_tellu = (self.product_info[self.key_caltype] == 'TELLU_MOLECFIT') & \
+                                    (self.product_info[self.key_target_name] == target)
+                    if sum(indices_tellu) < 1:
+                        raise Exception("No telluric model found")
 
-                tellu = fits.getdata(os.path.join(self.outpath, 
-                        self.product_info[indices_tellu][self.key_filename].iloc[0]))
-                w, mtrans = tellu[:,0], tellu[:,1]
-                # use molecfit wavelength
+                    with fits.open(os.path.join(self.outpath, 
+                            self.product_info[indices_tellu][self.key_filename].iloc[0])) as hdu:
+                        mtrans = hdu['FLUX'].data
+                else:
+                    # use standard star spectrum as telluric model
+                    mtrans = tellu_std
 
                 indices_obj = indices & (self.product_info[self.key_target_name] == target)
 
@@ -2318,18 +2304,18 @@ class CriresPipeline:
                     with fits.open(os.path.join(self.outpath, file)) as hdu:
                         specs = hdu["FLUX"].data
                         errs = hdu["FLUX_ERR"].data
+                        wave = hdu["WAVE"].data
 
                     f = np.ravel(specs)/mtrans/resp
                     f_err = np.ravel(errs)/mtrans/resp
+                    w = np.ravel(wave)
 
                     # mask deep telluric lines
                     mask = mtrans < 0.7
                     f[mask] = np.nan
 
-                    file_name = os.path.join(self.corrpath, 
-                            file.split('/')[-1][:-7] + "1D_TELLURIC_CORR.dat")
-                    header = "wave flux err"
-                    np.savetxt(file_name, np.c_[w*1e-3, f, f_err], header=header)
+                    file_name = os.path.join(self.outpath, file[:-7] + "1D_TELLURIC_CORR.dat")
+                    np.savetxt(file_name, np.c_[w*1e-3, f, f_err], header="wave flux err")
 
                     print(f"Telluric corrected spectra saved to {file_name.split('/')[-1]}")
 
@@ -2399,9 +2385,7 @@ class CriresPipeline:
             self.apply_telluric_correction()
 
 
-    def preprocessing(self, combine=False, 
-                      combine_mode='mean',
-                      ):
+    def preprocessing(self, combine_mode='mean'):
         """
         Method for running the full chain of recipes.
 
@@ -2425,7 +2409,5 @@ class CriresPipeline:
         self.cal_flat_norm()
         self.obs_nodding()
 
-        if combine:
-            self.obs_nodding_combine(
-                                     combine_mode=combine_mode)
+        self.obs_nodding_combine(combine_mode=combine_mode)
 

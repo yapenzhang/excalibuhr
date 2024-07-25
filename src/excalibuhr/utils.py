@@ -17,69 +17,8 @@ import shutil
 import subprocess
 import requests
 
-def wfits(fname, ext_list: dict, header=None):
-    """
-    write data to FITS primary and extensions, overwriting any old file
-    
-    Parameters
-    ----------
-    fname: str
-        path and filename to which the data is saved 
-    ext_list: dict
-        to save the data in the dictionary to FITS extension. Specify the datatype 
-        (e.g.  "FLUX", "FLUX_ERR", "WAVE", and "MODEL") in the key. 
-    header: FITS `header`
-        header information to be saved
 
-    Returns
-    -------
-    NoneType
-        None
-    """
-
-    primary_hdu = fits.PrimaryHDU(header=header)
-    new_hdul = fits.HDUList([primary_hdu])
-    if not ext_list is None:
-        for key, value in ext_list.items():
-            new_hdul.append(fits.ImageHDU(value, name=key))
-    new_hdul.writeto(fname, overwrite=True, output_verify='ignore') 
-
-
-def CCF_doppler(w_obs, f_obs, w_model, f_model, v_extent, dv):
-    c = 2.99792458e5 #km/s
-    """
-    Cross-correlation function with doppler shift.
-    Do not require both model and data at the same wavelength grid.
-    ----------
-    Parameters
-    ----------
-    wlen : Wavelength array of data and model
-    x : Data array
-    y : Model array
-    ----------
-    Returns
-    ----------
-    Radial velocity
-    CCF without any normalisation
-    """
-    c = 2.99792458e5 #km/s
-    v_grid = np.arange(-v_extent, v_extent+dv, dv)
-    # var_obs = np.sum(f_obs**2)
-    interp = interp1d(w_model, f_model, bounds_error=False, fill_value=0)
-    f_template = interp(w_obs)
-    # var_template = np.sum(f_template**2)
-    ccf, ccf_err = [], []
-    for k, v_shift in enumerate(v_grid):
-        w_shift = w_obs*(1.-v_shift/c)
-        f_template = interp(w_shift)
-        ccf.append(np.dot(f_template, f_obs))
-        # print(w_shift-w_obs)
-        # plt.plot(w_shift, f_template)
-        # plt.show()
-    ccf = np.array(ccf)#-np.median(np.array(ccf)[cont_range])
-    return v_grid, ccf
-
-def util_master_dark(dt, collapse='median', badpix_clip=5):
+def util_master_dark(dt, combine_mode='median', badpix_clip=5):
     """
     combine dark frames; generate bad pixel map and readout noise frame
     
@@ -87,7 +26,7 @@ def util_master_dark(dt, collapse='median', badpix_clip=5):
     ----------
     dt: list
         a list of dark frames to be combined 
-    collapse: str
+    combine_mode: str
         the way of combining dark frames: `mean` or `median`
     badpix_clip : int
         sigma of bad pixel clipping
@@ -99,9 +38,9 @@ def util_master_dark(dt, collapse='median', badpix_clip=5):
     """
 
     # Combine the darks
-    if collapse == 'median':
+    if combine_mode == 'median':
         master = np.nanmedian(dt, axis=0)
-    elif collapse == 'mean':
+    elif combine_mode == 'mean':
         master = np.nanmean(dt, axis=0)
     
     # Calculate the read-out noise as the stddev, scaled by 
@@ -118,7 +57,7 @@ def util_master_dark(dt, collapse='median', badpix_clip=5):
     return master, rons, badpix
 
 
-def util_master_flat(dt, dark, collapse='median', badpix_clip=5):
+def util_master_flat(dt, dark, combine_mode='median', badpix_clip=5):
     """
     combine flat frames; generate bad pixel map
     
@@ -128,7 +67,7 @@ def util_master_flat(dt, dark, collapse='median', badpix_clip=5):
         a list of flat frames to be combined 
     dark: array
         dark frame to be subtracted from the flat 
-    collapse: str
+    combine_mode: str
         the way of combining flat frames: `mean` or `median`
     badpix_clip : int
         sigma of bad pixel clipping
@@ -140,9 +79,9 @@ def util_master_flat(dt, dark, collapse='median', badpix_clip=5):
     """
 
     # Combine the flats
-    if collapse == 'median':
+    if combine_mode == 'median':
         master = np.nanmedian(dt, axis=0)
-    elif collapse == 'mean':
+    elif combine_mode == 'mean':
         master = np.nanmean(dt, axis=0)
     
     # Dark-subtract the master flat
@@ -1526,7 +1465,7 @@ def extract_spec(det, det_err, badpix, trace, slit, blaze, gain, NDIT=1,
     #TODO how to deal with interpolation of badpix
 
     if extract_2d or remove_star_bkg or remove_sky_bkg:
-        dt_rect = trace_rectify_interp([im, im_err], trace, debug=True) 
+        dt_rect = trace_rectify_interp([im, im_err], trace, debug=False) 
         im, im_err = dt_rect
         filter_mode = 'median' # rectifying the trace using interpolation will 
         # introduce low frequency trend in the dispersion direction, 
@@ -1594,7 +1533,7 @@ def extract_spec(det, det_err, badpix, trace, slit, blaze, gain, NDIT=1,
 
     return flux, err, D, V, P 
 
-
+        
 def optimal_extraction(D_full, V_full, bpm_full, obj_cen, 
                        aper_half=20, filter_mode='poly',
                        badpix_clip=5, filter_width=121,
@@ -1649,6 +1588,9 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
     D = np.nan_to_num(D, nan=etol)
     V = np.nan_to_num(V, nan=1./etol)
     V_new = V + np.abs(D) / gain / NDIT
+    
+    # plt.imshow(V, aspect='auto', vmin=0, vmax=20)
+    # plt.show()
 
     wave_x = np.arange(D.shape[0])
     spatial_x = np.arange(D.shape[1])
@@ -2419,10 +2361,31 @@ def get_PHOENIX_stellar_model(temp, wave_cut, logg=4.0):
     return w, f
 
 
-def instrument_response(std, tellu, temp, vsini, vsys=0., mask_wave=[]):
+def instrument_response(std, tellu, temp, vsini, vsys=0., 
+                        mask_wave=[], debug=False):
+    """
+    Method for calibrating spectral shape using standard star observations.
+
+    Parameters
+    ----------
+    std: SPEC
+        spectrum of the observed standard star
+    tellu: ndarray
+        telluric transmission template with wavelength on the first column and transmission on the second  
+    temp: int
+        effective temperature of the standard star
+    vsini: float
+        rotational broadenning of the standard star
+    vsys: float
+        systemic and barycentric  velocity correction for the standard star   
+    mask_wave: list of tuple
+        list of lower and upper limit for wavelength ranges (in nm) that need to 
+        be masked when estimating the isntrument response.
+        They are usually Hydrogen lines of the stellar spectrum.
+    """
 
     wave, flux, _ = std.get_spec1d()
-    flux_tellu_interp = tellu[:,1] #interp1d(tellu[:,0], tellu[:,1])(wave)
+    tellu = interp1d(tellu[:,0], tellu[:,1])(wave)
 
     # get phoenix stellar model
     wave_model, flux_model = get_PHOENIX_stellar_model(temp, wave_cut=[wave[0]-100, wave[-1]+100])
@@ -2432,30 +2395,55 @@ def instrument_response(std, tellu, temp, vsini, vsys=0., mask_wave=[]):
     flux_model_interp = interp1d(wave_model, flux_model)(w_shift)
 
     # plt.plot(wave, flux)
-    # plt.plot(wave, flux_tellu_interp)
+    # plt.plot(wave, tellu)
     # plt.plot(wave, flux_model_interp)
     # plt.show()
     
     # instrument response
-    transm = flux/flux_model_interp/flux_tellu_interp
+    transm = flux/flux_model_interp/tellu
     transm = np.reshape(transm, std.wlen.shape)
-
-    flux_tellu = np.reshape(flux_tellu_interp, std.wlen.shape)
+    flux_tellu = np.reshape(tellu, std.wlen.shape)
 
     inst_res = []
     for i, x in enumerate(std.wlen):
         y = transm[i]
-        mask = flux_tellu[i] < 0.5
+        mask = (flux_tellu[i] < 0.5) | np.isnan(y)
+        y_model, _, _ = PolyfitClip(x, y, order=12, mask=~mask, clip=3, max_iter=50)
+        inst_res.append(y_model)
+    #     plt.plot(x, y)
+    #     plt.plot(x, y_model)
+    # plt.show()
+    
+    # get the detrended telluric spectrum of the standard star
+    tellu_clean = flux / np.ravel(inst_res) / flux_model_interp
+
+    if debug:
+        plt.plot(wave, tellu_clean)
+        plt.plot(wave, tellu)
+        plt.show()
+
+    inst_res = flux/tellu_clean/flux_model_interp
+
+    # fit the same polynomial for all three detectors
+    std.wlen = std.wlen.reshape((std.wlen.shape[0]//3, -1))
+    inst_res = inst_res.reshape(std.wlen.shape)
+
+    resp = []
+    for i, x in enumerate(std.wlen):
+        y = inst_res[i]
+        mask = np.isnan(y)
         for w_range in mask_wave:
             mask = np.logical_or((x > w_range[0]) & (x < w_range[1]), mask)
+        y_model, _, _ = PolyfitClip(x, y, order=2, mask=~mask, clip=3)
+        resp.append(y_model)
+        if debug:
+            plt.plot(x, y)
+            plt.plot(x, y_model)
 
-        y_model, _, _ = PolyfitClip(x, y, order=6, mask=~mask, clip=3, max_iter=50)
-        inst_res.append(y_model)
-        plt.plot(x[~mask], y[~mask], color='k')
-        plt.plot(x[~mask], y_model[~mask], color='r')
-    plt.show()
+    if debug:
+        plt.show()
 
-    return np.ravel(inst_res)
+    return np.ravel(resp), tellu_clean
 
 
 def create_eso_recipe_config(eso_recipe, outpath, verbose):
@@ -2858,19 +2846,7 @@ def molecfit(input_path, spec, wave_range=None, savename=None, verbose=False):
     if not verbose:
         print(" [DONE]")
 
-    name = savename.split('_')[0]
-    best_params = fits.getdata(file_best_par, 1)
-    np.savetxt(os.path.join(input_path, f'BEST_FIT_PARAMETERS_{name}.txt'), 
-                    best_params.tolist()[:-2], fmt='%s')
-    
-    # print("Summary saved in 'BEST_FIT_PARAMETERS.txt'")
 
-    # save telluric model
-    tellu = fits.getdata(os.path.join(input_path, 'TELLURIC_DATA.fits'))
-    file_name = os.path.join(input_path, f'TELLURIC_{name}.fits')
-    wfits(file_name, ext_list={"TRANSM":np.c_[tellu['lambda']*1e3, 
-                                              tellu['mtrans']]}, 
-                    header=spec.header)
 
 
 
