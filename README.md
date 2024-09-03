@@ -6,6 +6,9 @@ A Python package for data reduction of high-resolution spectroscopy of exoplanet
 
 Documentation can be found at [https://excalibuhr.readthedocs.io/](https://excalibuhr.readthedocs.io/).
 
+## Attribution
+
+Please cite [Zhang et al. 2024](https://github.com/yapenzhang/excalibuhr) if *excalibuhr* is used in your research.
 
 ## Contributor
 

@@ -2099,196 +2099,6 @@ def PolyfitClip(x, y, order, mask=None, clip=4., max_iter=20):
     return y_model, coeffs, final_mask
 
 
-def fit_continuum_clip(x, y, order, pixel_distance=50, sigma=1.5, max_iter=20):
-    x_mean = x - np.nanmean(x) 
-    A_full = np.vander(x_mean, order)
-
-    peak_inds, _ = signal.find_peaks(y, distance=pixel_distance)
-    x_peaks, y_peaks = x_mean[peak_inds], y[peak_inds]
-    mask = np.ones_like(x_peaks, dtype=bool)
-
-    for i in range(max_iter):
-        peak_inds = peak_inds[mask]
-        x_peaks = x_peaks[mask]
-        y_peaks = y_peaks[mask]
-        mask = np.ones_like(x_peaks, dtype=bool)
-        A_matrix = np.vander(x_peaks, order)
-        coeffs = np.linalg.solve(np.dot(A_matrix.T, A_matrix), 
-                                 np.dot(A_matrix.T, y_peaks))
-        y_model = np.dot(A_full, coeffs)
-        res = (y - y_model)[peak_inds]
-        # med = np.median(np.abs(res))
-        std = np.std(res)
-        # plt.scatter(x_peaks[mask], res)
-        # plt.axhline(-sigma*std)
-        if np.min(res) < -sigma*std:
-            mask[np.argmin(res)] = False
-        else:
-            break
-        # plt.plot(x, y)
-        # plt.scatter(x[peak_inds], y[peak_inds])
-        # plt.scatter(x_peaks[mask]+np.nanmean(x) , y_peaks[mask])
-        # plt.show()
-
-    return y_model, coeffs
-
-
-def fit_continuum(x, y, order, pixel_distance=500):
-    x_mean = x - np.nanmean(x) 
-    A_full = np.vander(x_mean, order)
-
-    peak_inds, _ = signal.find_peaks(y, distance=pixel_distance)
-    x_peaks, y_peaks = x_mean[peak_inds], y[peak_inds]
-
-
-    A_matrix = np.vander(x_peaks, order)
-    coeffs = np.linalg.solve(np.dot(A_matrix.T, A_matrix), 
-                                 np.dot(A_matrix.T, y_peaks))
-    y_model = np.dot(A_full, coeffs)
-
-    return y_model, coeffs
-
-
-def find_kernel_SVD(spec_sharp, spec_broad, kernel_size, rcond=1e-3):
-    """
-    Use singular value decomposition (SVD) to find the spectral broadening kernel
-
-    Parameters
-    ----------
-    spec_sharp: array
-        spectrum of the sharp one, usually the standard spectrum
-    spec_broad: array
-        spectrum of the broad one, usually the target spectrum
-    kernel_size: int
-        the length of broadening kernel
-    rcond: float
-        cutoff for small singular values
-
-    Returns
-    -------
-    reconstructed: array
-        i.e. the standard spectrum convolved with the kernel
-    Kernel: array
-        kernel of the transformation
-    """
-
-    spec_sharp[np.isnan(spec_sharp)] = 0
-    spec_broad[np.isnan(spec_broad)] = 0
-
-    n = len(spec_sharp) 
-    shift = np.arange(-kernel_size, kernel_size + 1)
-
-    # Create a broadcasting array of indices for each shift value
-    idx = np.arange(n)
-    idx_shifted = idx[:, np.newaxis] - shift
-
-    # Use modulo operation to handle wrap-around indices
-    idx_shifted %= n
-
-    # Use advanced indexing to retrieve the shifted values
-    M = spec_sharp[idx_shifted]
-
-    # solve for the kernel K from M K = P
-    M_inv = np.linalg.pinv(M, rcond=rcond)
-    Kernel = M_inv.dot(spec_broad)
-
-    # reconstruct the convolved spectrum
-    reconstructed = np.dot(M, Kernel)
-
-    return reconstructed, Kernel
-
-
-def add_RBF_kernel(a, l, delta_wave, err, trunc_dist=4):
-    """
-
-    Parameters
-    ----------
-    
-    
-
-    Returns
-    -------
-    
-    """
-
-    # Hann window function to ensure sparsity
-    w_ij = (delta_wave < trunc_dist*l)
-
-    # Gaussian radial-basis function kernel
-    Sigma_ij = np.zeros_like(delta_wave)
-    Sigma_ij[w_ij] = a**2 * np.exp(-(delta_wave[w_ij])**2/(2*l**2))
-    
-    # Add the (scaled) Poisson noise
-    Sigma_ij += np.diag(err**2)
-
-    Sigma_ij_sparse = csc_matrix(Sigma_ij)
-
-    return Sigma_ij_sparse
-
-
-def add_local_kernel(amp, mu, sigma, wlen, trunc_dist=4):
-
-    # calc wavelength distance to the local feature 
-    r_ij = np.sqrt((wlen[:,None] - mu)**2 + (wlen[None,:] - mu)**2)
-    # Hann window function to ensure sparsity
-    w_ij = (r_ij < trunc_dist*sigma)
-    
-    sigma_ij = np.zeros_like(r_ij)
-    sigma_ij[w_ij] = amp**2 * np.exp(-r_ij[w_ij]**2/2./sigma**2)
-
-    sigma_ij_sparse = csc_matrix(sigma_ij)
-
-    return sigma_ij_sparse
-
-
-def get_spline_model(x_knots, x_samples, spline_degree=3):
-    """
-    https://github.com/jruffio/breads
-    Compute a spline based linear model.
-    If Y=[y1,y2,..] are the values of the function at the location of the node [x1,x2,...].
-    np.dot(M,Y) is the interpolated spline corresponding to the sampling of the x-axis (x_samples)
-
-    Parameters
-    ----------
-    x_knots: list
-        List of nodes for the spline interpolation as np.ndarray in the same units as x_samples.
-            x_knots can also be a list of ndarrays/list to model discontinous functions.
-    x_samples: array 
-        the sampling of the data.
-    spline_degree: int
-        Degree of the spline interpolation (default: 3). 
-        if np.size(x_knots) <= spline_degree, then spline_degree = np.size(x_knots)-1
-    Returns
-    -------
-    M: array
-        Matrix of size (D,N) with D the size of x_samples and N the total number of nodes.
-    """
-    if type(x_knots[0]) is list or type(x_knots[0]) is np.ndarray:
-        x_knots_list = x_knots
-    else:
-        x_knots_list = [x_knots]
-
-    if np.size(x_knots_list) <= 1:
-        return np.ones((np.size(x_samples),1))
-    if np.size(x_knots_list) <= spline_degree:
-        spline_degree = np.size(x_knots)-1
-
-    M_list = []
-    for nodes in x_knots_list:
-        M = np.zeros((np.size(x_samples), np.size(nodes)))
-        min,max = np.min(nodes),np.max(nodes)
-        inbounds = np.where((min<x_samples)&(x_samples<max))
-        _x = x_samples[inbounds]
-
-        for chunk in range(np.size(nodes)):
-            tmp_y_vec = np.zeros(np.size(nodes))
-            tmp_y_vec[chunk] = 1
-            spl = InterpolatedUnivariateSpline(nodes, tmp_y_vec, k=spline_degree, ext=0)
-            M[inbounds[0], chunk] = spl(_x)
-        M_list.append(M)
-    return np.array(M_list)
-
-
 
 def rot_int_cmj(wave, flux, vsini, epsilon=0.6, nr=10, ntheta=100, dif = 0.0):
 	"""
@@ -2467,10 +2277,9 @@ def instrument_response(std, tellu, temp, vsini, vsys=0.,
 
 def create_eso_recipe_config(eso_recipe, outpath, verbose):
     """
+    https://github.com/tomasstolker/pycrires
     Internal method for creating a configuration file with default
-    values for a specified `EsoRex` recipe. Also check if `EsorRex`
-    is found and raise an error otherwise.
-    From pycrires (see https://pycrires.readthedocs.io)
+    values for a specified `EsoRex` recipe. 
 
     Parameters
     ----------
@@ -2662,7 +2471,6 @@ def create_eso_recipe_config(eso_recipe, outpath, verbose):
 def molecfit(input_path, spec, wave_range=None, savename=None, verbose=False):
     """
     A wrapper of molecfit for telluric correction
-    From pycrires (see https://pycrires.readthedocs.io)
 
     Parameters
     ----------

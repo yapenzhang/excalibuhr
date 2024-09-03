@@ -20,9 +20,11 @@ import skycalc_ipy
 import excalibuhr.utils as su
 from excalibuhr.data import SPEC, SERIES, DETECTOR, wfits
 import matplotlib.pyplot as plt 
+import functools
 
 
 def print_runtime(func):
+    @functools.wraps(func)
     def wrapper(*args, **kwargs):
         start_time = time.time()
         result = func(*args, **kwargs)
@@ -1127,7 +1129,6 @@ class CriresPipeline:
             file_name = os.path.join(self.calpath, f'TW_FLAT_{item_wlen}.fits')
             wfits(file_name, ext_list={"FLUX": trace_update}, header=hdr)
         
-            
 
     @print_runtime
     def obs_nodding(self):
@@ -2015,7 +2016,8 @@ class CriresPipeline:
 
     def run_skycalc(self, airmass=1.0, pwv=2.5):
         """
-        Method for running the Python wrapper of `SkyCalc` to obtain the telluric transmission template.
+        Method for obtaining the telluric transmission template using the Python wrapper of `SkyCalc`:
+        https://skycalc-ipy.readthedocs.io 
 
         Parameters
         ----------
@@ -2023,10 +2025,7 @@ class CriresPipeline:
             airmass 
         pwv : float
             Precipitable water vapor (default: 2.5 mm)
-
-        See Also
-        --------
-        https://skycalc-ipy.readthedocs.io
+    
         """
 
         self._print_section("Obtain telluric transmission with SkyCalc")
@@ -2433,7 +2432,8 @@ class CriresPipeline:
 
     def preprocessing(self, combine_mode='mean'):
         """
-        Method for running the full chain of recipes.
+        Method for running the preprocessing recipes including reducing calibration files, 
+        calibrating science frames, and combining indvidual frames at each nodding position.
 
         Parameters
         ----------

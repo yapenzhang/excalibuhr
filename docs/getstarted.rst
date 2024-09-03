@@ -26,10 +26,8 @@ To begin with, let's initialize the pipeline with the working directory and the 
                                   num_processes=4, clean_start=False
                                  )
 
-.. note::
-
-    ``num_processes`` sets the number of parallel processes when reducing science frames.
-    ``clean_start`` gives the option to remove all previous products in case one needs to re-run the pipeline.
+The ``num_processes`` sets the number of parallel processes when reducing science frames.
+The ``clean_start`` gives the option to remove all previous products in case one needs to re-run the pipeline.
 
 Download data
 *************
@@ -80,12 +78,9 @@ API reference of :class:`~excalibuhr.pipeline.CriresPipeline` class.
 
 .. note::
 
-    * To extract spectra of spatially resolved planetary companions with the ``obs_extract`` recipe, 
-    one can either set the ``companion_sep`` parameter to the angular separation of the planet in arcseconds 
-    or provide the location on the slit with e.g. ``peak_frac={'A':0.3, 'B':0.8}``. These values don't have to very accurate. 
+    * To extract spectra of spatially resolved planetary companions with the ``obs_extract`` recipe, one can either set the ``companion_sep`` parameter to the angular separation of the planet in arcseconds or provide the location on the slit with e.g. ``peak_frac={'A':0.3, 'B':0.8}``. These values don't have to very accurate. 
     
-    * If telluric standard stars have been observed during the night, we can use it for the refinement of wavelength solution and instrumental response calibration. 
-    In the ``run_recipes`` method, specify the ``std_prop`` as a dictionary containing the name, teff, vsini, and rv of the standard star.
+    * If telluric standard stars have been observed during the night, we can use it for the refinement of wavelength solution and instrumental response calibration. In the ``run_recipes`` method, specify the ``std_prop`` as a dictionary containing the name, teff, vsini, and rv of the standard star.
 
     * The pipeline can also call `Molecfit <https://www.eso.org/sci/software/pipelines/skytools/molecfit>`_ to correct for telluric absorptions if setting ``run_molecfit=True``.
 
