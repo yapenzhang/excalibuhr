@@ -22,7 +22,7 @@ To begin with, let's initialize the pipeline with the working directory and the 
     night = '2023-06-06'
 
     ppl = pipeline.CriresPipeline(
-                                  workpath, night=night, 
+                                  workpath, night=night, obs_mode='nod',
                                   num_processes=4, clean_start=False
                                  )
 
@@ -58,10 +58,7 @@ To run the whole chain of recipes in the pipeline:
 
     ppl.run_recipes(combine=True) 
 
-
-.. note::
-
-    The ``combine`` parameter sets whether combining all frames during the night or processing each individual frame to keep the time resolusion.
+The ``combine`` parameter sets whether combining all frames at each nodding position or processing each individual frame to keep the time resolusion.
 
 This function essentially runs the following recipes:
 
@@ -77,21 +74,18 @@ This function essentially runs the following recipes:
         ppl.obs_nodding_combine() #optional
         ppl.obs_extract()
         ppl.refine_wlen_solution()
-        ppl.save_extracted_data()
-
-The extracted 1d spectra will be saved as text files to the ``obs_calibrated`` folder.
 
 If you need more customized reduction, please find the individual recipes explained in the
 API reference of :class:`~excalibuhr.pipeline.CriresPipeline` class.
 
+.. note::
 
-.. tip::
-
-    * To extract spectra of spatially resolved planetary companions, set the ``companion_sep`` parameter to the angular separation of the planet in arcseconds. 
+    * To extract spectra of spatially resolved planetary companions with the ``obs_extract`` recipe, 
+    one can either set the ``companion_sep`` parameter to the angular separation of the planet in arcseconds 
+    or provide the location on the slit with e.g. ``peak_frac={'A':0.3, 'B':0.8}``. These values don't have to very accurate. 
     
-    * There are options to change the extraction aperture of the primary and companion (``aper_prim`` and ``aper_comp``). 
-    
-    * If telluric standard stars have been observed during the night, then specify the object name with the ``std_object`` parameter to use it for the refinement of wavelength solution.
+    * If telluric standard stars have been observed during the night, we can use it for the refinement of wavelength solution and instrumental response calibration. 
+    In the ``run_recipes`` method, specify the ``std_prop`` as a dictionary containing the name, teff, vsini, and rv of the standard star.
 
     * The pipeline can also call `Molecfit <https://www.eso.org/sci/software/pipelines/skytools/molecfit>`_ to correct for telluric absorptions if setting ``run_molecfit=True``.
 
@@ -100,7 +94,7 @@ API reference of :class:`~excalibuhr.pipeline.CriresPipeline` class.
 Access the intermediate data product
 ************************************
 
-When ``extract_2d=True`` in the ``obs_extract`` function, the calibrated 2-dimensional images is save to ``.npz`` files. This can be used for dedicated analysis on off-axis spectral data.
+The calibrated 2-dimensional images is save to ``.npz`` files and can be simply loaded with the following code for dedicated analysis on off-axis spectral data.
 
 .. code-block:: python
 

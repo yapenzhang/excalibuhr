@@ -2340,6 +2340,25 @@ def rot_int_cmj(wave, flux, vsini, epsilon=0.6, nr=10, ntheta=100, dif = 0.0):
 
 
 def get_PHOENIX_stellar_model(temp, wave_cut, logg=4.0):
+    """
+    Get the PHOENIX stellar model.
+
+    Parameters
+    ----------
+    temp: int
+        The effective temperature of the standard star.
+    wave_cut: list
+        The wavelength range to use for the stellar model.
+    logg: float
+        The surface gravity of the standard star.
+
+    Returns
+    -------
+    w: array
+        The wavelength of the stellar model.
+    f: array
+        The flux of the stellar model.
+    """
 
     src_path = os.path.dirname(os.path.abspath(__file__))
     wave_file = os.path.join(src_path, '../../data/WAVE_PHOENIX-ACES-AGSS-COND-2011.fits')

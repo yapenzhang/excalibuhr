@@ -12,13 +12,13 @@ import warnings
 from pathlib import Path
 import numpy as np
 import pandas as pd
+from numpy.polynomial import polynomial as Poly
 from multiprocessing import Pool
 from astropy.io import fits
 from astroquery.eso import Eso
 import skycalc_ipy
 import excalibuhr.utils as su
 from excalibuhr.data import SPEC, SERIES, DETECTOR, wfits
-
 import matplotlib.pyplot as plt 
 
 
@@ -34,29 +34,30 @@ def print_runtime(func):
 
 class CriresPipeline:
 
+    """
+    Parameters
+    ----------
+    workpath : str
+        Path of the main reduction folder. 
+    night: str
+        The main folder will have subfolders named by dates of observations. 
+        In the folder of each night, there will be subfolders called 
+        ``raw``, ``cal``, and ``out``, where the raw data (both science and 
+        raw calibration), processed calibration files, and data products are 
+        stored respectively.
+    obs_mode: str
+        The observation mode, either 'nod' or 'stare'.
+    clean_start: bool
+        Set it to True to remove the infomation files when redoing the 
+        entire reduction.
+    num_processes: int
+        number of parallel processes for processing nodding and extraction
+    """
+
     def __init__(self, workpath, night, 
                  obs_mode = 'nod',
                  clean_start = False,
                  num_processes = 4):
-        """
-        Parameters
-        ----------
-        workpath : str
-            Path of the main reduction folder. 
-        night: str
-            The main folder will have subfolders named by dates of observations. 
-            In the folder of each night, there will be subfolders called 
-            ``raw``, ``cal``, and ``out``, where the raw data (both science and 
-            raw calibration), processed calibration files, and data products are 
-            stored respectively.
-        clean_start: bool
-            Set it to True to remove the infomation files when redoing the 
-            entire reduction.
-        num_processes: int
-            number of parallel processes for processing nodding and extraction
-        header_keys: dict
-            The needed keyword names in the header of input ``.fits`` files.
-        """
 
         self._print_section(
             f"Run pipeline for Night: {night}", bound_char="=")
@@ -91,7 +92,7 @@ class CriresPipeline:
                     'key_ra': 'RA',
                     'key_dec': 'DEC',
                     'key_airmass': 'ESO TEL AIRM END',
-                    # 'key_seeing': 'ESO TEL AMBI FWHM END',
+                    'key_seeing': 'ESO TEL AMBI FWHM END',
                     'key_DIT': 'ESO DET SEQ1 DIT',
                     'key_NDIT': 'ESO DET NDIT',
                     'key_nodpos': 'ESO SEQ NODPOS',
@@ -489,8 +490,26 @@ class CriresPipeline:
             })
 
 
-    def _plot_det_image(self, savename, title, data, tw = None, slit = None, x_fpet= None) -> None:
-        from numpy.polynomial import polynomial as Poly
+    def _plot_det_image(self, savename, title, data, tw = None, slit = None, x_fpet= None):
+        """
+        Internal method for plotting detector images.
+
+        Parameters
+        ----------
+        savename : str
+            The name of the file to save the plot to.
+        title : str
+            The title of the plot.
+        data : numpy.ndarray
+            The 2d image to plot.
+        tw : list, optional
+            The trace parameters for plotting the order traces.
+        slit : list, optional
+            The slit parameters for plotting the slit lines.
+        x_fpet : list, optional
+            The x-positions of the fpet line positions.
+        """
+        
         # check data dimension
         data = np.array(data)
         if data.ndim == 3:
@@ -543,7 +562,21 @@ class CriresPipeline:
         plt.close(fig)
 
 
-    def _plot_spec_by_order(self, savename, flux, wlen=None, transm_spec=None, show=False):
+    def _plot_spec_by_order(self, savename, flux, wlen=None, transm_spec=None):
+        """
+        Internal method for plotting spectra by order.
+
+        Parameters
+        ----------
+        savename : str
+            The name of the file to save the plot to.
+        flux : list
+            The list of spectra for each order and detector.
+        wlen : list, optional
+            The list of wavelength arrays for each order and detector.
+        transm_spec : numpy.ndarray, optional
+            The transmission spectrum with wavelength in the first column and flux in the second column.
+        """
         flux = np.array(flux)
         Ndet, Norder, Nx = flux.shape
         self._set_plot_style()
@@ -595,12 +628,19 @@ class CriresPipeline:
         if transm_spec is not None:
             axes[-1,-1].legend()
         plt.savefig(savename+'.png')
-        if show:
-            plt.show()
+        # plt.show()
         plt.close(fig)
 
 
     def _plot_extr2d_model(self, savename):
+        """
+        Internal method for plotting 2d intermediate data.
+
+        Parameters
+        ----------
+        savename : str
+            The name of the file to save the plot to.
+        """
         self._set_plot_style()
         data = np.load(savename+'.npz')
         D = data['data'][0]
@@ -1834,26 +1874,7 @@ class CriresPipeline:
                                         transm_spec=tellu_conv, show=debug)
         
 
-    # def save_extracted_data(self, combine=False):
-    #     """
-    #     Method for saving extracted spectra and calibrated wavelength.
-    #     to the folder `obs_calibrated`. And save the flattened array to
-    #     `.dat` files, including 3 columns: Wlen(nm), Flux, Flux_err. 
-
-    #     Returns
-    #     -------
-    #     NoneType
-    #         None
-    #     """
-
         self._print_section("Save extracted spectra")
-        
-        # self.corrpath = os.path.join(self.outpath, "obs_calibrated")
-        # if not os.path.exists(self.corrpath):
-        #     os.makedirs(self.corrpath)
-
-        # get updated product info
-        # self.product_info = pd.read_csv(self.product_file, sep=';')
 
         # get labels containing 'Extr1D'
         all_labels = self.product_info[self.key_caltype].unique()
@@ -2237,7 +2258,7 @@ class CriresPipeline:
                                         mask_wave, debug=debug)
 
         file_name = os.path.join(self.calpath, "RESPONSE.dat")
-        np.savetxt(file_name, np.c_[response, tellu_std])
+        np.savetxt(file_name, np.c_[np.ravel(std.wlen), response, tellu_std])
 
 
 
@@ -2263,7 +2284,7 @@ class CriresPipeline:
 
         # get instrument response
         file_name = os.path.join(self.calpath, "RESPONSE.dat")
-        resp, tellu_std = np.genfromtxt(file_name, unpack=1)
+        w_std, resp, tellu_std = np.genfromtxt(file_name, unpack=1)
 
         # get labels containing 'SPEC'
         all_labels = self.product_info[self.key_caltype].unique()
@@ -2304,24 +2325,24 @@ class CriresPipeline:
                     with fits.open(os.path.join(self.outpath, file)) as hdu:
                         specs = hdu["FLUX"].data
                         errs = hdu["FLUX_ERR"].data
-                        wave = hdu["WAVE"].data
+                        # wave = hdu["WAVE"].data
 
                     f = np.ravel(specs)/mtrans/resp
                     f_err = np.ravel(errs)/mtrans/resp
-                    w = np.ravel(wave)
+                    # w = np.ravel(wave)
 
                     # mask deep telluric lines
                     mask = mtrans < 0.7
                     f[mask] = np.nan
 
                     file_name = os.path.join(self.outpath, file[:-7] + "1D_TELLURIC_CORR.dat")
-                    np.savetxt(file_name, np.c_[w*1e-3, f, f_err], header="wave flux err")
+                    np.savetxt(file_name, np.c_[w_std*1e-3, f, f_err], header="wave flux err")
 
                     print(f"Telluric corrected spectra saved to {file_name.split('/')[-1]}")
 
                     # plot spectra
                     specs = np.reshape(f, (3, -1, specs.shape[-1]))
-                    waves = np.reshape(w, (3, -1, specs.shape[-1]))
+                    waves = np.reshape(w_std, (3, -1, specs.shape[-1]))
                     self._plot_spec_by_order(file_name[:-4], specs, waves)
 
 
@@ -2331,24 +2352,45 @@ class CriresPipeline:
                     companion_sep=None, 
                     remove_star_bkg=False, 
                     aper_prim=20, aper_comp=10,
-                    extract_2d=False,
+                    extract_2d=True,
+                    std_prop=None,
                     run_molecfit=False, 
+                    wave_range=None,
                     debug=False,
-                    wmin=None, wmax=None):
+                    ):
         """
         Method for running the full chain of recipes.
 
-        Parameters
+        Parameters  
         ----------
+        combine: bool
+            If True, combine the individual frames at each nodding position.
+        combine_mode: str
+            The mode to use for combining the frames, either 'mean', 'median', or 'weighted'.
+        savename: str
+            The prefix of the output file names for companion sources on slit.
         companion_sep: float
             To extract spectra of the spatially resolved companion, 
             provide the separation of the companion from the primary 
             in arcsec.
-            
-        Returns
-        -------
-        NoneType
-            None
+        remove_star_bkg: bool
+            If True, remove the background of the star in the companion extraction. 
+            Note that this is experimental and should be used with caution.
+        aper_prim: int
+            The aperture size for the primary star extraction.
+        aper_comp: int
+            The aperture size for the companion extraction.
+        extract_2d: bool
+            If True, rectify the 2d image and save the intermediate 2d data product.
+        std_prop: dict
+            The properties of the standard star including the name, teff, vsini, and rv.
+        run_molecfit: bool
+            If True, run the molecfit for telluric correction.
+        wave_range: list
+            The wavelength range to use for the molecfit.
+        debug: bool
+            If True, show the debug plots.
+
         """
         self.extract_header()
         self.cal_dark()
@@ -2378,11 +2420,15 @@ class CriresPipeline:
         
         self.refine_wlen_solution()
 
-        self.save_extracted_data(combine=combine)
-
         if run_molecfit:
-            self.run_molecfit(wmin=wmin, wmax=wmax)
-            self.apply_telluric_correction()
+            self.run_molecfit(wave_range=wave_range)
+        
+        if std_prop is not None:
+            self.spec_response_cal(object=std_prop['name'], 
+                                   temp=std_prop['teff'], 
+                                   vsini=std_prop['vsini'], 
+                                   vsys=std_prop['rv'])
+            self.apply_correction()
 
 
     def preprocessing(self, combine_mode='mean'):
@@ -2391,15 +2437,9 @@ class CriresPipeline:
 
         Parameters
         ----------
-        companion_sep: float
-            To extract spectra of the spatially resolved companion, 
-            provide the separation of the companion from the primary 
-            in arcsec.
-            
-        Returns
-        -------
-        NoneType
-            None
+        combine_mode: str
+            The mode to use for combining the frames.
+
         """
         self.extract_header()
         self.cal_dark()
