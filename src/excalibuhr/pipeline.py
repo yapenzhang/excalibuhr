@@ -692,7 +692,7 @@ class CriresPipeline:
 
         See Also
         --------
-        :func:`utils.util_master_dark`
+        :func:`excalibuhr.utils.util_master_dark`
         """
 
         self._print_section("Create DARK_MASTER")
@@ -768,7 +768,7 @@ class CriresPipeline:
 
         See Also
         --------
-        :func:`utils.util_master_flat`
+        :func:`excalibuhr.utils.util_master_flat`
         """
 
         self._print_section("Create FLAT_MASTER")
@@ -891,7 +891,7 @@ class CriresPipeline:
 
         See Also
         --------
-        :func:`utils.order_trace`
+        :func:`excalibuhr.utils.order_trace`
         """
 
         self._print_section("Trace spectral orders")
@@ -942,7 +942,7 @@ class CriresPipeline:
 
         See Also
         --------
-        :func:`utils.slit_curve`
+        :func:`excalibuhr.utils.slit_curve`
         """
 
         self._print_section("Trace slit curvature")
@@ -1067,7 +1067,7 @@ class CriresPipeline:
 
         See Also
         --------
-        :func:`utils.master_flat_norm`
+        :func:`excalibuhr.utils.master_flat_norm`
         """
 
         self._print_section("Normalize flat; Extract blaze")
@@ -1436,7 +1436,7 @@ class CriresPipeline:
         
         See Also
         --------
-        :func:`utils.combine_frames`
+        :func:`excalibuhr.utils.combine_frames`
         """
 
         self._print_section("Combine nodding frames")
@@ -1594,8 +1594,8 @@ class CriresPipeline:
 
         See Also
         --------
-        :func:`utils.extract_spec`
-        :func:`utils.optimal_extraction`
+        :func:`excalibuhr.utils.extract_spec`
+        :func:`excalibuhr.utils.optimal_extraction`
         """
 
         self._print_section("Extract spectra")
@@ -1796,7 +1796,7 @@ class CriresPipeline:
 
         See Also
         --------
-        :func:`utils.wlen_solution`
+        :func:`excalibuhr.utils.wlen_solution`
         """
 
         self._print_section("Refine wavelength solution")
@@ -2123,7 +2123,7 @@ class CriresPipeline:
         
         See Also
         --------
-        :func:`utils.molecfit`
+        :func:`excalibuhr.utils.molecfit`
         """
 
         self._print_section("Run Molecfit")
@@ -2213,7 +2213,7 @@ class CriresPipeline:
         
         See Also
         --------
-        :func:`utils.instrument_response`
+        :func:`excalibuhr.utils.instrument_response`
         """
 
         self._print_section("Spectral response")
