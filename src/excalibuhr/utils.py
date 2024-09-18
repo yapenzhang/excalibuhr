@@ -348,10 +348,11 @@ def order_trace(det, badpix, slitlen, sub_factor=64,
         lows = indices[ups_ind-1]
 
         # check if the bottom order is complete
-        distance = ups - lows
-        if distance[0] < order_length_min:
-            ups = ups[1:]
-            lows = lows[1:]
+        # distance = ups - lows
+        # if distance[0] < order_length_min:
+        #     print(distance[0], order_length_min, slitlen)
+        #     ups = ups[1:]
+        #     lows = lows[1:]
 
         # Find the y-coordinates of the edges, weighted by the 
         # significance of the signal (i.e. center-of-mass)
@@ -393,10 +394,10 @@ def order_trace(det, badpix, slitlen, sub_factor=64,
         yy_mid = Poly.polyval(xx, poly_mid)
         slit_len = yy_up - yy_low
 
-        if slit_len.min() < order_length_min:
-            # skip the order that is incomplete
-            continue
-        elif np.mean(slit_len) < 0.95*slitlen:
+        # if slit_len.min() < order_length_min:
+        #     # skip the order that is incomplete
+        #     continue
+        if np.mean(slit_len) < 0.95*slitlen:
             # the upper or lower trace hits the edge.
             if np.mean(yy_up) > im.shape[0]*0.5:
                 # print("up")
@@ -485,7 +486,7 @@ def measure_Gaussian_center(y, peaks, width):
 
 def slit_curve(fpet, une, badpix, trace, wlen_min, wlen_max, 
                sub_factor=16, une_xcorr=False, wlen_id=None, 
-                 debug=False):
+               debug=False):
     
     """
     Trace the curvature of the slit and determine the wavelength solution
@@ -522,13 +523,15 @@ def slit_curve(fpet, une, badpix, trace, wlen_min, wlen_max,
     width = 35 # half width of fpet line (in pixel)
     spacing = 40 # minimum spacing (in pixel) of fpet lines
     poly_order = 2
+    if wlen_id[0] == 'J':
+        spacing = 30
 
     badpix = badpix | np.isnan(fpet)
     im = np.ma.masked_array(fpet, mask=badpix)
     im_une = np.ma.masked_array(une, mask=badpix)
 
     im_subs, yy_indices = im_order_cut(im, trace)
-    # une_subs, yy_indices = im_order_cut(im_une, trace)
+
     polys_middle = np.sum(trace, axis=0)/2.
 
     xx = np.arange(im.shape[1], dtype=float)

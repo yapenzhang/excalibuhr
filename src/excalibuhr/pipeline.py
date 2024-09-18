@@ -227,7 +227,7 @@ class CriresPipeline:
         print("Extracting header details to `header_info.txt`")
         keywords = self.header_keys.values() 
         
-        raw_files = Path(self.rawpath).glob("*.fits")
+        raw_files = sorted(Path(self.rawpath).glob("*.fits"))
 
         # Dictionary to store the header info
         header_dict = {}
@@ -1872,7 +1872,7 @@ class CriresPipeline:
                                     + '_'.join(target.split())+'.fits', "CAL_WLEN")
 
                 self._plot_spec_by_order(file_name[:-5], dt, wlen_cal, 
-                                        transm_spec=tellu_conv, show=debug)
+                                        transm_spec=tellu_conv)
         
 
         self._print_section("Save extracted spectra")
@@ -2334,7 +2334,7 @@ class CriresPipeline:
                     mask = mtrans < 0.7
                     f[mask] = np.nan
 
-                    file_name = os.path.join(self.outpath, file[:-7] + "1D_TELLURIC_CORR.dat")
+                    file_name = os.path.join(self.outpath, file[:-5] + "1D_TELLURIC_CORR.dat")
                     np.savetxt(file_name, np.c_[w_std*1e-3, f, f_err], header="wave flux err")
 
                     print(f"Telluric corrected spectra saved to {file_name.split('/')[-1]}")
