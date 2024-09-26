@@ -18,7 +18,7 @@ It has an end-to-end pipeline for VLT/CRIRES+.
 Attribution
 -------------
 
-Please cite  `Zhang et al. (2024) <>`_  when *excalibuhr*  is used in a publication.
+Please cite  `Zhang et al. (2024) <http://arxiv.org/abs/2409.16660>`_  when *excalibuhr*  is used in a publication.
 
 
 Contributor
