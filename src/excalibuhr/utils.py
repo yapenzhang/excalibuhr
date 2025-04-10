@@ -570,16 +570,16 @@ def slit_curve(fpet, une, badpix, trace, wlen_min, wlen_max,
             # mask the peaks identified due to bad channels
             peaks = np.array([item for item in peaks if not item in badchannel])
 
-            # plt.plot(spec_fpet)
-            # for p in peaks:
-            #     plt.axvline(p)
-            # plt.show()
-
             # leave out lines around detector edge
-            width = np.median(properties['widths'])
             peaks = peaks[(peaks<(im.shape[1]-width)) & (peaks>(width))]
 
+            # plt.plot(spec_fpet)
+            # for p in peaks:
+            #     plt.axvline(p, color='r')
+            # plt.show()
+
             # Calculate center-of-mass of the peaks
+            width = np.median(properties['widths'])
             cens = measure_Gaussian_center(spec_fpet, peaks, width=width)
 
             slit_image.extend([[p, row+(sub_factor-1)/2.] for p in cens])
@@ -639,20 +639,31 @@ def slit_curve(fpet, une, badpix, trace, wlen_min, wlen_max,
         ii = np.arange(len(x_slit))
         poly = Poly.polyfit(x_slit, ii, 2)
         
-        # Fix the end of the wavelength grid to values from the header
-        grid_poly = Poly.polyfit([Poly.polyval(xx, poly)[0], 
-                                  Poly.polyval(xx, poly)[-1]], 
-                                 [w_min, w_max], 1)
-        ww_cal = Poly.polyval(Poly.polyval(xx, poly), grid_poly)
+        # # Fix the end of the wavelength grid to values from the header
+        # grid_poly = Poly.polyfit([Poly.polyval(xx, poly)[0], 
+        #                           Poly.polyval(xx, poly)[-1]], 
+        #                          [w_min, w_max], 1)
+        # ww_cal = Poly.polyval(Poly.polyval(xx, poly), grid_poly)
+        # wlen.append(ww_cal)
+
+        # Fix the end of the frequency grid to values based on the header
+        # from Kevin Hoy
+        nmc = const.c.to("nm/s").value
+        f_min = nmc / w_min
+        f_max = nmc / w_max
+        grid_poly = Poly.polyfit([Poly.polyval(xx, poly)[0],
+                                Poly.polyval(xx, poly)[-1]],
+                                [f_min, f_max], 1)
+        ff_cal = Poly.polyval(Poly.polyval(xx, poly), grid_poly)
+        ww_cal = nmc / ff_cal
         wlen.append(ww_cal)
 
-        if debug:
-            plt.plot(np.diff(x_slit))
-            plt.show()
-            w_slit = Poly.polyval(Poly.polyval(x_slit, poly), grid_poly)
-            # print(np.std(np.diff(w_slit)))
-            plt.plot(np.diff(w_slit))
-            plt.show()
+        # if debug:
+        #     plt.plot(np.diff(x_slit))
+        #     plt.show()
+        #     freq_slit = Poly.polyval(Poly.polyval(x_slit, poly), grid_poly)
+        #     plt.plot(np.diff(freq_slit)/freq_slit[0])
+        #     plt.show()
 
     # check rectified image
     # spectral_rectify_interp(im, badpix, trace, tilt, debug=True)

@@ -3,7 +3,7 @@
 Documentation for *excalibuhr*
 ======================================
 
-*excalibuhr* is a Python package for data reduction of high-resolution spectroscopy of exoplanets and brown dwarfs. 
+*excalibuhr* is a Python package for high-resolution spectroscopy data reduction of exoplanets and brown dwarfs. 
 It has an end-to-end pipeline for VLT/CRIRES+.
 
 
@@ -29,6 +29,8 @@ Yapeng Zhang
 Sam de Regt
 
 Darío González Picos
+
+Kevin Hoy
 
 
 Contact

@@ -38,6 +38,7 @@ Sam de Regt
 
 Darío González Picos
 
+Kevin Hoy
 
 ## Contact
 

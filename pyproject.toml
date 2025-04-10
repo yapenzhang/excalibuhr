@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=64.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "excalibuhr"
+version = "0.1.2"
+authors = [
+    {name = "Yapeng Zhang", email = "yapzhang@caltech.edu"},
+]
+description = "A Python package for high-resolution spectroscopy VLT/CRIRES+ data reduction of exoplanets and brown dwarfs"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.7"
+dependencies = [
+    "numpy",
+    "scipy",
+    "pandas",
+    "astropy",
+    "matplotlib",
+    "astroquery",
+    "skycalc_ipy",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/yapenzhang/excalibuhr"
+"Documentation" = "https://excalibuhr.readthedocs.io/"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
