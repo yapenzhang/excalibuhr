@@ -2352,6 +2352,7 @@ class CriresPipeline:
                     remove_star_bkg=False, 
                     aper_prim=20, aper_comp=10,
                     extract_2d=True,
+                    std_name=None,
                     std_prop=None,
                     run_molecfit=False, 
                     wave_range=None,
@@ -2381,6 +2382,8 @@ class CriresPipeline:
             The aperture size for the companion extraction.
         extract_2d: bool
             If True, rectify the 2d image and save the intermediate 2d data product.
+        std_name: str
+            The name of the standard star. If `std_prop` is `None` the pipeline will attempt to automatically retrieve the star's properties in place of `std_prop`.
         std_prop: dict
             The properties of the standard star including the name, teff, vsini, and rv.
         run_molecfit: bool
@@ -2391,6 +2394,17 @@ class CriresPipeline:
             If True, show the debug plots.
 
         """
+        
+        if std_prop is None and std_name is not None:
+            try:
+                teff, vsini, rv = su.get_star_properties(std_name)
+                std_prop = {'name': std_name, 'teff': teff, 'vsini': vsini, 'rv': rv}
+                print(f"Retrieved star properties: {std_prop}")
+            except ValueError as e:
+                print("Unable to retrieve the star properties automatically. Please provide them in `std_prop`.")
+                raise e
+
+        
         self.extract_header()
         self.cal_dark()
         self.cal_flat_raw()

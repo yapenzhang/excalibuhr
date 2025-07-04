@@ -2688,6 +2688,58 @@ def molecfit(input_path, spec, wave_range=None, savename=None, verbose=False):
         print(" [DONE]")
 
 
+# Sage Santomenna
+def get_star_properties(obj_name:str):
+    """Look up the teff, vsini, and rv of a star by name
+    
+    Parameters
+    ----------
+    obj_name: str
+        the name of the standard star, e.g. '10 Lep'
 
-
+    Returns
+    ----------
+    teff: float
+        the effective temperature of the star in Kelvin
+    vsini: float
+        the projected rotational velocity of the star in km/s
+    rv: float
+        systemic and barycentric velocity correction for the standard star in km/s
+    """
+    from astroquery.simbad import Simbad
+    Simbad.reset_votable_fields()
+    Simbad.add_votable_fields("rvz_radvel")
+    basic_q = Simbad.query_object(obj_name)
+    if not len(basic_q):
+        raise ValueError(f"No results found for the object {obj_name} in Simbad.")
+    basic_q = basic_q[~basic_q["rvz_radvel"].mask]
+    if not len(basic_q):
+        raise ValueError(f"No radial velocity found for the object {obj_name} in Simbad.")
+    rv = basic_q["rvz_radvel"][0]
+    
+    Simbad.add_votable_fields("mesFe_h")
+    temp_q = Simbad.query_object(obj_name)
+    if not len(temp_q):
+        raise ValueError(f"No temperature found for the object {obj_name} in Simbad.")
+    temp_q = temp_q[~temp_q["mesfe_h.teff"].mask]
+    if not len(temp_q):
+        raise ValueError(f"No temperature found for the object {obj_name} in Simbad.")
+    temp_q.sort("mesfe_h.mespos") # get best
+    teff = temp_q["mesfe_h.teff"][0]
+    
+    Simbad.reset_votable_fields()
+    Simbad.add_votable_fields("mesRot")
+    vsini_q = Simbad.query_object(obj_name)
+    if not len(vsini_q):
+        raise ValueError(f"No vsini found for the object {obj_name} in Simbad.")
+    vsini_q = vsini_q[~vsini_q["mesrot.vsini"].mask]
+    if not len(vsini_q):
+        raise ValueError(f"No vsini found for the object {obj_name} in Simbad.")
+    vsini_q.sort("mesrot.mespos")   # get best  
+    vsini = vsini_q["mesrot.vsini"][0]
+    
+    Simbad.reset_votable_fields()
+    return teff, vsini, rv
+    
+    
 
