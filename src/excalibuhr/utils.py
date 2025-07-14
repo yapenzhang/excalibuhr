@@ -2193,6 +2193,10 @@ def get_PHOENIX_stellar_model(temp, wave_cut, logg=4.0):
     if not os.path.isfile(filename):
         print(f"Downloading PHOENIX stellar model T={temp} K")
         r = requests.get(url+filename)
+        try:
+            r.raise_for_status()
+        except requests.exceptions.HTTPError as err:
+            raise RuntimeError(f"Failed to download a Phoenix stellar model for temp={temp}, logg={logg} ({url}): {err}") from err
         with open(filename, "wb") as f:
             f.write(r.content)
         print("[DONE]")
@@ -2229,7 +2233,15 @@ def instrument_response(std, tellu, temp, vsini, vsys=0.,
 
     wave, flux, _ = std.get_spec1d()
     tellu = interp1d(tellu[:,0], tellu[:,1])(wave)
-
+    
+    # adjust to be compatible with the Phoenix model
+    if temp < 2300 or temp > 12000:
+        raise ValueError(f"Standard star temperature {temp} K is out of Phoenix model range (2300-12000 K).")
+    modulus = 100 if temp < 7000 else 200
+    if temp % modulus != 0:
+        warnings.warn(f"Standard star temperature {temp} K is not a multiple of {modulus} K - using the closest Phoenix model ({int(np.round(temp/modulus)*modulus)} K)")
+        temp = int(np.round(temp/modulus)*modulus)
+        
     # get phoenix stellar model
     wave_model, flux_model = get_PHOENIX_stellar_model(temp, wave_cut=[wave[0]-100, wave[-1]+100])
     # rotationally broaden and rv shift
