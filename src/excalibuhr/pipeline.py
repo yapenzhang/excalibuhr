@@ -184,7 +184,10 @@ class CriresPipeline:
         login : str
             username to login to the ESO User Portal Services
         filters: 
-            optional parameters for data filtering, e.g. `prog_id='...'`, `target='...'`
+            optional parameters for data filtering, e.g. `dp_cat='SCIENCE'`, `prog_id='...'`, `target='...'` See the `CRIRES`_ and `ESO`_ documentation for more details.
+
+        .. _CRIRES: https://archive.eso.org/wdb/wdb/eso/crires/form
+        .. _ESO: https://archive.eso.org/eso/eso_archive_help.html
         """
 
         self._print_section("Downloading rawdata from ESO arhive")
@@ -194,12 +197,17 @@ class CriresPipeline:
             print(key + ': '+ filters[key])
 
         eso = Eso()
-        eso.login(login)
+        eso.login(username=login)
         table = eso.query_instrument(
             'crires', column_filters={'night': self.night, **filters}
-            ) 
+        )
+        if table is None:
+            raise ValueError("No ESO data found for the given filters. "
+                             "Please check the filters and try again.")
+        print(f"Retrieving the following {len(table)} items:")
+        print(table["OB ID","Object","DPR CATG"])
         data_files = eso.retrieve_data(
-            table['DP.ID'], destination=self.rawpath, 
+            list(table['DP.ID']), destination=self.rawpath,
             continuation=False, with_calib='raw', 
             request_all_objects=True, unzip=False)
         os.chdir(self.rawpath)
