@@ -2546,7 +2546,7 @@ class CriresPipeline:
             self.apply_correction()
 
 
-    def preprocessing(self, combine_mode='mean'):
+    def preprocessing(self, combine=True, combine_mode='mean'):
         """
         Method for running the preprocessing recipes including reducing calibration files, 
         calibrating science frames, and combining indvidual frames at each nodding position.
@@ -2565,5 +2565,6 @@ class CriresPipeline:
         self.cal_flat_norm()
         self.obs_nodding()
 
-        self.obs_nodding_combine(combine_mode=combine_mode)
+        if combine:
+            self.obs_nodding_combine(combine_mode=combine_mode)
 
