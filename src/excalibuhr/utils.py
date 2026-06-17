@@ -1622,12 +1622,13 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
                 np.zeros(D.T.shape), np.zeros(D.T.shape), \
                 np.zeros(D.T.shape)
 
-    D = np.nan_to_num(D, nan=etol)
-    V = np.nan_to_num(V, nan=1./etol)
+    # Neutralize non-finite pixels. Without explicit posinf/neginf, nan_to_num
+    # replaces +inf (e.g. from flat-field division by zero) with ~1.8e308, which
+    # overflows downstream in D/P and (D - P*f)**2. These pixels also get
+    # infinite variance below, so they are downweighted to ~0 in the extraction.
+    D = np.nan_to_num(D, nan=etol, posinf=etol, neginf=etol).astype(np.float64)
+    V = np.nan_to_num(V, nan=1/etol, posinf=1/etol).astype(np.float64)
     V_new = V + np.abs(D) / gain / NDIT
-    
-    # plt.imshow(V, aspect='auto', vmin=0, vmax=20)
-    # plt.show()
 
     wave_x = np.arange(D.shape[0])
     spatial_x = np.arange(D.shape[1])

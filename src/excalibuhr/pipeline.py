@@ -1835,7 +1835,11 @@ class CriresPipeline:
         # get updated product info
         self.product_info = pd.read_csv(self.product_file, sep=';')
 
-        indices = (self.product_info[self.key_caltype] == 'Extr1D_COMBINED_PRIMARY') 
+        # Refine the wavelength solution from the combined spectra; fall back
+        # to the per-exposure spectra when frames were not combined.
+        indices = (self.product_info[self.key_caltype] == 'Extr1D_COMBINED_PRIMARY')
+        if not np.any(indices):
+            indices = (self.product_info[self.key_caltype] == 'Extr1D_FRAME_PRIMARY')
 
         # Check unique WLEN setting
         unique_wlen = set()
@@ -1845,7 +1849,10 @@ class CriresPipeline:
         # get telluric transmission model
         file = os.path.join(self.calpath, "TRANSM_SPEC.fits")
         if not os.path.isfile(file):
-            airmass = self.product_info[indices][self.key_airmass].max()
+            airmass = self.product_info[indices][self.key_airmass].iloc[0]
+            # guard against an empty/NaN selection (no usable airmass)
+            if not np.isfinite(airmass):
+                airmass = 1.0
             self.run_skycalc(airmass=airmass)
         tellu = fits.getdata(file)
 
@@ -1904,22 +1911,53 @@ class CriresPipeline:
 
                 self._plot_spec_by_order(file_name[:-5], dt, wlen_cal, 
                                         transm_spec=tellu_conv)
-        
+
+
+    @print_runtime
+    def save_data(self, mask_edge=10):
+        """
+        Method for assembling the extracted 1D spectra into the final data
+        products, handling both observing modes:
+
+          - combined frames (`Extr1D_COMBINED_*`) are mean-collapsed into a
+            2D spectrum (n_order, n_pixel) and saved to a FITS file, together
+            with a `.dat` table.
+          - per-exposure frames (`Extr1D_FRAME_*`) are stacked into a time
+            series and saved to a FITS file with the extensions `FLUX` and
+            `FLUX_ERR` (n_exposure, n_order, n_pixel), `WAVE` (n_order,
+            n_pixel), and `MJD` and `AIRMASS` (n_exposure,). The primary
+            header is that of the first (earliest) exposure. Exposures are
+            sorted in time.
+
+        Spectral orders are sorted by wavelength. The refined wavelength
+        solution (`CAL_WLEN`) is used if available, otherwise the initial
+        one (`INIT_WLEN`).
+
+        Parameters
+        ----------
+        mask_edge: int
+            number of pixels masked (set to NaN) at each order edge.
+
+        See Also
+        --------
+        :func:`excalibuhr.pipeline.CriresPipeline.obs_extract`
+        :func:`excalibuhr.pipeline.CriresPipeline.refine_wlen_solution`
+        """
 
         self._print_section("Save extracted spectra")
+
+        # get updated product info
+        self.product_info = pd.read_csv(self.product_file, sep=';')
 
         # get labels containing 'Extr1D'
         all_labels = self.product_info[self.key_caltype].unique()
         data_frame = all_labels[pd.Series(all_labels).str.contains('Extr1D_FRAME', case=False)]
         data_comb = all_labels[pd.Series(all_labels).str.contains('Extr1D_COMBINED', case=False)]
 
-        # mask the detector edges 
-        Ncut = 10
-
         for do_combine, data_type in enumerate([data_frame, data_comb]):
             for label in data_type:
                 indices = (self.product_info[self.key_caltype] == label)
-                
+
                 # Check unique targets
                 unique_target = set()
                 for item in self.product_info[indices][self.key_target_name]:
@@ -1927,7 +1965,7 @@ class CriresPipeline:
 
                 if len(unique_target) == 0:
                     continue
-                
+
                 # Loop over each target
                 for target in unique_target:
 
@@ -1937,8 +1975,8 @@ class CriresPipeline:
                         file_name = os.path.join(self.combpath,
                             '_'.join(['SPEC', target.replace(" ", ""), l]))
                     else:
-                        file_name = os.path.join(self.framepath, 
-                                                 '_'.join(['SPEC_SERIES', target.replace(" ", ""), l]))
+                        file_name = os.path.join(self.framepath,
+                            '_'.join(['SPEC_SERIES', target.replace(" ", ""), l]))
 
                     indices_obj = indices & \
                         (self.product_info[self.key_target_name] == target)
@@ -1947,43 +1985,54 @@ class CriresPipeline:
                     unique_wlen = set()
                     for item in self.product_info[indices_obj][self.key_wlen]:
                         unique_wlen.add(item)
-                    
 
-                    wlens, specs, errs = [],[],[]
+                    wlens, specs, errs = [], [], []
+                    mjd, airmass = [], []
                     for item_wlen in unique_wlen:
-                        
+
                         indices_wlen = indices_obj & \
                                 (self.product_info[self.key_wlen] == item_wlen)
 
+                        # select the wavelength solution, preferring the refined one
                         indices_wave = \
                             (self.calib_info[self.key_caltype] == "CAL_WLEN")\
                             & (self.calib_info[self.key_wlen] == item_wlen) \
                             & (self.calib_info[self.key_target_name] == target)
-                        
+
                         if not np.any(indices_wave):
                             print("No matching wavelength solution to the target.\n")
                             print("The wavelength solution derived from other target is used.\n")
                             indices_wave = \
                                     (self.calib_info[self.key_caltype] == "CAL_WLEN")\
                                     & (self.calib_info[self.key_wlen] == item_wlen)
-                            
+
                             if not np.any(indices_wave):
                                 print("No calibrated wavelength solution available.\n")
                                 print("Initial wavelength solution is used.\n")
                                 indices_wave = \
                                         (self.calib_info[self.key_caltype] == "INIT_WLEN") \
                                         & (self.calib_info[self.key_wlen] == item_wlen)
-                            
+
                         file = self.calib_info[indices_wave][self.key_filename].iloc[0]
                         wlen = fits.getdata(os.path.join(self.calpath, file))
                         wlens.append(wlen)
 
+                        # collect per-exposure spectra (and observing conditions),
+                        # skipping duplicate entries from repeated extractions
                         dt, dt_err = [], []
+                        mjd, airmass, hdrs = [], [], []
+                        seen = set()
                         for file in self.product_info[indices_wlen][self.key_filename]:
+                            if file in seen:
+                                continue
+                            seen.add(file)
                             with fits.open(os.path.join(self.outpath, file)) as hdu:
                                 hdr = hdu[0].header
                                 dt.append(hdu["FLUX"].data)
                                 dt_err.append(hdu["FLUX_ERR"].data)
+                                mjd.append(hdr[self.key_mjd])
+                                airmass.append(hdr[self.key_airmass])
+                                hdrs.append(hdr)
                         nframe = len(dt)
                         if do_combine:
                             # mean-combine each individual frames
@@ -1992,25 +2041,37 @@ class CriresPipeline:
 
                         specs.append(dt)
                         errs.append(dt_err)
-                    
+
                     wlens = np.array(wlens)
                     npixel = wlens.shape[-1]
-                    wlens = np.reshape(wlens, (-1, npixel))
-                    wmin = wlens[:,0] 
+                    wlens = np.reshape(wlens, (-1, npixel)).astype(np.float64)
+                    wmin = wlens[:, 0]
                     indice_sort = np.argsort(wmin)
                     wlens = wlens[indice_sort]
 
-
                     if do_combine:
-                        # reshape spectra in 2D shape: (N_chips, N_pixel)
+                        # reshape spectra in 2D shape: (n_order, n_pixel)
                         spec_series = np.reshape(specs, (-1, npixel))[indice_sort]
                         err_series = np.reshape(errs, (-1, npixel))[indice_sort]
-                        spec_series[:, :Ncut] = np.nan
-                        spec_series[:, -Ncut:] = np.nan
+                        if mask_edge > 0:
+                            spec_series[:, :mask_edge] = np.nan
+                            spec_series[:, -mask_edge:] = np.nan
                         snr_mid = np.nanmean((spec_series/err_series)[wlens.shape[0]//2])
 
+                        # save the combined spectrum to a FITS file
+                        wfits(file_name+'.fits', ext_list={"FLUX": spec_series,
+                                                    "FLUX_ERR": err_series,
+                                                    "WAVE": wlens},
+                                            header=hdr)
+                        self._add_to_product('/'.join(file_name.split('/')[-2:])+'.fits',
+                                        '_'.join(['SPEC']+label.split('_')[-2:]))
+                        np.savetxt(file_name+'.dat', np.c_[wlens.flatten(),
+                                                            spec_series.flatten(),
+                                                            err_series.flatten()],
+                                    header="wave flux err")
+
                     else:
-                        # reshape spectra in 3D shape: (N_frames, N_chips, N_pixel)
+                        # reshape spectra in 3D shape: (n_exposure, n_order, n_pixel)
                         spec_series, err_series = [], []
                         specs, errs = np.array(specs), np.array(errs)
                         for i in range(nframe):
@@ -2018,31 +2079,38 @@ class CriresPipeline:
                             err_series.append(np.reshape(errs[:,i,:,:,:], (-1, npixel))[indice_sort])
                         spec_series = np.array(spec_series)
                         err_series = np.array(err_series)
-                        spec_series[:,:, :Ncut] = np.nan
-                        spec_series[:,:, -Ncut:] = np.nan
+                        if mask_edge > 0:
+                            spec_series[:,:, :mask_edge] = np.nan
+                            spec_series[:,:, -mask_edge:] = np.nan
                         snr_mid = np.nanmean((spec_series/err_series)[:,wlens.shape[0]//2,:], axis=1)
 
+                        # sort exposures in time
+                        mjd, airmass = np.array(mjd), np.array(airmass)
+                        time_sort = np.argsort(mjd)
+                        spec_series = spec_series[time_sort]
+                        err_series = err_series[time_sort]
+                        mjd, airmass = mjd[time_sort], airmass[time_sort]
+                        snr_mid = snr_mid[time_sort]
 
-                    wfits(file_name+'.fits', ext_list={"FLUX": spec_series, 
-                                                "FLUX_ERR": err_series,
-                                                "WAVE": wlens}, 
-                                        header=hdr)
-                    self._add_to_product('/'.join(file_name.split('/')[-2:])+'.fits', 
-                                    '_'.join(['SPEC']+label.split('_')[-2:]))
-                    if do_combine:
-                        np.savetxt(file_name+'.dat', np.c_[wlens.flatten(), 
-                                                            spec_series.flatten(), 
-                                                            err_series.flatten()], 
-                                    header="wave flux err")
-                    
+                        # use the FITS header of the first (earliest) exposure
+                        first_hdr = hdrs[time_sort[0]]
+
+                        # save the time series to a FITS file
+                        wfits(file_name+'.fits', ext_list={"FLUX": spec_series,
+                                                    "FLUX_ERR": err_series,
+                                                    "WAVE": wlens,
+                                                    "MJD": mjd,
+                                                    "AIRMASS": airmass},
+                                            header=first_hdr)
+                        self._add_to_product('/'.join(file_name.split('/')[-2:])+'.fits',
+                                        '_'.join(['SPEC']+label.split('_')[-2:]))
+
                     if isinstance(snr_mid, float):
                         print(f"Saved target {target} {l} with wavelength coverage {unique_wlen}; ",
                                 f"average S/N ~ {snr_mid:.0f}. \n")
                     else:
                         print(f"Saved target {target} {l} with wavelength coverage {unique_wlen}; average S/N ~ ",
                                 np.round(snr_mid).astype(int), " \n")
-
-
 
 
     def run_skycalc(self, airmass=1.0, pwv=2.5):
@@ -2464,6 +2532,8 @@ class CriresPipeline:
                         )
         
         self.refine_wlen_solution()
+
+        self.save_data()
 
         if run_molecfit:
             self.run_molecfit(wave_range=wave_range)
