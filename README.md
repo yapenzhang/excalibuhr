@@ -24,21 +24,15 @@ ppl = pipeline.CriresPipeline(workpath, night=night, obs_mode='nod', num_process
 ppl.run_recipes(combine=True)
 ```
 
-Detailed documentation and customized usages can be found at [https://excalibuhr.readthedocs.io/](https://excalibuhr.readthedocs.io/).
+Example scripts can be found in the `examples` folder. Detailed documentation and customized usages can be found at [https://excalibuhr.readthedocs.io/](https://excalibuhr.readthedocs.io/).
 
 ## Attribution
 
-Please cite [Zhang et al. (2024)](http://arxiv.org/abs/2409.16660) if *excalibuhr* is used in your research.
+Please cite [Zhang et al. (2024)](https://ui.adsabs.harvard.edu/abs/2024AJ....168..246Z/abstract) if *excalibuhr* is used in your research.
 
 ## Contributor
 
-Yapeng Zhang
-
-Sam de Regt
-
-Darío González Picos
-
-Kevin Hoy
+Yapeng Zhang, Sam de Regt, Darío González Picos, Kevin Hoy, Sage Santomenna
 
 ## Contact
 
@@ -46,7 +40,5 @@ Contributions, feature requests, or bug reports are welcome through [Github page
 
 ## References
 
-* [pycrires](https://github.com/tomasstolker/pycrires)
-
-* [cr2res pipeline](https://www.eso.org/sci/software/pipelines/cr2res/cr2res-pipe-recipes.html)
+[pycrires](https://github.com/tomasstolker/pycrires), [cr2res pipeline](https://www.eso.org/sci/software/pipelines/cr2res/cr2res-pipe-recipes.html)
 

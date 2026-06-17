@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "excalibuhr"
-version = "0.1.2"
+version = "0.2"
 authors = [
     {name = "Yapeng Zhang", email = "yapzhang@caltech.edu"},
 ]
